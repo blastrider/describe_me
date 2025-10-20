@@ -1,3 +1,0 @@
-==== Résumé du snapshot ====
-Part 1: 4 fichiers, 284 lignes -> snapshot_part1.txt
-TOTAL: 4 fichiers, 284 lignes
