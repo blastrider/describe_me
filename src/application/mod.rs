@@ -1,6 +1,6 @@
-use crate::domain::{CaptureOptions, DescribeError, SystemSnapshot, DiskUsage};
-#[cfg(feature = "systemd")]
+#[cfg(any(feature = "systemd", feature = "config"))]
 use crate::domain::ServiceInfo;
+use crate::domain::{CaptureOptions, DescribeError, DiskUsage, SystemSnapshot};
 
 impl SystemSnapshot {
     pub fn capture() -> Result<Self, DescribeError> {
@@ -40,7 +40,34 @@ impl SystemSnapshot {
     }
 }
 
-/// Calcule l’espace disque agrégé + détail par partition.
+/// Calcule l’espace disque agrégé + partitions.
 pub fn disk_usage() -> Result<DiskUsage, DescribeError> {
     crate::infrastructure::sysinfo::gather_disks()
+}
+
+#[cfg(feature = "config")]
+use crate::domain::DescribeConfig;
+
+#[cfg(feature = "config")]
+pub fn load_config_from_path<P: AsRef<std::path::Path>>(
+    path: P,
+) -> Result<DescribeConfig, DescribeError> {
+    let data = std::fs::read_to_string(path.as_ref())
+        .map_err(|e| DescribeError::Config(format!("read {}: {e}", path.as_ref().display())))?;
+    toml::from_str::<DescribeConfig>(&data)
+        .map_err(|e| DescribeError::Config(format!("toml parse: {e}")))
+}
+
+/// Filtre une liste de services selon la config.
+/// Si pas de config ou pas de `services.include`, retourne la liste telle quelle.
+#[cfg(feature = "config")]
+pub fn filter_services(mut services: Vec<ServiceInfo>, cfg: &DescribeConfig) -> Vec<ServiceInfo> {
+    if let Some(sel) = &cfg.services {
+        if !sel.include.is_empty() {
+            let allow: std::collections::HashSet<_> =
+                sel.include.iter().map(|s| s.as_str()).collect();
+            services.retain(|s| allow.contains(s.name.as_str()));
+        }
+    }
+    services
 }

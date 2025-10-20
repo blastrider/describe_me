@@ -24,8 +24,8 @@ pub(crate) fn list_systemd_services() -> Result<Vec<ServiceInfo>, DescribeError>
         )));
     }
 
-    let stdout = String::from_utf8(output.stdout)
-        .map_err(|e| DescribeError::Parse(format!("utf8: {e}")))?;
+    let stdout =
+        String::from_utf8(output.stdout).map_err(|e| DescribeError::Parse(format!("utf8: {e}")))?;
 
     Ok(stdout
         .lines()
@@ -54,8 +54,16 @@ fn parse_systemctl_line(line: &str) -> Result<ServiceInfo, DescribeError> {
     let rest = parts.collect::<Vec<_>>().join(" ");
     let summary = if rest.is_empty() { None } else { Some(rest) };
 
-    let state = if active == "active" { sub.to_string() } else { active.to_string() };
-    Ok(ServiceInfo { name, state, summary })
+    let state = if active == "active" {
+        sub.to_string()
+    } else {
+        active.to_string()
+    };
+    Ok(ServiceInfo {
+        name,
+        state,
+        summary,
+    })
 }
 
 /// Wrapper public pour tests/fuzz (feature-gated).
