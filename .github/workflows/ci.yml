@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        toolchain: [stable, 1.90.0]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: fmt check
+        run: cargo fmt -- --check
+
+      - name: clippy (all targets)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: tests (debug)
+        run: cargo test --all-features
+
+      - name: tests (release)
+        run: cargo test --release --all-features
+
+      - name: doc
+        run: cargo doc --no-deps --all-features
+
+      - name: audit (advisories)
+        run: |
+          cargo install cargo-audit --locked || true
+          cargo audit
+      - name: deny (licenses, bans)
+        run: |
+          cargo install cargo-deny --locked || true
+          cargo deny check
+
+      - name: benches compile (no-run)
+        run: cargo bench --no-run --all-features
+
+  msrv-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install MSRV
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.90.0
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -Z unstable-options
