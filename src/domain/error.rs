@@ -14,4 +14,8 @@ pub enum DescribeError {
     /// Erreur de parsing (par ex. sortie de `systemctl`).
     #[error("parse error: {0}")]
     Parse(String),
+
+    /// Erreur de config.
+    #[error("config error: {0}")] // <— NEW
+    Config(String),
 }
