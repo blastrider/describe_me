@@ -1,29 +1,33 @@
 #![forbid(unsafe_code)]
 
-#[cfg(feature = "cli")]
-use anyhow::Result;
-#[cfg(feature = "cli")]
+use anyhow::{bail, Result};
 use clap::Parser;
 
-#[cfg(feature = "cli")]
 #[derive(Parser, Debug)]
 #[command(name = "describe-me", version, about = "Décrit rapidement le serveur")]
 struct Opts {
-    /// Affiche aussi la liste des services (Linux/systemd)
+    /// Énumérer aussi les services (Linux/systemd)
     #[arg(long)]
     with_services: bool,
 }
 
-#[cfg(feature = "cli")]
 fn main() -> Result<()> {
-    let _opts = Opts::parse();
-    let snap = describe_me::SystemSnapshot::capture()?;
+    let opts = Opts::parse();
+
+    // Si l'utilisateur demande les services mais que la feature systemd n'est pas compilée.
+    #[cfg(not(feature = "systemd"))]
+    {
+        if opts.with_services {
+            bail!("--with-services nécessite la feature `systemd` à la compilation (cargo run --features \"cli systemd\").");
+        }
+    }
+
+    let options = describe_me::CaptureOptions {
+        with_services: opts.with_services,
+    };
+
+    let snap = describe_me::SystemSnapshot::capture_with(options)?;
     println!("{}", serde_json::to_string_pretty(&snap)?);
     Ok(())
 }
 
-#[cfg(not(feature = "cli"))]
-fn main() {
-    eprintln!("Le binaire `describe-me` nécessite la feature `cli`. Lancez `cargo run --features cli --bin describe-me`.");
-    std::process::exit(1);
-}
