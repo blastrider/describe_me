@@ -13,24 +13,17 @@
 use std::process::Command;
 
 use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
-
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
-
 use thiserror::Error;
 
 /// Erreurs possibles de la bibliothèque.
 #[derive(Debug, Error)]
 pub enum DescribeError {
-    /// Erreur liée au système (sysinfo ou I/O).
     #[error("system error: {0}")]
     System(String),
-
-    /// Appel externe (ex: systemctl) a échoué.
     #[error("external command failed: {0}")]
     External(String),
-
-    /// Erreur de parsing (par ex. sortie de `systemctl`).
     #[error("parse error: {0}")]
     Parse(String),
 }
@@ -39,11 +32,8 @@ pub enum DescribeError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ServiceInfo {
-    /// Nom court du service (ex: `cron.service`).
     pub name: String,
-    /// État (ex: `running`, `exited`, …).
     pub state: String,
-    /// Résumé/description si disponible.
     pub summary: Option<String>,
 }
 
@@ -61,14 +51,26 @@ pub struct SystemSnapshot {
     pub used_memory_bytes: u64,
     pub total_swap_bytes: u64,
     pub used_swap_bytes: u64,
-    /// Services en cours d’exécution (Linux/systemd uniquement, feature `systemd`).
+    /// Services en cours d’exécution (Linux/systemd uniquement).
     #[cfg(feature = "systemd")]
     pub services_running: Vec<ServiceInfo>,
 }
 
+/// Options de capture.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CaptureOptions {
+    /// Enumérer les services systemd en cours (Linux). Coût I/O supplémentaire.
+    pub with_services: bool,
+}
+
 impl SystemSnapshot {
-    /// Capture instantanée des informations système.
+    /// Capture par défaut (rapide) — **n’énumère pas** les services.
     pub fn capture() -> Result<Self, DescribeError> {
+        Self::capture_with(CaptureOptions::default())
+    }
+
+    /// Capture avec options.
+    pub fn capture_with(opts: CaptureOptions) -> Result<Self, DescribeError> {
         let mut sys = System::new();
         sys.refresh_specifics(
             RefreshKind::new()
@@ -79,19 +81,22 @@ impl SystemSnapshot {
         let hostname = System::host_name().unwrap_or_else(|| "unknown".to_string());
         let os = System::long_os_version();
         let kernel = System::kernel_version();
-        let uptime_seconds = System::uptime(); // <- retourne déjà un u64 (secondes)
+        let uptime_seconds = System::uptime(); // secondes (u64)
 
         let cpu_count = sys.cpus().len();
         let la = System::load_average();
 
-        // En 0.30, ces méthodes retournent déjà des u64 (octets)
-        let total_memory_bytes = sys.total_memory();
+        let total_memory_bytes = sys.total_memory(); // u64 octets
         let used_memory_bytes = sys.used_memory();
         let total_swap_bytes = sys.total_swap();
         let used_swap_bytes = sys.used_swap();
 
         #[cfg(feature = "systemd")]
-        let services_running = list_systemd_services().unwrap_or_default();
+        let services_running = if opts.with_services {
+            list_systemd_services()?
+        } else {
+            Vec::new()
+        };
 
         Ok(Self {
             hostname,
@@ -112,8 +117,7 @@ impl SystemSnapshot {
 
 #[cfg(feature = "systemd")]
 fn list_systemd_services() -> Result<Vec<ServiceInfo>, DescribeError> {
-    // Utilise `systemctl list-units --type=service --state=running --no-legend --plain`
-    // Format attendu par ligne: "<name> <load> <active> <sub> <description...>"
+    // systemctl list-units --type=service --state=running --no-legend --plain
     let output = Command::new("systemctl")
         .args([
             "list-units",
@@ -132,8 +136,8 @@ fn list_systemd_services() -> Result<Vec<ServiceInfo>, DescribeError> {
         )));
     }
 
-    let stdout =
-        String::from_utf8(output.stdout).map_err(|e| DescribeError::Parse(format!("utf8: {e}")))?;
+    let stdout = String::from_utf8(output.stdout)
+        .map_err(|e| DescribeError::Parse(format!("utf8: {e}")))?;
 
     Ok(stdout
         .lines()
@@ -141,11 +145,8 @@ fn list_systemd_services() -> Result<Vec<ServiceInfo>, DescribeError> {
         .collect())
 }
 
-/// Parse une ligne de `systemctl list-units ...`.
 #[cfg(feature = "systemd")]
 fn parse_systemctl_line(line: &str) -> Result<ServiceInfo, DescribeError> {
-    // On découpe sur espaces successifs: name load active sub rest(summary).
-    // Les 4 premières colonnes sont compactes; le reste est la description.
     let mut parts = line.split_whitespace();
     let name = parts
         .next()
@@ -160,32 +161,12 @@ fn parse_systemctl_line(line: &str) -> Result<ServiceInfo, DescribeError> {
     let sub = parts
         .next()
         .ok_or_else(|| DescribeError::Parse("missing sub".into()))?;
-    // le reste (s’il existe) = description
-    let summary = parts.collect::<Vec<_>>().join(" ");
-    let summary = if summary.is_empty() {
-        None
-    } else {
-        Some(summary)
+    let summary = {
+        let s = parts.collect::<Vec<_>>().join(" ");
+        if s.is_empty() { None } else { Some(s) }
     };
-
-    let state = if active == "active" {
-        sub.to_string()
-    } else {
-        active.to_string()
-    };
-
-    Ok(ServiceInfo {
-        name,
-        state,
-        summary,
-    })
-}
-
-/// Wrapper **public** uniquement pour tests/fuzz afin d'exercer le parseur interne
-#[cfg(all(feature = "systemd", any(test, feature = "internals")))]
-#[doc(hidden)]
-pub fn __parse_systemctl_line_for_tests(line: &str) -> Result<ServiceInfo, DescribeError> {
-    parse_systemctl_line(line)
+    let state = if active == "active" { sub.to_string() } else { active.to_string() };
+    Ok(ServiceInfo { name, state, summary })
 }
 
 #[cfg(test)]
@@ -202,11 +183,17 @@ mod tests {
     #[cfg(feature = "systemd")]
     #[test]
     fn parse_ok() {
-        let line =
-            "cron.service loaded active running Regular background program processing daemon";
+        let line = "cron.service loaded active running Regular background program processing daemon";
         let s = super::parse_systemctl_line(line).unwrap();
         assert_eq!(s.name, "cron.service");
         assert_eq!(s.state, "running");
         assert!(s.summary.unwrap().starts_with("Regular"));
     }
+}
+
+/// Wrapper public pour tests/fuzz (feature-gated).
+#[cfg(all(feature = "systemd", any(test, feature = "internals")))]
+#[doc(hidden)]
+pub fn __parse_systemctl_line_for_tests(line: &str) -> Result<ServiceInfo, DescribeError> {
+    parse_systemctl_line(line)
 }
