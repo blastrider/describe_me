@@ -71,3 +71,9 @@ pub fn filter_services(mut services: Vec<ServiceInfo>, cfg: &DescribeConfig) -> 
     }
     services
 }
+
+#[cfg(feature = "net")]
+mod net;
+
+#[cfg(feature = "net")]
+pub use net::net_listen;
