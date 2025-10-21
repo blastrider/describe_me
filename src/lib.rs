@@ -14,22 +14,20 @@ pub mod domain;
 mod infrastructure;
 
 pub use domain::{
-    CaptureOptions,
-    DescribeError,
-    DiskPartition,
-    DiskUsage, // <-- NEW
-    ServiceInfo,
-    SystemSnapshot,
+    CaptureOptions, DescribeError, DiskPartition, DiskUsage, ServiceInfo, SystemSnapshot,
 };
 
 #[cfg(feature = "config")]
 pub use domain::{DescribeConfig, ServiceSelection};
 
-// API fonctionnelle pour l’espace disque
+// API fonctionnelle
 pub use application::disk_usage;
 
 #[cfg(feature = "config")]
 pub use application::{filter_services, load_config_from_path};
+
+#[cfg(feature = "net")]
+pub use application::net_listen; // <— NEW
 
 // Outils de test/fuzz internes
 #[cfg(all(feature = "systemd", any(test, feature = "internals")))]
