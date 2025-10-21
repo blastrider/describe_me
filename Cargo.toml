@@ -25,6 +25,7 @@ cli = ["dep:anyhow", "dep:clap", "serde"]
 # pour tests/fuzz uniquement; n'active rien en prod
 internals = []
 config = ["serde", "dep:toml"]   # <— NEW
+net = []     
 
 [dependencies]
 thiserror = "1.0"
