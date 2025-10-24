@@ -77,3 +77,6 @@ mod net;
 
 #[cfg(feature = "net")]
 pub use net::net_listen;
+
+#[cfg(feature = "web")]
+pub mod web;

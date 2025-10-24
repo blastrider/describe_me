@@ -34,3 +34,6 @@ pub use application::net_listen; // <— NEW
 pub mod internals {
     pub use crate::infrastructure::systemd::__parse_systemctl_line_for_tests;
 }
+
+#[cfg(feature = "web")]
+pub use application::web::serve_http;

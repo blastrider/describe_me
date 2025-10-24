@@ -38,6 +38,24 @@ struct Opts {
     /// Mise en forme JSON indentée (implique --json)
     #[arg(long, action = ArgAction::SetTrue)]
     pretty: bool,
+
+    /// Lance un serveur web SSE (HTML/CSS/JS) — nécessite la feature `web`.
+    /// Optionnellement préciser l'adresse:port (ex: 127.0.0.1:9000). Valeur par défaut si omise.
+    #[arg(
+        long = "web",
+        value_name = "ADDR:PORT",
+        default_missing_value = "0.0.0.0:8080",
+        num_args = 0..=1
+    )]
+    web: Option<String>,
+
+    /// Intervalle d'actualisation (secondes) pour le mode --web (défaut: 2)
+    #[arg(long = "web-interval", value_name = "SECS", default_value_t = 2)]
+    web_interval_secs: u64,
+
+    /// Affiche également le JSON brut dans l'interface --web
+    #[arg(long = "web-debug", action = ArgAction::SetTrue)]
+    web_debug: bool,
 }
 
 #[cfg(feature = "cli")]
@@ -61,17 +79,7 @@ struct CombinedOutput {
 fn main() -> Result<()> {
     let opts = Opts::parse();
 
-    #[cfg(not(feature = "systemd"))]
-    if opts.with_services {
-        bail!("--with-services nécessite la feature `systemd` (cargo run --features \"cli systemd\").");
-    }
-
-    #[cfg(not(feature = "net"))]
-    if opts.net_listen {
-        bail!("--net-listen nécessite la feature `net` (cargo run --features \"cli net\").");
-    }
-
-    // Charge optionnellement la config (pour filtrage services)
+    // Charge optionnellement la config (pour filtrages, web, ...)
     #[cfg(feature = "config")]
     let cfg = if let Some(p) = &opts.config {
         Some(describe_me::load_config_from_path(p)?)
@@ -84,6 +92,54 @@ fn main() -> Result<()> {
         bail!(
             "--config nécessite la feature `config` (cargo run --features \"cli systemd config\")."
         );
+    }
+
+    let web_debug = opts.web_debug;
+
+    // --- Mode serveur web (SSE) --------------------------------------------
+    #[cfg(not(feature = "web"))]
+    if opts.web.is_some() {
+        bail!("--web nécessite la feature `web` (cargo run --features \"cli web\").");
+    }
+
+    #[cfg(feature = "web")]
+    if let Some(bind) = &opts.web {
+        use std::{net::SocketAddr, time::Duration};
+
+        let addr: SocketAddr = bind
+            .parse()
+            .map_err(|e| anyhow::anyhow!("Adresse invalide pour --web: {bind} ({e})"))?;
+        let tick = Duration::from_secs(opts.web_interval_secs);
+
+        #[cfg(feature = "config")]
+        let cfg_for_web = cfg.clone();
+
+        // runtime tokio local pour ne pas imposer #[tokio::main]
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
+        rt.block_on(async move {
+            describe_me::serve_http(
+                addr,
+                tick,
+                #[cfg(feature = "config")]
+                cfg_for_web,
+                web_debug,
+            )
+            .await
+        })?;
+        return Ok(());
+    }
+    // -----------------------------------------------------------------------
+
+    #[cfg(not(feature = "systemd"))]
+    if opts.with_services {
+        bail!("--with-services nécessite la feature `systemd` (cargo run --features \"cli systemd\").");
+    }
+
+    #[cfg(not(feature = "net"))]
+    if opts.net_listen {
+        bail!("--net-listen nécessite la feature `net` (cargo run --features \"cli net\").");
     }
 
     // Capture le snapshot complet
@@ -100,7 +156,7 @@ fn main() -> Result<()> {
             describe_me::filter_services(std::mem::take(&mut snap.services_running), cfg);
     }
 
-    // Récupère les sockets si --net-listen (et map vers struct serialisable locale)
+    // Récupère les sockets si --net-listen (et map vers struct sérialisable locale)
     #[cfg(feature = "net")]
     let net_listen_vec: Option<Vec<ListeningSocketOut>> = if opts.net_listen {
         let socks = describe_me::net_listen()?;
@@ -140,7 +196,6 @@ fn main() -> Result<()> {
         }
         #[cfg(not(feature = "cli"))]
         {
-            // par sécurité, si jamais cli/serde n'est pas activé (mais normalement `cli` l'active).
             println!("{}", serde_json::to_string_pretty(&snap)?);
             return Ok(());
         }
