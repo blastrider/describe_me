@@ -25,7 +25,8 @@ cli = ["dep:anyhow", "dep:clap", "serde"]
 # pour tests/fuzz uniquement; n'active rien en prod
 internals = []
 config = ["serde", "dep:toml"]   # <— NEW
-net = []     
+net = []
+web = ["dep:tokio", "dep:axum", "dep:tokio-stream", "serde"]  # NEW     
 
 [dependencies]
 thiserror = "1.0"
@@ -34,7 +35,10 @@ serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0", optional = true }
 clap = { version = "4.5", features = ["derive"], optional = true }
 anyhow = { version = "1.0", optional = true }
-toml = { version = "0.8", optional = true }   
+toml = { version = "0.8", optional = true }
+axum = { version = "0.7", optional = true }
+tokio = { version = "1.40", features = ["rt-multi-thread", "macros"], optional = true }
+tokio-stream = { version = "0.1", optional = true }   
 
 [dev-dependencies]
 proptest = "1.5"

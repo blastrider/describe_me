@@ -1,0 +1,394 @@
+//! Module web: sert une page HTML avec mise à jour temps réel via SSE.
+//!
+//! Endpoints :
+//!   GET /         -> page HTML (CSS + JS vanilla)
+//!   GET /sse      -> flux SSE (JSON) envoyant SystemSnapshot périodiquement
+//!
+//! Usage (ex. depuis un binaire) :
+//!   #[tokio::main]
+//!   async fn main() -> anyhow::Result<()> {
+//!       #[cfg(feature = "config")]
+//!       describe_me::serve_http(([0,0,0,0], 8080), std::time::Duration::from_secs(2), None, false).await?;
+//!       #[cfg(not(feature = "config"))]
+//!       describe_me::serve_http(([0,0,0,0], 8080), std::time::Duration::from_secs(2), false).await?;
+//!       Ok(())
+//!   }
+
+use std::{net::SocketAddr, time::Duration};
+
+use axum::{
+    extract::State,
+    response::{Html, IntoResponse},
+    routing::get,
+    Router,
+};
+use tokio_stream::{wrappers::IntervalStream, StreamExt};
+
+#[cfg(all(feature = "config", feature = "systemd"))]
+use super::filter_services;
+use crate::domain::CaptureOptions;
+#[cfg(feature = "config")]
+use crate::domain::DescribeConfig;
+use crate::domain::{DescribeError, SystemSnapshot};
+
+#[derive(Clone)]
+struct AppState {
+    interval: Duration,
+    #[cfg(feature = "config")]
+    config: Option<DescribeConfig>,
+    web_debug: bool,
+}
+
+pub async fn serve_http<A: Into<SocketAddr>>(
+    addr: A,
+    interval: Duration,
+    #[cfg(feature = "config")] config: Option<DescribeConfig>,
+    web_debug: bool,
+) -> Result<(), DescribeError> {
+    let app = Router::new()
+        .route("/", get(index))
+        .route("/sse", get(sse_stream))
+        .with_state(AppState {
+            interval,
+            #[cfg(feature = "config")]
+            config,
+            web_debug,
+        });
+
+    let listener = tokio::net::TcpListener::bind(addr.into())
+        .await
+        .map_err(map_io)?;
+    axum::serve(listener, app).await.map_err(map_io)?;
+
+    Ok(())
+}
+
+async fn index(State(state): State<AppState>) -> impl IntoResponse {
+    Html(render_index(state.web_debug))
+}
+
+async fn sse_stream(State(state): State<AppState>) -> impl IntoResponse {
+    use axum::response::sse::{Event, KeepAlive, Sse};
+    use tokio::time;
+
+    // compile-time: services seulement si feature systemd
+    #[cfg(feature = "systemd")]
+    let with_services = true;
+    #[cfg(not(feature = "systemd"))]
+    let with_services = false;
+
+    // Tick périodique
+    let interval = state.interval;
+    #[cfg(feature = "config")]
+    let config = state.config.clone();
+
+    let stream = IntervalStream::new(time::interval(interval)).then(move |_| {
+        #[cfg(feature = "config")]
+        let config = config.clone();
+
+        async move {
+            // Capture système (tolère les erreurs en les sérialisant proprement)
+            let payload = match SystemSnapshot::capture_with(CaptureOptions {
+                with_services,
+                with_disk_usage: true,
+            }) {
+                Ok(mut s) => {
+                    #[cfg(all(feature = "systemd", feature = "config"))]
+                    if let Some(cfg) = config.as_ref() {
+                        s.services_running =
+                            filter_services(std::mem::take(&mut s.services_running), cfg);
+                    }
+                    serde_json::to_string(&s).unwrap_or_else(|e| json_err(e.to_string()))
+                }
+                Err(e) => json_err(e.to_string()),
+            };
+            Ok::<Event, std::convert::Infallible>(Event::default().data(payload))
+        }
+    });
+
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+// Echappement ultra simple pour quotes et backslashes
+fn escape_json(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn json_err(msg: impl AsRef<str>) -> String {
+    format!(r#"{{"error":"{}"}}"#, escape_json(msg.as_ref()))
+}
+
+fn render_index(web_debug: bool) -> String {
+    INDEX_HTML.replace("__WEB_DEBUG__", if web_debug { "true" } else { "false" })
+}
+
+const INDEX_HTML: &str = r#"<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>describe_me — Live</title>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --card: #151923;
+      --text: #e6eef8;
+      --muted: #a8b3c3;
+      --ok: #3ad29f;
+      --warn: #ffd166;
+      --err: #ff6b6b;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0; background: var(--bg); color: var(--text);
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, sans-serif;
+    }
+    header {
+      padding: 16px 20px; border-bottom: 1px solid #222838;
+      display: flex; align-items: center; gap: 10px;
+    }
+    .dot {
+      width: 10px; height: 10px; border-radius: 999px; background: var(--warn);
+      box-shadow: 0 0 8px var(--warn);
+      display: inline-block; flex-shrink: 0;
+    }
+    .ok { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+    main { padding: 20px; display: grid; gap: 16px; max-width: 1200px; margin: 0 auto; }
+    .grid {
+      display: grid; gap: 16px;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    }
+    .card {
+      background: var(--card); border: 1px solid #222838; border-radius: 10px;
+      padding: 16px; box-shadow: 0 4px 12px rgba(0,0,0,.2);
+    }
+    h1 { font-size: 18px; margin: 0; }
+    h2 { font-size: 16px; margin: 0 0 10px; color: var(--muted); }
+    .k { color: var(--muted); }
+    .v { font-family: var(--mono); }
+    .mono { font-family: var(--mono); font-size: 14px; }
+    .row { display: flex; justify-content: space-between; gap: 10px; margin: 6px 0; }
+    .badge { padding: 2px 8px; border-radius: 999px; background: #1d2333; border: 1px solid #2a3147; }
+    .footer { opacity: .7; font-size: 13px; text-align: center; padding: 10px 0 30px; }
+    .error { color: var(--err); }
+    @media (prefers-color-scheme: light) {
+      :root { --bg:#f6f7fb; --card:#ffffff; --text:#1d2330; --muted:#5b667a; }
+      body { background: var(--bg); color: var(--text); }
+      .card { border-color: #e4e8f1; }
+    }
+     .bar { position: relative; height: 10px; background: #1d2333; border:1px solid #2a3147; border-radius:6px; overflow:hidden; }
+     .bar > span { position:absolute; left:0; top:0; bottom:0; background:#3ad29f55; border-right:2px solid #3ad29f; }
+     .mono .line { margin: 6px 0 10px; }
+    .services-list { display: flex; flex-direction: column; gap: 10px; }
+    .service-row {
+      display: flex; align-items: flex-start; gap: 10px;
+      padding: 8px 10px; border-radius: 8px; background: #1d2333; border: 1px solid #2a3147;
+    }
+    .service-dot { margin-top: 4px; }
+    .service-name { font-weight: 600; }
+    .service-meta { margin-top: 2px; font-size: 13px; color: var(--muted); }
+    .service-empty { color: var(--muted); font-style: italic; }
+    @media (prefers-color-scheme: light) {
+      .service-row { background: #f0f2fb; border-color: #d6dbeb; }
+    }
+
+  </style>
+</head>
+<body>
+  <header>
+    <div id="statusDot" class="dot"></div>
+    <h1>describe_me — informations en direct</h1>
+    <span class="badge" id="lastUpdate">—</span>
+  </header>
+
+  <main>
+    <div class="grid">
+      <section class="card">
+        <h2>Système</h2>
+        <div class="row"><span class="k">Hostname</span><span class="v" id="hostname">—</span></div>
+        <div class="row"><span class="k">OS</span><span class="v" id="os">—</span></div>
+        <div class="row"><span class="k">Kernel</span><span class="v" id="kernel">—</span></div>
+        <div class="row"><span class="k">Uptime</span><span class="v" id="uptime">—</span></div>
+        <div class="row"><span class="k">CPU(s)</span><span class="v" id="cpus">—</span></div>
+      </section>
+
+      <section class="card">
+        <h2>Mémoire</h2>
+        <div class="row"><span class="k">Total</span><span class="v" id="memTotal">—</span></div>
+        <div class="row"><span class="k">Utilisée</span><span class="v" id="memUsed">—</span></div>
+      </section>
+
+      <section class="card">
+        <h2>Disque</h2>
+        <div class="row"><span class="k">Total</span><span class="v" id="diskTotal">—</span></div>
+        <div class="row"><span class="k">Libre</span><span class="v" id="diskAvail">—</span></div>
+        <div class="line">
+          <div class="bar"><span id="diskBar" style="width:0%"></span></div>
+        </div>
+        <div class="mono" id="partitions">—</div>
+      </section>
+    </div>
+
+    <section class="card" id="servicesCard" style="display:none">
+      <h2>Services actifs</h2>
+      <div class="services-list" id="servicesList">
+        <div class="service-empty">—</div>
+      </div>
+    </section>
+
+    <section class="card" id="rawCard" style="display:none">
+      <h2>JSON brut</h2>
+      <pre class="mono" id="raw">—</pre>
+      <div id="error" class="error mono"></div>
+    </section>
+  </main>
+  <div class="footer">Actualisation en direct via SSE (EventSource) • Pas de framework frontend</div>
+
+  <script>
+    const WEB_DEBUG = __WEB_DEBUG__;
+    const dot = document.getElementById('statusDot');
+    const raw = document.getElementById('raw');
+    const err = document.getElementById('error');
+    const last = document.getElementById('lastUpdate');
+    const rawCard = document.getElementById('rawCard');
+    const pct = (used, total) => total > 0 ? Math.max(0, Math.min(100, (used/total)*100)) : 0;
+
+    if (WEB_DEBUG && rawCard) {
+      rawCard.style.display = "block";
+    }
+
+    const el = (id) => document.getElementById(id);
+    const fmtBytes = (n) => {
+      const units = ["o","Ko","Mo","Go","To","Po"]; let i = 0, x = Number(n)||0;
+      while (x >= 1024 && i < units.length-1) { x /= 1024; i++; }
+      return x.toFixed(1) + " " + units[i];
+    };
+    const fmtSecs = (s) => {
+      s = Number(s)||0;
+      const d = Math.floor(s/86400); s%=86400;
+      const h = Math.floor(s/3600); s%=3600;
+      const m = Math.floor(s/60); s%=60;
+      const parts = [];
+      if (d) parts.push(d+"j"); if (h) parts.push(h+"h"); if (m) parts.push(m+"m"); if (s) parts.push(s+"s");
+      return parts.join(" ") || "0s";
+    };
+    const esc = (value) => {
+      const s = value ?? "";
+      return String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    };
+
+    function updateUI(data) {
+      err.textContent = "";
+
+      el('hostname').textContent = data.hostname || "—";
+      el('os').textContent = data.os || data.os_name || "—";
+      el('kernel').textContent = data.kernel || "—";
+      el('uptime').textContent = fmtSecs(data.uptime_seconds || 0);
+      el('cpus').textContent = data.cpu_count ?? "—";
+
+      el('memTotal').textContent = fmtBytes(data.total_memory_bytes || 0);
+      el('memUsed').textContent = fmtBytes(data.used_memory_bytes || 0);
+
+      const du = data.disk_usage || {};
+      const total = du.total_bytes || 0;
+      const avail = du.available_bytes || 0;
+      const used = Math.max(0, total - avail);
+
+      el('diskTotal').textContent = fmtBytes(total);
+      el('diskAvail').textContent = fmtBytes(avail);
+      el('diskBar').style.width = pct(used, total).toFixed(1) + "%";
+
+      const partsHtml = (du.partitions || []).map(p => {
+        const pt = Number(p.total_bytes||0);
+        const pa = Number(p.available_bytes||0);
+        const pu = Math.max(0, pt - pa);
+        const w = pct(pu, pt).toFixed(1) + "%";
+        const mp = p.mount_point || "?";
+        const fs = p.fs_type || "—";
+        return [
+          `${mp}  (fs: ${fs}) — total: ${fmtBytes(pt)}, libre: ${fmtBytes(pa)}`,
+          `<div class="bar"><span style="width:${w}"></span></div>`
+        ].join("\n");
+      }).join("\n");
+
+      el('partitions').innerHTML = partsHtml || "—";
+
+      const servicesCard = document.getElementById('servicesCard');
+      const servicesList = document.getElementById('servicesList');
+      if (servicesCard && servicesList) {
+        const services = Array.isArray(data.services_running) ? data.services_running : [];
+        if (services.length > 0) {
+          servicesCard.style.display = "block";
+          servicesList.innerHTML = services.map((svc) => {
+            const name = esc(svc?.name || "Service");
+            const state = svc?.state ? esc(svc.state) : "";
+            const summary = svc?.summary ? esc(svc.summary) : "";
+            const metaParts = [];
+            if (state) metaParts.push(state);
+            if (summary) metaParts.push(summary);
+            const meta = metaParts.join(" • ");
+            return `
+              <div class="service-row">
+                <span class="dot ok service-dot"></span>
+                <div>
+                  <div class="service-name">${name}</div>
+                  ${meta ? `<div class="service-meta">${meta}</div>` : ""}
+                </div>
+              </div>
+            `;
+          }).join("");
+        } else if ('services_running' in data) {
+          servicesCard.style.display = "block";
+          servicesList.innerHTML = `<div class="service-empty">Aucun service actif rapporté</div>`;
+        } else {
+          servicesCard.style.display = "none";
+          servicesList.innerHTML = "";
+        }
+      }
+
+      raw.textContent = JSON.stringify(data, null, 2);
+      last.textContent = new Date().toLocaleTimeString();
+      dot.classList.add('ok');
+    }
+
+    function showError(message) {
+      err.textContent = message;
+      dot.classList.remove('ok');
+    }
+
+    // Connexion SSE
+    const es = new EventSource('/sse', { withCredentials: false });
+
+    es.addEventListener('message', (ev) => {
+      try {
+        const payload = JSON.parse(ev.data);
+        if (payload && payload.error) {
+          showError(payload.error);
+          return;
+        }
+        updateUI(payload);
+      } catch (e) {
+        showError("Erreur de parsing JSON: " + (e?.message||e));
+      }
+    });
+
+    es.addEventListener('error', () => {
+      showError("Flux SSE interrompu (réessaie automatique côté navigateur).");
+    });
+  </script>
+</body>
+</html>
+"#;
+
+fn map_io(e: impl std::error::Error + Send + Sync + 'static) -> DescribeError {
+    DescribeError::System(format!("I/O/Serve error: {e}"))
+}
