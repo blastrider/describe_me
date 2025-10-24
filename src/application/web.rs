@@ -157,6 +157,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
       display: inline-block; flex-shrink: 0;
     }
     .ok { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+    .dot.err { background: var(--err); box-shadow: 0 0 8px var(--err); }
     main { padding: 20px; display: grid; gap: 16px; max-width: 1200px; margin: 0 auto; }
     .grid {
       display: grid; gap: 16px;
@@ -285,6 +286,12 @@ const INDEX_HTML: &str = r#"<!doctype html>
         .replace(/"/g, "&quot;")
         .replace(/'/g, "&#39;");
     };
+    const serviceStateClass = (state) => {
+      const val = (state || "").toLowerCase();
+      if (!val) return "err";
+      const okTokens = ["running", "listening", "online", "active"];
+      return okTokens.some((token) => val.includes(token)) ? "ok" : "err";
+    };
 
     function updateUI(data) {
       err.textContent = "";
@@ -330,15 +337,17 @@ const INDEX_HTML: &str = r#"<!doctype html>
           servicesCard.style.display = "block";
           servicesList.innerHTML = services.map((svc) => {
             const name = esc(svc?.name || "Service");
-            const state = svc?.state ? esc(svc.state) : "";
+            const stateRaw = svc?.state || "";
+            const state = stateRaw ? esc(stateRaw) : "";
             const summary = svc?.summary ? esc(svc.summary) : "";
+            const dotClass = serviceStateClass(stateRaw);
             const metaParts = [];
             if (state) metaParts.push(state);
             if (summary) metaParts.push(summary);
             const meta = metaParts.join(" • ");
             return `
               <div class="service-row">
-                <span class="dot ok service-dot"></span>
+                <span class="dot service-dot ${dotClass}"></span>
                 <div>
                   <div class="service-name">${name}</div>
                   ${meta ? `<div class="service-meta">${meta}</div>` : ""}

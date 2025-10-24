@@ -61,12 +61,29 @@ pub fn load_config_from_path<P: AsRef<std::path::Path>>(
 /// Filtre une liste de services selon la config.
 /// Si pas de config ou pas de `services.include`, retourne la liste telle quelle.
 #[cfg(feature = "config")]
-pub fn filter_services(mut services: Vec<ServiceInfo>, cfg: &DescribeConfig) -> Vec<ServiceInfo> {
+pub fn filter_services(services: Vec<ServiceInfo>, cfg: &DescribeConfig) -> Vec<ServiceInfo> {
     if let Some(sel) = &cfg.services {
         if !sel.include.is_empty() {
-            let allow: std::collections::HashSet<_> =
-                sel.include.iter().map(|s| s.as_str()).collect();
-            services.retain(|s| allow.contains(s.name.as_str()));
+            use std::collections::HashMap;
+
+            let mut by_name: HashMap<String, ServiceInfo> = services
+                .into_iter()
+                .map(|svc| (svc.name.clone(), svc))
+                .collect();
+            let mut filtered = Vec::with_capacity(sel.include.len());
+
+            for name in &sel.include {
+                if let Some(svc) = by_name.remove(name) {
+                    filtered.push(svc);
+                } else {
+                    filtered.push(ServiceInfo {
+                        name: name.clone(),
+                        state: "inactif".into(),
+                        summary: None,
+                    });
+                }
+            }
+            return filtered;
         }
     }
     services
