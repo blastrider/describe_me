@@ -52,11 +52,60 @@ use crate::domain::DescribeConfig;
 pub fn load_config_from_path<P: AsRef<std::path::Path>>(
     path: P,
 ) -> Result<DescribeConfig, DescribeError> {
-    let data = std::fs::read_to_string(path.as_ref())
-        .map_err(|e| DescribeError::Config(format!("read {}: {e}", path.as_ref().display())))?;
+    use std::{fs, path::Component};
+
+    const MAX_BYTES: u64 = 1_048_576; // 1 MiB
+    let p = path.as_ref();
+
+    // 0) Refuser explicitement les chemins relatifs dangereux (..)
+    if p.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err(DescribeError::Config(
+            "--config: chemins relatifs contenant `..` refusés.".into(),
+        ));
+    }
+
+    // 1) LSTAT pour détecter un lien symbolique (sans le suivre)
+    let lmd = fs::symlink_metadata(p)
+        .map_err(|e| DescribeError::Config(format!("read metadata {}: {e}", p.display())))?;
+    if lmd.file_type().is_symlink() {
+        return Err(DescribeError::Config(
+            "--config ne doit pas être un lien symbolique (utilisez --config-allow-symlink)."
+                .into(),
+        ));
+    }
+
+    // 2) Fichier régulier + taille maximale
+    let md =
+        fs::metadata(p).map_err(|e| DescribeError::Config(format!("stat {}: {e}", p.display())))?;
+    if !md.is_file() {
+        return Err(DescribeError::Config(
+            "--config doit pointer vers un fichier régulier.".into(),
+        ));
+    }
+    if md.len() > MAX_BYTES {
+        return Err(DescribeError::Config(
+            "fichier --config trop volumineux (> 1 MiB).".into(),
+        ));
+    }
+
+    // 3) Permissions strictes (Unix) : exiger 0600
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let mode = md.mode() & 0o777;
+        if (mode & 0o077) != 0 || (mode & 0o600) != 0o600 {
+            return Err(DescribeError::Config(
+                "permissions faibles sur --config (exigez chmod 600).".into(),
+            ));
+        }
+    }
+
+    // 4) Lecture + parse + validation stricte du schéma
+    let data = fs::read_to_string(p)
+        .map_err(|e| DescribeError::Config(format!("read {}: {e}", p.display())))?;
     let cfg = toml::from_str::<DescribeConfig>(&data)
         .map_err(|e| DescribeError::Config(format!("toml parse: {e}")))?;
-    cfg.validate()?; // ← validation stricte
+    cfg.validate()?;
     Ok(cfg)
 }
 
