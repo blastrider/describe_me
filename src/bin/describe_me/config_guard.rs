@@ -1,7 +1,7 @@
 use crate::cli_opts::Opts;
 use anyhow::{bail, Context, Result};
 use std::env;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 const CONFIG_MAX_BYTES: u64 = 1_048_576; // 1 MiB
 
