@@ -19,6 +19,11 @@ pub(crate) fn load_config(opts: &Opts) -> Result<Option<describe_me::DescribeCon
 fn validate_config_path(p: &Path, allow_symlink: bool, allow_outside: bool) -> Result<PathBuf> {
     use std::fs;
 
+    // (A) Refus explicite des `..`
+    if p.components().any(|c| matches!(c, Component::ParentDir)) {
+        bail!("--config: chemins relatifs contenant `..` refusés.");
+    }
+
     // 1) Expansion minimale ~/
     let p = expand_home_if_needed(p.to_path_buf());
 
@@ -42,14 +47,34 @@ fn validate_config_path(p: &Path, allow_symlink: bool, allow_outside: bool) -> R
     if md.len() > CONFIG_MAX_BYTES {
         bail!("fichier --config trop volumineux (> 1 MiB).");
     }
+
     #[cfg(unix)]
     {
-        if is_world_writable(&md) {
-            bail!("permissions faibles sur --config (writable par groupe/autres) — durcissez les droits.");
+        use std::os::unix::fs::MetadataExt;
+        let mode = md.mode() & 0o777;
+        // exiger 0600 (rw-------)
+        if (mode & 0o077) != 0 || (mode & 0o600) != 0o600 {
+            bail!("permissions faibles sur --config (exigez chmod 600).");
         }
     }
 
-    // 5) Répertoires approuvés (protection anti-traversal/chemins inattendus)
+    // 5) Répertoire parent: refuser monde-écrivable sans sticky
+    if let Some(parent) = canon.parent() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if let Ok(pmd) = fs::metadata(parent) {
+                let m = pmd.mode();
+                let world_w = (m & 0o002) != 0;
+                let sticky = (m & 0o1000) != 0;
+                if world_w && !sticky {
+                    bail!("répertoire parent du --config monde-écrivable sans sticky: refusé.");
+                }
+            }
+        }
+    }
+
+    // 6) Répertoires approuvés (protection anti-traversal/chemins inattendus)
     if !allow_outside {
         let roots = approved_config_roots();
         let inside = roots.iter().any(|r| path_is_inside(r, &canon));
