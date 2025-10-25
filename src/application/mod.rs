@@ -54,8 +54,10 @@ pub fn load_config_from_path<P: AsRef<std::path::Path>>(
 ) -> Result<DescribeConfig, DescribeError> {
     let data = std::fs::read_to_string(path.as_ref())
         .map_err(|e| DescribeError::Config(format!("read {}: {e}", path.as_ref().display())))?;
-    toml::from_str::<DescribeConfig>(&data)
-        .map_err(|e| DescribeError::Config(format!("toml parse: {e}")))
+    let cfg = toml::from_str::<DescribeConfig>(&data)
+        .map_err(|e| DescribeError::Config(format!("toml parse: {e}")))?;
+    cfg.validate()?; // ← validation stricte
+    Ok(cfg)
 }
 
 /// Filtre une liste de services selon la config.
