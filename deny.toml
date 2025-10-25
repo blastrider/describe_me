@@ -1,11 +1,26 @@
-[advisories]
-vulnerability = "deny"
-unmaintained = "warn"
-yanked = "warn"
-notice = "warn"
+# deny.toml (migré pour cargo-deny récent)
 
+[advisories]
+# URLs / db-path optionnels si tu veux contrôler la source
+# db-urls = ["https://github.com/RustSec/advisory-db"]
+# db-path = "~/.cargo/advisory-dbs"
+
+# comportement pour les crates marquées 'unmaintained'
+# (ton choix initial : "all")
+unmaintained = "all"
+
+# comportement pour versions yanked (ton choix initial : "warn")
+yanked = "warn"
+
+# ignore : liste d'advisories / package-spec à traiter comme note
+ignore = [
+  # ex: "RUSTSEC-0000-0000",
+  # ex: "some-crate@0.1.2",
+]
+
+# --- Licences ---
 [licenses]
-unlicensed = "deny"
+# La règle actuelle est : *tout est refusé par défaut*, explicite les licences autorisées.
 confidence-threshold = 0.8
 allow = [
   "Apache-2.0",
@@ -14,10 +29,18 @@ allow = [
   "BSD-3-Clause",
   "ISC",
   "Unicode-3.0",
-  "Zlib"
+  "Zlib",
 ]
 
+# Si un crate est réellement sans licence et que tu veux le tolérer temporairement,
+# utilise `clarify` pour le déclarer explicitement (clé 'clarify' + entrées).
+# Exemple (supprime si non nécessaire) :
+clarify = [
+  # { name = "some-crate", license = "MIT" }
+]
+
+# --- Bans (inchangés) ---
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
-deny = []
+deny = [] 
