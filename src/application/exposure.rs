@@ -93,9 +93,6 @@ impl SnapshotView {
 
         #[cfg(feature = "systemd")]
         let services_summary = compute_service_summary(&snapshot.services_running);
-        #[cfg(not(feature = "systemd"))]
-        let services_summary = None;
-
         Self {
             hostname: exposure.hostname.then(|| snapshot.hostname.clone()),
             os: if exposure.os {
