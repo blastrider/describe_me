@@ -28,7 +28,7 @@ pub struct ServiceSelection {
 #[cfg_attr(feature = "serde", derive(Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct WebAccessConfig {
-    /// Jeton requis (Authorization Bearer ou paramètre `token`).
+    /// Jeton requis (Authorization: Bearer ou en-tête `x-describe-me-token`).
     pub token: Option<String>,
     /// IP ou réseaux autorisés (ex: "192.0.2.5", "10.0.0.0/16", "::1").
     pub allow_ips: Vec<String>,

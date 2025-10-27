@@ -32,13 +32,14 @@ use axum::{
     routing::get,
     Router,
 };
+use subtle::ConstantTimeEq;
 use tokio_stream::{wrappers::IntervalStream, StreamExt};
 
 use super::exposure::{Exposure, SnapshotView};
 
 #[derive(Debug, Clone, Default)]
 pub struct WebAccess {
-    /// Jeton d'accès (Authorization: Bearer ou paramètre `token`).
+    /// Jeton d'accès (Authorization: Bearer ou en-tête `x-describe-me-token`).
     pub token: Option<String>,
     /// IP ou réseaux autorisés (ex: 192.0.2.10, 10.0.0.0/24, ::1).
     pub allow_ips: Vec<String>,
@@ -182,7 +183,8 @@ impl From<AuthError> for (StatusCode, String) {
             ),
             AuthError::TokenMissing => (
                 StatusCode::UNAUTHORIZED,
-                "token d'accès requis (Authorization Bearer ou ?token=)".to_string(),
+                "token d'accès requis (Authorization: Bearer ou en-tête x-describe-me-token)"
+                    .to_string(),
             ),
             AuthError::TokenInvalid => (
                 StatusCode::UNAUTHORIZED,
@@ -218,11 +220,16 @@ impl WebSecurity {
         }
 
         if let Some(expected) = &self.token {
+            let require_token = parts.uri.path() != "/";
             match self.extract_token(parts) {
-                Some(provided) if provided == *expected => {}
-                Some(_) => return Err(AuthError::TokenInvalid),
-                None => return Err(AuthError::TokenMissing),
-            }
+                Some(provided) => {
+                    if !tokens_match(expected, &provided) {
+                        return Err(AuthError::TokenInvalid);
+                    }
+                }
+                None if require_token => return Err(AuthError::TokenMissing),
+                None => {}
+            };
         }
 
         Ok(())
@@ -231,15 +238,13 @@ impl WebSecurity {
     fn extract_token(&self, parts: &Parts) -> Option<String> {
         if let Some(header_value) = parts.headers.get(AUTHORIZATION) {
             if let Ok(value) = header_value.to_str() {
-                if let Some(token) = value.strip_prefix("Bearer ") {
-                    let trimmed = token.trim();
-                    if !trimmed.is_empty() {
-                        return Some(trimmed.to_owned());
-                    }
-                } else if let Some(token) = value.strip_prefix("bearer ") {
-                    let trimmed = token.trim();
-                    if !trimmed.is_empty() {
-                        return Some(trimmed.to_owned());
+                let trimmed = value.trim();
+                if let Some((scheme, token)) = trimmed.split_once(' ') {
+                    if scheme.eq_ignore_ascii_case("bearer") {
+                        let token = token.trim();
+                        if !token.is_empty() {
+                            return Some(token.to_owned());
+                        }
                     }
                 }
             }
@@ -254,23 +259,12 @@ impl WebSecurity {
             }
         }
 
-        if let Some(query) = parts.uri.query() {
-            if let Ok(params) =
-                serde_urlencoded::from_bytes::<Vec<(String, String)>>(query.as_bytes())
-            {
-                for (key, value) in params {
-                    if key == "token" {
-                        let trimmed = value.trim().to_owned();
-                        if !trimmed.is_empty() {
-                            return Some(trimmed);
-                        }
-                    }
-                }
-            }
-        }
-
         None
     }
+}
+
+fn tokens_match(expected: &str, provided: &str) -> bool {
+    expected.as_bytes().ct_eq(provided.as_bytes()).into()
 }
 
 impl TryFrom<WebAccess> for WebSecurity {
@@ -439,6 +433,11 @@ const INDEX_HTML: &str = r#"<!doctype html>
     .badge { padding: 2px 8px; border-radius: 999px; background: #1d2333; border: 1px solid #2a3147; }
     .footer { opacity: .7; font-size: 13px; text-align: center; padding: 10px 0 30px; }
     .error { color: var(--err); }
+    .link-button {
+      background: none; border: none; color: inherit; font: inherit;
+      text-decoration: underline; cursor: pointer; padding: 0;
+    }
+    .link-button:hover { text-decoration: none; }
     @media (prefers-color-scheme: light) {
       :root { --bg:#f6f7fb; --card:#ffffff; --text:#1d2330; --muted:#5b667a; }
       body { background: var(--bg); color: var(--text); }
@@ -458,6 +457,41 @@ const INDEX_HTML: &str = r#"<!doctype html>
     .service-empty { color: var(--muted); font-style: italic; }
     @media (prefers-color-scheme: light) {
       .service-row { background: #f0f2fb; border-color: #d6dbeb; }
+    }
+    .token-overlay {
+      position: fixed; inset: 0;
+      background: rgba(15, 17, 21, 0.92);
+      display: none; align-items: center; justify-content: center;
+      padding: 20px; z-index: 100;
+    }
+    .token-overlay.visible { display: flex; }
+    .token-dialog {
+      background: var(--card); border: 1px solid #222838; border-radius: 10px;
+      padding: 24px; max-width: 360px; width: 100%;
+      box-shadow: 0 8px 24px rgba(0,0,0,.35);
+    }
+    .token-dialog h2 { margin: 0 0 12px; font-size: 18px; color: var(--text); }
+    .token-dialog p { margin: 0 0 16px; color: var(--muted); font-size: 14px; }
+    .token-dialog form { display: flex; flex-direction: column; gap: 10px; }
+    .token-dialog input {
+      padding: 10px 12px; border-radius: 6px; border: 1px solid #2a3147;
+      background: #0f1115; color: var(--text); font-size: 15px;
+    }
+    .token-dialog .actions {
+      display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap;
+    }
+    .token-dialog button {
+      flex: 1 1 auto; padding: 10px 12px; border-radius: 6px; border: none;
+      background: #3ad29f; color: #0f1115; font-weight: 600; cursor: pointer;
+    }
+    .token-dialog button.secondary {
+      background: transparent; border: 1px solid #2a3147; color: var(--text);
+    }
+    .token-error { margin-top: 12px; font-size: 13px; color: var(--err); }
+    @media (prefers-color-scheme: light) {
+      .token-dialog { background: #ffffff; border-color: #d6dbeb; }
+      .token-dialog input { background: #ffffff; border-color: #d0d6e5; color: #1d2330; }
+      .token-dialog button.secondary { border-color: #d0d6e5; color: #1d2330; }
     }
 
   </style>
@@ -510,7 +544,24 @@ const INDEX_HTML: &str = r#"<!doctype html>
       <div id="error" class="error mono"></div>
     </section>
   </main>
-  <div class="footer">Actualisation en direct via SSE (EventSource) • Pas de framework frontend</div>
+  <div id="tokenOverlay" class="token-overlay">
+    <div class="token-dialog">
+      <h2>Jeton requis</h2>
+      <p>Ce serveur nécessite un jeton pour accéder aux métriques en direct.</p>
+      <form id="tokenForm">
+        <input id="tokenInput" type="password" placeholder="Jeton d'accès" autocomplete="off" />
+        <div class="actions">
+          <button type="submit">Valider</button>
+          <button type="button" id="tokenForget" class="secondary">Effacer</button>
+        </div>
+      </form>
+      <div id="tokenError" class="token-error" role="alert"></div>
+    </div>
+  </div>
+  <div class="footer">
+    Actualisation en direct via SSE (stream fetch) • Pas de framework frontend •
+    <button id="tokenOpen" class="link-button" type="button">Modifier le jeton</button>
+  </div>
 
   <script>
     const WEB_DEBUG = __WEB_DEBUG__;
@@ -519,6 +570,14 @@ const INDEX_HTML: &str = r#"<!doctype html>
     const err = document.getElementById('error');
     const last = document.getElementById('lastUpdate');
     const rawCard = document.getElementById('rawCard');
+
+    const tokenOverlay = document.getElementById('tokenOverlay');
+    const tokenForm = document.getElementById('tokenForm');
+    const tokenInput = document.getElementById('tokenInput');
+    const tokenErrorEl = document.getElementById('tokenError');
+    const tokenForget = document.getElementById('tokenForget');
+    const tokenOpen = document.getElementById('tokenOpen');
+
     const pct = (used, total) => total > 0 ? Math.max(0, Math.min(100, (used/total)*100)) : 0;
 
     if (WEB_DEBUG && rawCard) {
@@ -555,6 +614,216 @@ const INDEX_HTML: &str = r#"<!doctype html>
       const okTokens = ["running", "listening", "online", "active"];
       return okTokens.some((token) => val.includes(token)) ? "ok" : "err";
     };
+
+    let currentToken = sessionStorage.getItem('describe_me_token') || "";
+    if (currentToken) {
+      tokenInput.value = currentToken;
+    }
+    let abortController = null;
+    let reconnectTimer = null;
+
+    tokenForm.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const value = tokenInput.value.trim();
+      if (!value) {
+        tokenErrorEl.textContent = "Merci de renseigner un jeton.";
+        tokenInput.focus();
+        return;
+      }
+      currentToken = value;
+      sessionStorage.setItem('describe_me_token', currentToken);
+      hideTokenPrompt();
+      restartStream();
+    });
+
+    tokenForget.addEventListener('click', () => {
+      sessionStorage.removeItem('describe_me_token');
+      currentToken = "";
+      tokenInput.value = "";
+      tokenErrorEl.textContent = "";
+      showTokenPrompt("");
+    });
+
+    if (tokenOpen) {
+      tokenOpen.addEventListener('click', () => {
+        tokenInput.value = currentToken;
+        tokenErrorEl.textContent = "";
+        if (abortController) {
+          abortController.abort();
+          abortController = null;
+        }
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
+        showTokenPrompt("");
+      });
+    }
+
+    function showTokenPrompt(message) {
+      if (typeof message === "string" && message) {
+        tokenErrorEl.textContent = message;
+      }
+      tokenOverlay.classList.add('visible');
+      setTimeout(() => tokenInput.focus(), 0);
+    }
+
+    function hideTokenPrompt() {
+      tokenOverlay.classList.remove('visible');
+      tokenErrorEl.textContent = "";
+    }
+
+    function restartStream() {
+      if (abortController) {
+        abortController.abort();
+        abortController = null;
+      }
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      connectSse();
+    }
+
+    async function connectSse() {
+      if (abortController) {
+        abortController.abort();
+      }
+      abortController = new AbortController();
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+
+      try {
+        const headers = {};
+        if (currentToken) {
+          headers["Authorization"] = `Bearer ${currentToken}`;
+        }
+
+        const response = await fetch('/sse', {
+          method: 'GET',
+          headers,
+          signal: abortController.signal,
+        });
+
+        if (response.status === 401) {
+          const message = await readErrorMessage(response);
+          sessionStorage.removeItem('describe_me_token');
+          currentToken = "";
+          tokenInput.value = "";
+          showError(message || "Jeton requis pour accéder aux métriques.");
+          showTokenPrompt(message || "Jeton requis pour accéder aux métriques.");
+          return;
+        }
+
+        if (response.status === 403) {
+          const message = await readErrorMessage(response);
+          showError(message || "Adresse IP non autorisée.");
+          scheduleReconnect();
+          return;
+        }
+
+        if (!response.ok || !response.body) {
+          showError(`Flux SSE indisponible (HTTP ${response.status}).`);
+          scheduleReconnect();
+          return;
+        }
+
+        hideTokenPrompt();
+        await consumeSse(response.body);
+        abortController = null;
+        scheduleReconnect();
+      } catch (err) {
+        if (err && err.name === 'AbortError') {
+          return;
+        }
+        showError("Flux SSE interrompu (nouvelle tentative dans quelques secondes).");
+        scheduleReconnect();
+      }
+    }
+
+    async function readErrorMessage(response) {
+      try {
+        const text = await response.text();
+        if (!text) return "";
+        const data = JSON.parse(text);
+        if (data && typeof data.error === "string") {
+          return data.error;
+        }
+        return text;
+      } catch (_) {
+        return "";
+      }
+    }
+
+    async function consumeSse(body) {
+      const reader = body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) {
+          buffer += decoder.decode();
+          buffer = processSseBuffer(buffer, true);
+          break;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        buffer = processSseBuffer(buffer, false);
+      }
+    }
+
+    function processSseBuffer(buffer, flush) {
+      let index;
+      while ((index = buffer.indexOf('\n\n')) !== -1) {
+        const chunk = buffer.slice(0, index);
+        buffer = buffer.slice(index + 2);
+        handleSseEvent(chunk);
+      }
+      if (flush && buffer.trim() !== "") {
+        handleSseEvent(buffer);
+        return "";
+      }
+      return buffer;
+    }
+
+    function handleSseEvent(rawEvent) {
+      const lines = rawEvent.split(/\r?\n/);
+      const dataLines = [];
+      for (const line of lines) {
+        if (line.startsWith('data:')) {
+          dataLines.push(line.slice(5).trimStart());
+        }
+      }
+      if (dataLines.length === 0) {
+        return;
+      }
+      const payload = dataLines.join('\n');
+      try {
+        const parsed = JSON.parse(payload);
+        if (parsed && parsed.error) {
+          showError(parsed.error);
+          return;
+        }
+        updateUI(parsed);
+      } catch (e) {
+        showError("Erreur de parsing JSON: " + (e && e.message ? e.message : e));
+      }
+    }
+
+    function scheduleReconnect(delay = 4000) {
+      if (tokenOverlay.classList.contains('visible')) {
+        return;
+      }
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+      }
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        connectSse();
+      }, delay);
+    }
 
     function updateUI(data) {
       err.textContent = "";
@@ -595,19 +864,19 @@ const INDEX_HTML: &str = r#"<!doctype html>
       const servicesCard = document.getElementById('servicesCard');
       const servicesList = document.getElementById('servicesList');
       if (servicesCard && servicesList) {
-      const services = Array.isArray(data.services_running) ? data.services_running : [];
-      const summary = data.services_summary;
+        const services = Array.isArray(data.services_running) ? data.services_running : [];
+        const summary = data.services_summary;
         if (services.length > 0) {
           servicesCard.style.display = "block";
           servicesList.innerHTML = services.map((svc) => {
             const name = esc(svc?.name || "Service");
             const stateRaw = svc?.state || "";
             const state = stateRaw ? esc(stateRaw) : "";
-            const summary = svc?.summary ? esc(svc.summary) : "";
+            const summaryText = svc?.summary ? esc(svc.summary) : "";
             const dotClass = serviceStateClass(stateRaw);
             const metaParts = [];
             if (state) metaParts.push(state);
-            if (summary) metaParts.push(summary);
+            if (summaryText) metaParts.push(summaryText);
             const meta = metaParts.join(" • ");
             return `
               <div class="service-row">
@@ -653,28 +922,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
       dot.classList.remove('ok');
     }
 
-    // Connexion SSE
-    const params = new URLSearchParams(window.location.search);
-    const tokenParam = params.get('token');
-    const sseUrl = tokenParam ? `/sse?token=${encodeURIComponent(tokenParam)}` : '/sse';
-    const es = new EventSource(sseUrl, { withCredentials: false });
-
-    es.addEventListener('message', (ev) => {
-      try {
-        const payload = JSON.parse(ev.data);
-        if (payload && payload.error) {
-          showError(payload.error);
-          return;
-        }
-        updateUI(payload);
-      } catch (e) {
-        showError("Erreur de parsing JSON: " + (e?.message||e));
-      }
-    });
-
-    es.addEventListener('error', () => {
-      showError("Flux SSE interrompu (réessaie automatique côté navigateur).");
-    });
+    connectSse();
   </script>
 </body>
 </html>
