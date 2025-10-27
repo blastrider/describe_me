@@ -15,6 +15,7 @@
 //!           token: Some("super-secret".into()),
 //!           allow_ips: vec!["127.0.0.1".into()],
 //!       },
+//!       describe_me::Exposure::all(),
 //!   ).await?;
 
 use std::{
@@ -32,6 +33,8 @@ use axum::{
     Router,
 };
 use tokio_stream::{wrappers::IntervalStream, StreamExt};
+
+use super::exposure::{Exposure, SnapshotView};
 
 #[derive(Debug, Clone, Default)]
 pub struct WebAccess {
@@ -55,6 +58,7 @@ struct AppState {
     config: Option<DescribeConfig>,
     web_debug: bool,
     security: Arc<WebSecurity>,
+    exposure: Exposure,
 }
 
 pub async fn serve_http<A: Into<SocketAddr>>(
@@ -63,6 +67,7 @@ pub async fn serve_http<A: Into<SocketAddr>>(
     #[cfg(feature = "config")] config: Option<DescribeConfig>,
     web_debug: bool,
     access: WebAccess,
+    exposure: Exposure,
 ) -> Result<(), DescribeError> {
     let security = Arc::new(WebSecurity::try_from(access)?);
 
@@ -72,6 +77,7 @@ pub async fn serve_http<A: Into<SocketAddr>>(
         config,
         web_debug,
         security: security.clone(),
+        exposure,
     };
 
     let app = Router::new()
@@ -88,11 +94,11 @@ pub async fn serve_http<A: Into<SocketAddr>>(
     Ok(())
 }
 
-async fn index(_guard: AuthGuard, State(state): State<AppState>) -> impl IntoResponse {
+async fn index(State(state): State<AppState>, _guard: AuthGuard) -> impl IntoResponse {
     Html(render_index(state.web_debug))
 }
 
-async fn sse_stream(_guard: AuthGuard, State(state): State<AppState>) -> impl IntoResponse {
+async fn sse_stream(State(state): State<AppState>, _guard: AuthGuard) -> impl IntoResponse {
     use axum::response::sse::{Event, KeepAlive, Sse};
     use tokio::time;
 
@@ -106,10 +112,12 @@ async fn sse_stream(_guard: AuthGuard, State(state): State<AppState>) -> impl In
     let interval = state.interval;
     #[cfg(feature = "config")]
     let config = state.config.clone();
+    let exposure = state.exposure;
 
     let stream = IntervalStream::new(time::interval(interval)).then(move |_| {
         #[cfg(feature = "config")]
         let config = config.clone();
+        let exposure = exposure;
 
         async move {
             // Capture système (tolère les erreurs en les sérialisant proprement)
@@ -123,7 +131,8 @@ async fn sse_stream(_guard: AuthGuard, State(state): State<AppState>) -> impl In
                         s.services_running =
                             filter_services(std::mem::take(&mut s.services_running), cfg);
                     }
-                    serde_json::to_string(&s).unwrap_or_else(|e| json_err(e.to_string()))
+                    let view = SnapshotView::new(&s, exposure);
+                    serde_json::to_string(&view).unwrap_or_else(|e| json_err(e.to_string()))
                 }
                 Err(e) => json_err(e.to_string()),
             };
@@ -144,7 +153,10 @@ impl FromRequestParts<AppState> for AuthGuard {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        state.security.authorize(parts).map_err(|err| err.into())?;
+        state
+            .security
+            .authorize(parts)
+            .map_err(|err| -> (StatusCode, String) { err.into() })?;
         Ok(AuthGuard)
     }
 }
@@ -583,7 +595,8 @@ const INDEX_HTML: &str = r#"<!doctype html>
       const servicesCard = document.getElementById('servicesCard');
       const servicesList = document.getElementById('servicesList');
       if (servicesCard && servicesList) {
-        const services = Array.isArray(data.services_running) ? data.services_running : [];
+      const services = Array.isArray(data.services_running) ? data.services_running : [];
+      const summary = data.services_summary;
         if (services.length > 0) {
           servicesCard.style.display = "block";
           servicesList.innerHTML = services.map((svc) => {
@@ -606,6 +619,21 @@ const INDEX_HTML: &str = r#"<!doctype html>
               </div>
             `;
           }).join("");
+        } else if (summary && typeof summary.total === 'number') {
+          servicesCard.style.display = "block";
+          const items = Array.isArray(summary.by_state) ? summary.by_state : [];
+          const breakdown = items
+            .map(item => `<span class="badge">${item.state}: ${item.count}</span>`)
+            .join(" ");
+          servicesList.innerHTML = `
+            <div class="service-row">
+              <span class="dot service-dot"></span>
+              <div>
+                <div class="service-name">${summary.total} service(s) observé(s)</div>
+                <div class="service-meta">${breakdown || "Aucune donnée détaillée"}</div>
+              </div>
+            </div>
+          `;
         } else if ('services_running' in data) {
           servicesCard.style.display = "block";
           servicesList.innerHTML = `<div class="service-empty">Aucun service actif rapporté</div>`;

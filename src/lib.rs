@@ -39,3 +39,8 @@ pub mod internals {
 pub use application::web::{serve_http, WebAccess};
 
 pub use application::health::{eval_checks, parse_check, Severity};
+
+pub use application::exposure::Exposure;
+
+#[cfg(feature = "serde")]
+pub use application::exposure::SnapshotView;

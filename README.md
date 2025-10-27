@@ -143,6 +143,8 @@ Ensuite, ouvrez l'interface sur `http://127.0.0.1:8080/?token=super-secret` (le 
 
 Pour exposer publiquement, fournissez explicitement l'adresse (ex :`--web 0.0.0.0:8080`) **et** un contrôle d'accès adapté (`--web-token …` et/ou `--web-allow-ip 203.0.113.0/24`).
 
+Les champs sensibles (hostname, version d'OS/noyau, services détaillés, partitions disque) sont masqués par défaut dans le JSON/SSE. Utilisez les flags `--expose-*` / `--web-expose-*` ou la configuration TOML pour les rendre visibles de façon volontaire.
+
 
 GET / : page HTML (cartes système/mémoire/disque/services)
 
@@ -158,7 +160,7 @@ En prod, place-le derrière un reverse proxy/TLS (Nginx/Traefik).
 5) Fichier de configuration (optionnel)
 
 Disponible avec --features config.
-Actuellement : whitelist des services + configuration du mode web.
+Actuellement : whitelist des services + configuration du mode web + exposition des champs sensibles.
 
 Exemple minimal config.toml
 # Filtrage d’affichage des services (si feature systemd et --with-services)
@@ -169,6 +171,16 @@ include = ["nginx.service", "postgresql.service"]
 [web]
 token = "super-secret"
 allow_ips = ["127.0.0.1", "10.0.0.0/16"]
+
+[web.exposure]
+expose_services = true
+expose_disk_partitions = true
+
+# Exposition des champs sensibles pour la sortie CLI/JSON (par défaut: tout masqué)
+[exposure]
+expose_hostname = true
+expose_os = true
+expose_kernel = true
 
 
 Utilisation CLI :
@@ -229,9 +241,12 @@ async fn main() -> anyhow::Result<()> {
             token: Some("super-secret".into()),
             allow_ips: vec!["127.0.0.1".into()],
         },
+        describe_me::Exposure::all(),
     ).await?;
     Ok(())
 }
+
+Pour obtenir les détails masqués dans la sortie JSON du CLI, utilisez par exemple `--expose-hostname --expose-services` (ou simplement `--expose-all`). Pour le mode web, utilisez `--web-expose-*` ou la section `[web.exposure]` du fichier de configuration.
 
 7) Matrice des features
 Feature	Ce que ça ajoute	Dépendances activées
