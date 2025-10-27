@@ -144,14 +144,10 @@ pub(crate) fn gather_disks() -> Result<DiskUsage, DescribeError> {
                             Some(AggregateKey::Source(format!("btrfs:majmin:{majmin}")))
                         }
                     } else {
-                        metadata
-                            .as_ref()
-                            .map(|md| AggregateKey::Device(md.dev()))
+                        metadata.as_ref().map(|md| AggregateKey::Device(md.dev()))
                     }
                 }
-                _ => metadata
-                    .as_ref()
-                    .map(|md| AggregateKey::Device(md.dev())),
+                _ => metadata.as_ref().map(|md| AggregateKey::Device(md.dev())),
             };
 
             if let Some(key) = key {

@@ -1,8 +1,6 @@
 #![forbid(unsafe_code)]
 
-#[cfg(not(feature = "systemd"))]
-use anyhow::bail;
-use anyhow::Result;
+use anyhow::{bail, Result};
 use clap::{ArgAction, Parser};
 #[cfg(feature = "cli")]
 use serde::Serialize;
@@ -65,6 +63,54 @@ struct Opts {
     #[arg(long = "web-allow-ip", value_name = "IP[/PREFIX]", action = ArgAction::Append)]
     web_allow_ip: Vec<String>,
 
+    /// Expose le hostname exact dans le JSON (opt-in, sinon masqué)
+    #[arg(long = "expose-hostname", action = ArgAction::SetTrue)]
+    expose_hostname: bool,
+
+    /// Expose la version complète de l'OS dans le JSON
+    #[arg(long = "expose-os", action = ArgAction::SetTrue)]
+    expose_os: bool,
+
+    /// Expose la version complète du noyau dans le JSON
+    #[arg(long = "expose-kernel", action = ArgAction::SetTrue)]
+    expose_kernel: bool,
+
+    /// Expose la liste détaillée des services dans le JSON
+    #[arg(long = "expose-services", action = ArgAction::SetTrue)]
+    expose_services: bool,
+
+    /// Expose le détail des partitions disque (points de montage, etc.)
+    #[arg(long = "expose-disk-partitions", action = ArgAction::SetTrue)]
+    expose_disk_partitions: bool,
+
+    /// Active tous les champs sensibles d'un coup (hostname, kernel, services...)
+    #[arg(long = "expose-all", action = ArgAction::SetTrue)]
+    expose_all: bool,
+
+    /// Expose le hostname côté --web (sinon masqué par défaut)
+    #[arg(long = "web-expose-hostname", action = ArgAction::SetTrue)]
+    web_expose_hostname: bool,
+
+    /// Expose la version complète de l'OS côté --web
+    #[arg(long = "web-expose-os", action = ArgAction::SetTrue)]
+    web_expose_os: bool,
+
+    /// Expose la version complète du noyau côté --web
+    #[arg(long = "web-expose-kernel", action = ArgAction::SetTrue)]
+    web_expose_kernel: bool,
+
+    /// Expose la liste détaillée des services côté --web
+    #[arg(long = "web-expose-services", action = ArgAction::SetTrue)]
+    web_expose_services: bool,
+
+    /// Expose les partitions disque détaillées côté --web
+    #[arg(long = "web-expose-disk-partitions", action = ArgAction::SetTrue)]
+    web_expose_disk_partitions: bool,
+
+    /// Active tous les détails sensibles pour --web
+    #[arg(long = "web-expose-all", action = ArgAction::SetTrue)]
+    web_expose_all: bool,
+
     /// Vérifications healthcheck (peut être répété). Ex:
     /// --check mem>90%[:warn|:crit]
     /// --check disk(/var)>80%[:warn|:crit]
@@ -86,7 +132,7 @@ struct ListeningSocketOut {
 #[cfg(feature = "cli")]
 #[derive(Serialize)]
 struct CombinedOutput {
-    snapshot: describe_me::SystemSnapshot,
+    snapshot: describe_me::SnapshotView,
     #[serde(skip_serializing_if = "Option::is_none")]
     net_listen: Option<Vec<ListeningSocketOut>>,
 }
@@ -114,6 +160,8 @@ fn main() -> Result<()> {
     #[cfg(feature = "web")]
     let mut web_access = describe_me::WebAccess::default();
 
+    let mut exposure = describe_me::Exposure::default();
+
     #[cfg(all(feature = "web", feature = "config"))]
     if let Some(cfg) = &cfg {
         if let Some(web_cfg) = &cfg.web {
@@ -137,6 +185,66 @@ fn main() -> Result<()> {
             web_access
                 .allow_ips
                 .extend(opts.web_allow_ip.iter().cloned());
+        }
+    }
+
+    #[cfg(feature = "config")]
+    if let Some(cfg) = &cfg {
+        if let Some(cfg_exp) = cfg.exposure.as_ref() {
+            exposure.merge(describe_me::Exposure::from(cfg_exp));
+        }
+    }
+
+    if opts.expose_all {
+        exposure = describe_me::Exposure::all();
+    } else {
+        if opts.expose_hostname {
+            exposure.hostname = true;
+        }
+        if opts.expose_os {
+            exposure.os = true;
+        }
+        if opts.expose_kernel {
+            exposure.kernel = true;
+        }
+        if opts.expose_services {
+            exposure.services = true;
+        }
+        if opts.expose_disk_partitions {
+            exposure.disk_partitions = true;
+        }
+    }
+
+    #[cfg(feature = "web")]
+    let mut web_exposure = exposure;
+
+    #[cfg(all(feature = "web", feature = "config"))]
+    if let Some(cfg) = &cfg {
+        if let Some(web_cfg) = &cfg.web {
+            if let Some(web_exp) = web_cfg.exposure.as_ref() {
+                web_exposure.merge(describe_me::Exposure::from(web_exp));
+            }
+        }
+    }
+
+    #[cfg(feature = "web")]
+    if opts.web_expose_all {
+        web_exposure = describe_me::Exposure::all();
+    } else {
+        if opts.web_expose_hostname {
+            web_exposure.hostname = true;
+        }
+        if opts.web_expose_os {
+            web_exposure.os = true;
+        }
+        if opts.web_expose_kernel {
+            web_exposure.kernel = true;
+        }
+        if opts.web_expose_services {
+            web_exposure.services = true;
+        }
+        if opts.web_expose_disk_partitions {
+            web_exposure.disk_partitions = true;
         }
     }
 
@@ -165,6 +273,7 @@ fn main() -> Result<()> {
         let cfg_for_web = cfg.clone();
 
         let access = web_access;
+        let exposure_for_web = web_exposure;
 
         // runtime tokio local pour ne pas imposer #[tokio::main]
         let rt = tokio::runtime::Builder::new_multi_thread()
@@ -178,6 +287,7 @@ fn main() -> Result<()> {
                 cfg_for_web,
                 web_debug,
                 access,
+                exposure_for_web,
             )
             .await
         })?;
@@ -228,12 +338,14 @@ fn main() -> Result<()> {
         None
     };
 
+    let snapshot_view = describe_me::SnapshotView::new(&snap, exposure);
+
     // Si JSON demandé: on ne sort qu'un seul document JSON combiné
     if opts.json || opts.pretty {
         #[cfg(feature = "cli")]
         {
             let combined = CombinedOutput {
-                snapshot: snap,
+                snapshot: snapshot_view.clone(),
                 #[cfg(feature = "net")]
                 net_listen: net_listen_vec,
                 #[cfg(not(feature = "net"))]
@@ -249,7 +361,7 @@ fn main() -> Result<()> {
         }
         #[cfg(not(feature = "cli"))]
         {
-            println!("{}", serde_json::to_string_pretty(&snap)?);
+            println!("{}", serde_json::to_string_pretty(&snapshot_view)?);
             return Ok(());
         }
     }
@@ -302,7 +414,7 @@ fn main() -> Result<()> {
     }
 
     // 3) Snapshot JSON (comme avant)
-    println!("{}", serde_json::to_string_pretty(&snap)?);
+    println!("{}", serde_json::to_string_pretty(&snapshot_view)?);
 
     // --- HEALTHCHECK --------------------------------------------------------
     if !opts.checks.is_empty() {
