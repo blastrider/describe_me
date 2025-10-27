@@ -56,6 +56,13 @@ struct Opts {
     /// Affiche également le JSON brut dans l'interface --web
     #[arg(long = "web-debug", action = ArgAction::SetTrue)]
     web_debug: bool,
+
+    /// Vérifications healthcheck (peut être répété). Ex:
+    /// --check mem>90%[:warn|:crit]
+    /// --check disk(/var)>80%[:warn|:crit]
+    /// --check service=nginx.service:running[:warn|:crit]
+    #[arg(long = "check", value_name = "EXPR", action = ArgAction::Append)]
+    checks: Vec<String>,
 }
 
 #[cfg(feature = "cli")]
@@ -250,5 +257,38 @@ fn main() -> Result<()> {
 
     // 3) Snapshot JSON (comme avant)
     println!("{}", serde_json::to_string_pretty(&snap)?);
+
+    // --- HEALTHCHECK --------------------------------------------------------
+    if !opts.checks.is_empty() {
+        // On parse TOUTES les expressions d'abord (fail-fast si invalide)
+        let mut parsed = Vec::with_capacity(opts.checks.len());
+        for e in &opts.checks {
+            match describe_me::parse_check(e) {
+                Ok(c) => parsed.push(c),
+                Err(err) => {
+                    eprintln!("[CHECK] parse error pour '{e}': {err}");
+                    std::process::exit(2); // parse error => CRIT
+                }
+            }
+        }
+
+        // Évalue sur le snapshot complet
+        match describe_me::eval_checks(&snap, &parsed) {
+            Ok((max_sev, results)) => {
+                for r in results {
+                    // message humain lisible sur stderr
+                    eprintln!("[CHECK] {}", r.message);
+                }
+                let code = max_sev as i32; // 0/1/2
+                std::process::exit(code);
+            }
+            Err(err) => {
+                eprintln!("[CHECK] evaluation error: {err}");
+                std::process::exit(2); // erreur d’éval => CRIT
+            }
+        }
+    }
+
     Ok(())
+    // ------------------------------------------------------------------------
 }
