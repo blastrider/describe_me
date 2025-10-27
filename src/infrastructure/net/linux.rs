@@ -63,7 +63,7 @@ fn parse_table(
             proto: proto.to_string(),
             addr,
             port,
-            process: pid.map(|p| p as u32),
+            process: pid,
         });
     }
 

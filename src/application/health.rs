@@ -90,6 +90,7 @@ fn apply_cmp(op: Cmp, left: f64, right: f64) -> bool {
 /// - `mem>90%[:warn|:crit]`
 /// - `disk(/var)>80%[:warn|:crit]`
 /// - `service=nginx.service:running[:warn|:crit]`
+///
 /// Par défaut la sévérité est CRIT si non précisée.
 pub fn parse_check(expr: &str) -> Result<Check, DescribeError> {
     let expr = expr.trim();
@@ -101,9 +102,8 @@ pub fn parse_check(expr: &str) -> Result<Check, DescribeError> {
     };
 
     // service=NAME:STATE (on a déjà retiré le suffixe de sévérité)
-    if core.starts_with("service=") {
+    if let Some(after) = core.strip_prefix("service=") {
         // service=nginx.service:running
-        let after = &core["service=".len()..];
         let (name, expect) = after.split_once(':').ok_or_else(|| {
             DescribeError::Parse("service check: attendu service=NAME:STATE".into())
         })?;
@@ -118,17 +118,15 @@ pub fn parse_check(expr: &str) -> Result<Check, DescribeError> {
     }
 
     // mem OP PCT%
-    if core.starts_with("mem") {
+    if let Some(rest) = core.strip_prefix("mem") {
         // mem>90%
-        let rest = &core["mem".len()..];
         let (op, pct) = parse_op_and_pct(rest)?;
         return Ok(Check::Mem { op, pct, sev });
     }
 
     // disk(/path)OPpct%
-    if core.starts_with("disk(") {
+    if let Some(after) = core.strip_prefix("disk(") {
         // disk(/var)>80%
-        let after = &core["disk(".len()..];
         let (mount, tail) = after
             .split_once(')')
             .ok_or_else(|| DescribeError::Parse("disk check: attendu disk(/path)OPpct%".into()))?;

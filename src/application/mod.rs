@@ -99,4 +99,3 @@ pub use net::net_listen;
 pub mod web;
 
 pub mod health;
-pub use health::{eval_checks, parse_check, Severity};
