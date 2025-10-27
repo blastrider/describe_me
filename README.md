@@ -3,6 +3,8 @@ describe_me
 Décrit rapidement un serveur (CPU, RAM, OS, uptime, services…), utile aux admins système.
 Fonctionne en lib Rust et en CLI (describe-me).
 
+Le binaire refuse volontairement d'être exécuté en root (UID 0). Utilise un compte dédié ou `sudo -u` pour le lancer.
+
 MSRV : 1.90.0
 
 Licence : Apache-2.0
@@ -80,6 +82,24 @@ RAM: 16.0 GiB (utilisée 6.3 GiB)
 Disque total: 500 GiB (libre 320 GiB)
 Services actifs: nginx, postgresql, ...
 Sockets écoute: tcp/0.0.0.0:22, tcp/127.0.0.1:5432, ...
+
+2 bis) Service systemd durci
+
+Un fichier d'unité `systemd` avec durcissement agressif est disponible dans `packaging/systemd/describe-me.service`.
+
+Étapes rapides :
+
+```bash
+sudo install -m 0644 packaging/systemd/describe-me.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now describe-me.service
+```
+
+Adapte `ExecStart=` selon ton usage (`--web`, jeton, config TOML, etc.). Le service tourne sous un `DynamicUser` jetable, sans capability (`CapabilityBoundingSet=`), et applique `NoNewPrivileges=yes`, `PrivateTmp=yes`, `ProtectSystem=strict`, `ProtectHome=yes`, `PrivateDevices=yes`, `RestrictNamespaces=yes`, `MemoryDenyWriteExecute=yes`, `SystemCallFilter=@system-service`, `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`, `UMask=0027`, `ProtectKernel{Modules,Logs,Tunables}=yes`, `ProtectControlGroups=yes`, `LockPersonality=yes`, `PrivateUsers=yes`, etc.
+
+Seules les écritures explicites vers `/var/lib/describe-me` (créé via `StateDirectory=`) sont autorisées (`ReadWritePaths=`). Un `TemporaryFileSystem=/var/tmp` évite toute interaction avec le `/var/tmp` global. Ajuste `RestrictAddressFamilies=` ou ajoute des exceptions via un `systemctl edit describe-me` si besoin d'autres sockets.
+
+Astuce : grâce au refus d'exécution en root du binaire, lance-le manuellement via `sudo -u describe-me describe-me ...` pour reproduire l'environnement du service.
 
 3) Healthcheck --check (codes 0/1/2)
 

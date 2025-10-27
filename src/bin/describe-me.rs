@@ -4,6 +4,8 @@ use anyhow::{bail, Result};
 use clap::{ArgAction, Parser};
 #[cfg(feature = "cli")]
 use serde::Serialize;
+#[cfg(all(unix, feature = "cli"))]
+use nix::unistd::Uid;
 
 #[derive(Parser, Debug)]
 #[command(name = "describe-me", version, about = "Décrit rapidement le serveur")]
@@ -137,8 +139,25 @@ struct CombinedOutput {
     net_listen: Option<Vec<ListeningSocketOut>>,
 }
 
+#[cfg(unix)]
+fn ensure_not_root() -> Result<()> {
+    if Uid::current().is_root() {
+        bail!(
+            "describe-me refuse de tourner en root (UID 0). Lance-le sous un utilisateur non privilégié."
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_not_root() -> Result<()> {
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let opts = Opts::parse();
+
+    ensure_not_root()?;
 
     // Charge optionnellement la config (pour filtrages, web, ...)
     #[cfg(feature = "config")]
@@ -155,6 +174,7 @@ fn main() -> Result<()> {
         );
     }
 
+    #[cfg(feature = "web")]
     let web_debug = opts.web_debug;
 
     #[cfg(feature = "web")]
