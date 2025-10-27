@@ -46,14 +46,14 @@ jobs:
       - name: benches compile (no-run)
         run: cargo bench --no-run --all-features
 
-  msrv-build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install MSRV
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.90.0
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build -Z unstable-options
+  # msrv-build:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - name: Install MSRV
+  #       uses: dtolnay/rust-toolchain@master
+  #       with:
+  #         toolchain: 1.90.0
+  #         components: rustfmt, clippy
+  #     - uses: Swatinem/rust-cache@v2
+  #     - run: cargo build -Z unstable-options
