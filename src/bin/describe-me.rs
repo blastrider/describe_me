@@ -2,10 +2,10 @@
 
 use anyhow::{bail, Result};
 use clap::{ArgAction, Parser};
-#[cfg(feature = "cli")]
-use serde::Serialize;
 #[cfg(all(unix, feature = "cli"))]
 use nix::unistd::Uid;
+#[cfg(feature = "cli")]
+use serde::Serialize;
 
 #[derive(Parser, Debug)]
 #[command(name = "describe-me", version, about = "Décrit rapidement le serveur")]
