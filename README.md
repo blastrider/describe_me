@@ -133,10 +133,12 @@ Nécessite --features web (et cli côté binaire).
 Lancer un mini-serveur SSE avec UI intégrée (HTML/CSS/JS) :
 
 ./target/debug/describe-me \
-  --web 0.0.0.0:8080 \
+  --web \
   --web-interval 2 \
   --web-debug \
   --with-services
+
+Pour exposer publiquement, fournissez explicitement l'adresse, par exemple : `--web 0.0.0.0:8080`.
 
 
 GET / : page HTML (cartes système/mémoire/disque/services)

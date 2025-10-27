@@ -40,11 +40,11 @@ struct Opts {
     pretty: bool,
 
     /// Lance un serveur web SSE (HTML/CSS/JS) — nécessite la feature `web`.
-    /// Optionnellement préciser l'adresse:port (ex: 127.0.0.1:9000). Valeur par défaut si omise.
+    /// Optionnellement préciser l'adresse:port (ex: 127.0.0.1:9000). Par défaut: 127.0.0.1:8080.
     #[arg(
         long = "web",
         value_name = "ADDR:PORT",
-        default_missing_value = "0.0.0.0:8080",
+        default_missing_value = "127.0.0.1:8080",
         num_args = 0..=1
     )]
     web: Option<String>,
