@@ -1,0 +1,43 @@
+[Unit]
+Description=describe-me web dashboard (system snapshot & health)
+Documentation=https://github.com/Max-Perso/describe_me
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/describe-me --web 0.0.0.0:8080 --with-services --web-expose-all
+Restart=on-failure
+RestartSec=2s
+
+# Hardened execution context
+DynamicUser=yes
+UMask=0027
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateUsers=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectKernelTunables=yes
+ProtectSystem=strict
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallFilter=@system-service
+
+# Limit writable paths to the state/runtime data we manage explicitly.
+StateDirectory=describe-me
+StateDirectoryMode=0750
+RuntimeDirectory=describe-me
+RuntimeDirectoryMode=0750
+ReadWritePaths=/var/lib/describe-me
+TemporaryFileSystem=/var/tmp
+
+[Install]
+WantedBy=multi-user.target
