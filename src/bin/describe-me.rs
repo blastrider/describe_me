@@ -57,7 +57,7 @@ struct Opts {
     #[arg(long = "web-debug", action = ArgAction::SetTrue)]
     web_debug: bool,
 
-    /// Jeton d'accès requis pour --web (Authorization: Bearer ou paramètre ?token=)
+    /// Jeton d'accès requis pour --web (Authorization: Bearer ou en-tête x-describe-me-token)
     #[arg(long = "web-token", value_name = "TOKEN")]
     web_token: Option<String>,
 

@@ -159,7 +159,8 @@ Lancer un mini-serveur SSE avec UI intégrée (HTML/CSS/JS) :
   --web-debug \
   --with-services
 
-Ensuite, ouvrez l'interface sur `http://127.0.0.1:8080/?token=super-secret` (le token est requis aussi pour `/sse`).
+Ensuite, ouvrez l'interface sur `http://127.0.0.1:8080/`. L'UI vous demandera le jeton et l'enverra via l'en-tête `Authorization: Bearer` (ou `x-describe-me-token`) pour le flux `/sse`.
+Le jeton est mémorisé uniquement dans la session du navigateur et peut être réinitialisé via « Modifier le jeton ».
 
 Pour exposer publiquement, fournissez explicitement l'adresse (ex :`--web 0.0.0.0:8080`) **et** un contrôle d'accès adapté (`--web-token …` et/ou `--web-allow-ip 203.0.113.0/24`).
 
@@ -274,7 +275,7 @@ cli	Binaire describe-me + options ligne de commande	anyhow, clap, serde
 systemd	Listing des services systemd	— (Linux/systemd requis)
 config	Chargement TOML + filtrage (services.include)	serde, toml
 net	Sockets d’écoute (TCP/UDP)	—
-web	UI + SSE HTTP (Axum)	axum, tokio, tokio-stream, serde, serde_urlencoded
+web	UI + SSE HTTP (Axum)	axum, tokio, tokio-stream, serde, subtle
 
 Par défaut, aucune feature n’est activée. Active celles dont tu as besoin.
 
