@@ -5,24 +5,41 @@
 //!   GET /sse      -> flux SSE (JSON) envoyant SystemSnapshot périodiquement
 //!
 //! Usage (ex. depuis un binaire) :
-//!   #[tokio::main]
-//!   async fn main() -> anyhow::Result<()> {
+//!   describe_me::serve_http(
+//!       ([0,0,0,0], 8080),
+//!       std::time::Duration::from_secs(2),
 //!       #[cfg(feature = "config")]
-//!       describe_me::serve_http(([0,0,0,0], 8080), std::time::Duration::from_secs(2), None, false).await?;
-//!       #[cfg(not(feature = "config"))]
-//!       describe_me::serve_http(([0,0,0,0], 8080), std::time::Duration::from_secs(2), false).await?;
-//!       Ok(())
-//!   }
+//!       None,
+//!       false,
+//!       describe_me::WebAccess {
+//!           token: Some("super-secret".into()),
+//!           allow_ips: vec!["127.0.0.1".into()],
+//!       },
+//!   ).await?;
 
-use std::{net::SocketAddr, time::Duration};
+use std::{
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
+    time::Duration,
+};
 
 use axum::{
-    extract::State,
+    async_trait,
+    extract::{ConnectInfo, FromRequestParts, State},
+    http::{header::AUTHORIZATION, request::Parts, StatusCode},
     response::{Html, IntoResponse},
     routing::get,
     Router,
 };
 use tokio_stream::{wrappers::IntervalStream, StreamExt};
+
+#[derive(Debug, Clone, Default)]
+pub struct WebAccess {
+    /// Jeton d'accès (Authorization: Bearer ou paramètre `token`).
+    pub token: Option<String>,
+    /// IP ou réseaux autorisés (ex: 192.0.2.10, 10.0.0.0/24, ::1).
+    pub allow_ips: Vec<String>,
+}
 
 #[cfg(all(feature = "config", feature = "systemd"))]
 use super::filter_services;
@@ -37,6 +54,7 @@ struct AppState {
     #[cfg(feature = "config")]
     config: Option<DescribeConfig>,
     web_debug: bool,
+    security: Arc<WebSecurity>,
 }
 
 pub async fn serve_http<A: Into<SocketAddr>>(
@@ -44,16 +62,23 @@ pub async fn serve_http<A: Into<SocketAddr>>(
     interval: Duration,
     #[cfg(feature = "config")] config: Option<DescribeConfig>,
     web_debug: bool,
+    access: WebAccess,
 ) -> Result<(), DescribeError> {
+    let security = Arc::new(WebSecurity::try_from(access)?);
+
+    let app_state = AppState {
+        interval,
+        #[cfg(feature = "config")]
+        config,
+        web_debug,
+        security: security.clone(),
+    };
+
     let app = Router::new()
         .route("/", get(index))
         .route("/sse", get(sse_stream))
-        .with_state(AppState {
-            interval,
-            #[cfg(feature = "config")]
-            config,
-            web_debug,
-        });
+        .with_state(app_state)
+        .into_make_service_with_connect_info::<SocketAddr>();
 
     let listener = tokio::net::TcpListener::bind(addr.into())
         .await
@@ -63,11 +88,11 @@ pub async fn serve_http<A: Into<SocketAddr>>(
     Ok(())
 }
 
-async fn index(State(state): State<AppState>) -> impl IntoResponse {
+async fn index(_guard: AuthGuard, State(state): State<AppState>) -> impl IntoResponse {
     Html(render_index(state.web_debug))
 }
 
-async fn sse_stream(State(state): State<AppState>) -> impl IntoResponse {
+async fn sse_stream(_guard: AuthGuard, State(state): State<AppState>) -> impl IntoResponse {
     use axum::response::sse::{Event, KeepAlive, Sse};
     use tokio::time;
 
@@ -107,6 +132,232 @@ async fn sse_stream(State(state): State<AppState>) -> impl IntoResponse {
     });
 
     Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+struct AuthGuard;
+
+#[async_trait]
+impl FromRequestParts<AppState> for AuthGuard {
+    type Rejection = (StatusCode, String);
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        state.security.authorize(parts).map_err(|err| err.into())?;
+        Ok(AuthGuard)
+    }
+}
+
+#[derive(Debug)]
+enum AuthError {
+    MissingRemoteAddr,
+    IpNotAllowed(IpAddr),
+    TokenMissing,
+    TokenInvalid,
+}
+
+impl From<AuthError> for (StatusCode, String) {
+    fn from(err: AuthError) -> Self {
+        match err {
+            AuthError::MissingRemoteAddr => (
+                StatusCode::FORBIDDEN,
+                "adresse distante introuvable (ConnectInfo absent)".to_string(),
+            ),
+            AuthError::IpNotAllowed(ip) => (
+                StatusCode::FORBIDDEN,
+                format!("adresse IP non autorisée: {ip}"),
+            ),
+            AuthError::TokenMissing => (
+                StatusCode::UNAUTHORIZED,
+                "token d'accès requis (Authorization Bearer ou ?token=)".to_string(),
+            ),
+            AuthError::TokenInvalid => (
+                StatusCode::UNAUTHORIZED,
+                "token d'accès invalide".to_string(),
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct WebSecurity {
+    token: Option<String>,
+    allow: Vec<IpMatcher>,
+}
+
+impl WebSecurity {
+    fn authorize(&self, parts: &Parts) -> Result<(), AuthError> {
+        if self.token.is_none() && self.allow.is_empty() {
+            return Ok(());
+        }
+
+        if !self.allow.is_empty() {
+            let remote_ip = parts
+                .extensions
+                .get::<ConnectInfo<SocketAddr>>()
+                .map(|info| info.0.ip())
+                .ok_or(AuthError::MissingRemoteAddr)?;
+
+            let allowed = self.allow.iter().any(|rule| rule.matches(remote_ip));
+            if !allowed {
+                return Err(AuthError::IpNotAllowed(remote_ip));
+            }
+        }
+
+        if let Some(expected) = &self.token {
+            match self.extract_token(parts) {
+                Some(provided) if provided == *expected => {}
+                Some(_) => return Err(AuthError::TokenInvalid),
+                None => return Err(AuthError::TokenMissing),
+            }
+        }
+
+        Ok(())
+    }
+
+    fn extract_token(&self, parts: &Parts) -> Option<String> {
+        if let Some(header_value) = parts.headers.get(AUTHORIZATION) {
+            if let Ok(value) = header_value.to_str() {
+                if let Some(token) = value.strip_prefix("Bearer ") {
+                    let trimmed = token.trim();
+                    if !trimmed.is_empty() {
+                        return Some(trimmed.to_owned());
+                    }
+                } else if let Some(token) = value.strip_prefix("bearer ") {
+                    let trimmed = token.trim();
+                    if !trimmed.is_empty() {
+                        return Some(trimmed.to_owned());
+                    }
+                }
+            }
+        }
+
+        if let Some(header_value) = parts.headers.get("x-describe-me-token") {
+            if let Ok(value) = header_value.to_str() {
+                let trimmed = value.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_owned());
+                }
+            }
+        }
+
+        if let Some(query) = parts.uri.query() {
+            if let Ok(params) =
+                serde_urlencoded::from_bytes::<Vec<(String, String)>>(query.as_bytes())
+            {
+                for (key, value) in params {
+                    if key == "token" {
+                        let trimmed = value.trim().to_owned();
+                        if !trimmed.is_empty() {
+                            return Some(trimmed);
+                        }
+                    }
+                }
+            }
+        }
+
+        None
+    }
+}
+
+impl TryFrom<WebAccess> for WebSecurity {
+    type Error = DescribeError;
+
+    fn try_from(access: WebAccess) -> Result<Self, Self::Error> {
+        let token = access.token.and_then(|t| {
+            let trimmed = t.trim().to_owned();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        });
+
+        let mut allow = Vec::new();
+        for raw in access.allow_ips {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let rule = IpMatcher::parse(trimmed)
+                .map_err(|err| DescribeError::Config(format!("web.allow_ips: {err}")))?;
+            if !allow.contains(&rule) {
+                allow.push(rule);
+            }
+        }
+
+        Ok(Self { token, allow })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum IpMatcher {
+    Exact(IpAddr),
+    Ipv4 { network: u32, mask: u32 },
+    Ipv6 { network: u128, mask: u128 },
+}
+
+impl IpMatcher {
+    fn parse(raw: &str) -> Result<Self, String> {
+        if raw.is_empty() {
+            return Err("entrée vide".into());
+        }
+
+        if let Some((addr_part, prefix_part)) = raw.split_once('/') {
+            let base_ip: IpAddr = addr_part
+                .parse()
+                .map_err(|_| format!("adresse IP invalide: '{addr_part}'"))?;
+            let prefix: u8 = prefix_part
+                .parse()
+                .map_err(|_| format!("préfixe CIDR invalide: '{prefix_part}'"))?;
+
+            match base_ip {
+                IpAddr::V4(base) => {
+                    if prefix > 32 {
+                        return Err(format!("préfixe IPv4 invalide: {prefix} (max 32)"));
+                    }
+                    let mask = if prefix == 0 {
+                        0
+                    } else {
+                        u32::MAX.checked_shl((32 - prefix) as u32).unwrap_or(0)
+                    };
+                    let network = u32::from(base) & mask;
+                    Ok(IpMatcher::Ipv4 { network, mask })
+                }
+                IpAddr::V6(base) => {
+                    if prefix > 128 {
+                        return Err(format!("préfixe IPv6 invalide: {prefix} (max 128)"));
+                    }
+                    let mask = if prefix == 0 {
+                        0
+                    } else {
+                        u128::MAX.checked_shl((128 - prefix) as u32).unwrap_or(0)
+                    };
+                    let network = u128::from(base) & mask;
+                    Ok(IpMatcher::Ipv6 { network, mask })
+                }
+            }
+        } else {
+            let ip: IpAddr = raw
+                .parse()
+                .map_err(|_| format!("adresse IP invalide: '{raw}'"))?;
+            Ok(IpMatcher::Exact(ip))
+        }
+    }
+
+    fn matches(&self, addr: IpAddr) -> bool {
+        match (self, addr) {
+            (IpMatcher::Exact(expected), current) => *expected == current,
+            (IpMatcher::Ipv4 { network, mask }, IpAddr::V4(current)) => {
+                (u32::from(current) & mask) == *network
+            }
+            (IpMatcher::Ipv6 { network, mask }, IpAddr::V6(current)) => {
+                (u128::from(current) & mask) == *network
+            }
+            _ => false,
+        }
+    }
 }
 
 // Echappement ultra simple pour quotes et backslashes
@@ -375,7 +626,10 @@ const INDEX_HTML: &str = r#"<!doctype html>
     }
 
     // Connexion SSE
-    const es = new EventSource('/sse', { withCredentials: false });
+    const params = new URLSearchParams(window.location.search);
+    const tokenParam = params.get('token');
+    const sseUrl = tokenParam ? `/sse?token=${encodeURIComponent(tokenParam)}` : '/sse';
+    const es = new EventSource(sseUrl, { withCredentials: false });
 
     es.addEventListener('message', (ev) => {
       try {

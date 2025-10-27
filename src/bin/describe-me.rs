@@ -57,6 +57,14 @@ struct Opts {
     #[arg(long = "web-debug", action = ArgAction::SetTrue)]
     web_debug: bool,
 
+    /// Jeton d'accès requis pour --web (Authorization: Bearer ou paramètre ?token=)
+    #[arg(long = "web-token", value_name = "TOKEN")]
+    web_token: Option<String>,
+
+    /// IP ou réseaux autorisés pour --web (peut être répété, ex: 127.0.0.1, 10.0.0.0/16)
+    #[arg(long = "web-allow-ip", value_name = "IP[/PREFIX]", action = ArgAction::Append)]
+    web_allow_ip: Vec<String>,
+
     /// Vérifications healthcheck (peut être répété). Ex:
     /// --check mem>90%[:warn|:crit]
     /// --check disk(/var)>80%[:warn|:crit]
@@ -103,6 +111,35 @@ fn main() -> Result<()> {
 
     let web_debug = opts.web_debug;
 
+    #[cfg(feature = "web")]
+    let mut web_access = describe_me::WebAccess::default();
+
+    #[cfg(all(feature = "web", feature = "config"))]
+    if let Some(cfg) = &cfg {
+        if let Some(web_cfg) = &cfg.web {
+            if let Some(token) = web_cfg.token.as_ref() {
+                web_access.token = Some(token.clone());
+            }
+            if !web_cfg.allow_ips.is_empty() {
+                web_access
+                    .allow_ips
+                    .extend(web_cfg.allow_ips.iter().cloned());
+            }
+        }
+    }
+
+    #[cfg(feature = "web")]
+    {
+        if let Some(token) = &opts.web_token {
+            web_access.token = Some(token.clone());
+        }
+        if !opts.web_allow_ip.is_empty() {
+            web_access
+                .allow_ips
+                .extend(opts.web_allow_ip.iter().cloned());
+        }
+    }
+
     // --- Mode serveur web (SSE) --------------------------------------------
     #[cfg(not(feature = "web"))]
     if opts.web.is_some() {
@@ -118,8 +155,16 @@ fn main() -> Result<()> {
             .map_err(|e| anyhow::anyhow!("Adresse invalide pour --web: {bind} ({e})"))?;
         let tick = Duration::from_secs(opts.web_interval_secs);
 
+        if web_access.token.is_none() && web_access.allow_ips.is_empty() {
+            bail!(
+                "--web nécessite la configuration d'un contrôle d'accès (--web-token, --web-allow-ip ou [web] dans la config)."
+            );
+        }
+
         #[cfg(feature = "config")]
         let cfg_for_web = cfg.clone();
+
+        let access = web_access;
 
         // runtime tokio local pour ne pas imposer #[tokio::main]
         let rt = tokio::runtime::Builder::new_multi_thread()
@@ -132,6 +177,7 @@ fn main() -> Result<()> {
                 #[cfg(feature = "config")]
                 cfg_for_web,
                 web_debug,
+                access,
             )
             .await
         })?;

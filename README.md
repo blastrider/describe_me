@@ -134,11 +134,14 @@ Lancer un mini-serveur SSE avec UI intégrée (HTML/CSS/JS) :
 
 ./target/debug/describe-me \
   --web \
+  --web-token super-secret \
   --web-interval 2 \
   --web-debug \
   --with-services
 
-Pour exposer publiquement, fournissez explicitement l'adresse, par exemple : `--web 0.0.0.0:8080`.
+Ensuite, ouvrez l'interface sur `http://127.0.0.1:8080/?token=super-secret` (le token est requis aussi pour `/sse`).
+
+Pour exposer publiquement, fournissez explicitement l'adresse (ex :`--web 0.0.0.0:8080`) **et** un contrôle d'accès adapté (`--web-token …` et/ou `--web-allow-ip 203.0.113.0/24`).
 
 
 GET / : page HTML (cartes système/mémoire/disque/services)
@@ -155,12 +158,17 @@ En prod, place-le derrière un reverse proxy/TLS (Nginx/Traefik).
 5) Fichier de configuration (optionnel)
 
 Disponible avec --features config.
-Actuellement, seul le whitelist des services est supporté (pas de exclude dans ce schéma).
+Actuellement : whitelist des services + configuration du mode web.
 
 Exemple minimal config.toml
 # Filtrage d’affichage des services (si feature systemd et --with-services)
 [services]
 include = ["nginx.service", "postgresql.service"]
+
+# Contrôles d'accès web par défaut (optionnels)
+[web]
+token = "super-secret"
+allow_ips = ["127.0.0.1", "10.0.0.0/16"]
 
 
 Utilisation CLI :
@@ -216,7 +224,11 @@ async fn main() -> anyhow::Result<()> {
     // Même impl que le CLI --web
     describe_me::serve_http(([0,0,0,0], 8080), std::time::Duration::from_secs(2),
         #[cfg(feature = "config")] None,
-        /* web_debug = */ false
+        /* web_debug = */ false,
+        describe_me::WebAccess {
+            token: Some("super-secret".into()),
+            allow_ips: vec!["127.0.0.1".into()],
+        },
     ).await?;
     Ok(())
 }
@@ -227,7 +239,7 @@ cli	Binaire describe-me + options ligne de commande	anyhow, clap, serde
 systemd	Listing des services systemd	— (Linux/systemd requis)
 config	Chargement TOML + filtrage (services.include)	serde, toml
 net	Sockets d’écoute (TCP/UDP)	—
-web	UI + SSE HTTP (Axum)	axum, tokio, tokio-stream, serde
+web	UI + SSE HTTP (Axum)	axum, tokio, tokio-stream, serde, serde_urlencoded
 
 Par défaut, aucune feature n’est activée. Active celles dont tu as besoin.
 
