@@ -1,17 +1,16 @@
-# describe_me
+describe_me
 
 Décrit rapidement un serveur (CPU, RAM, OS, uptime, services…), utile aux admins système.
-Fonctionne en **lib Rust** et en **CLI** (binaire `describe-me`).
+Fonctionne en lib Rust et en CLI (describe-me).
 
-- MSRV : `1.90.0`
-- Licence : Apache-2.0
-- Repo : [https://github.com/Max-Perso/describe_me](https://github.com/Max-Perso/describe_me)
+MSRV : 1.90.0
 
-## 1) Installation
+Licence : Apache-2.0
 
-### Depuis les sources
+Repo : https://github.com/Max-Perso/describe_me
 
-```bash
+1) Installation
+Depuis les sources
 # Cloner
 git clone https://github.com/Max-Perso/describe_me
 cd describe_me
@@ -19,39 +18,40 @@ cd describe_me
 # Build (lib + tests de base)
 cargo build
 cargo test
-```
 
-### Activer le binaire CLI
+Activer le binaire CLI
 
-Le CLI est derrière la feature `cli`. Ajoute des features selon tes besoins :
+Le CLI est derrière la feature cli. Ajoute des features selon tes besoins :
 
-- `systemd` : énumère les services (Linux systemd)
-- `config` : charge un fichier TOML
-- `net` : sockets d’écoute (TCP/UDP)
-- `web` : expose une API HTTP (via la lib)
+systemd : énumère les services (Linux/systemd)
+
+config : charge un fichier TOML (filtrage services)
+
+net : sockets d’écoute (TCP/UDP)
+
+web : UI & SSE HTTP (Axum), endpoints temps-réel
 
 Exemples :
 
-```bash
 # CLI seul
 cargo build --features "cli"
 
 # CLI + systemd + config + net
 cargo build --features "cli systemd config net"
-```
 
-## 2) Utilisation rapide (CLI)
+# Tout (incluant serveur web)
+cargo build --features "cli systemd config net web"
 
-Afficher un snapshot simple :
+2) Utilisation rapide (CLI)
 
-```bash
+Afficher un snapshot JSON lisible :
+
 ./target/debug/describe-me
-```
+
 
 Options courantes :
 
-```bash
-# Services (systemd requis au build)
+# Services (systemd requis)
 ./target/debug/describe-me --with-services
 
 # Disques (agrégé + partitions)
@@ -62,58 +62,123 @@ Options courantes :
 
 # Charger une config TOML (feature config requise)
 ./target/debug/describe-me --config ./src/examples/config.toml
-```
 
-> Astuce : combine-les librement, ex.
-> `./describe-me --with-services --disks --net-listen --config config.toml`
+# JSON compact / pretty (inclut snapshot complet)
+./target/debug/describe-me --json
+./target/debug/describe-me --pretty
 
-### Exemple de sortie (résumé)
 
-```
+Astuce : combine librement, ex.
+./describe-me --with-services --disks --net-listen --config config.toml --pretty
+
+Exemple de sortie (résumé lisible)
 Hostname: srv-app-01
 OS: Linux 6.8 (Debian 12)
-Uptime: 3d 04:12:09
-CPU: 8 cœurs
+Uptime: 3j 04h 12m 09s
+CPU(s): 8
 RAM: 16.0 GiB (utilisée 6.3 GiB)
 Disque total: 500 GiB (libre 320 GiB)
 Services actifs: nginx, postgresql, ...
 Sockets écoute: tcp/0.0.0.0:22, tcp/127.0.0.1:5432, ...
-```
 
-## 3) Fichier de configuration (optionnel)
+3) Healthcheck --check (codes 0/1/2)
 
-Disponible avec `--features config`.
+Permet de scripter des checks (CI/Nagios/Icinga). Retourne le plus sévère rencontré :
 
-### Exemple minimal `config.toml`
+0 = OK
 
-```toml
-# Filtrage d’affichage des services (si feature systemd)
+1 = WARN
+
+2 = CRIT
+
+Formes supportées :
+
+mem>90%[:warn|:crit]
+
+disk(/point_de_montage)>80%[:warn|:crit]
+
+service=nginx.service:running[:warn|:crit] (nécessite --with-services et feature systemd)
+
+Exemples :
+
+# CRIT si mémoire > 90%
+./target/debug/describe-me --check 'mem>90%'
+
+# WARN si /var > 80%
+./target/debug/describe-me --check 'disk(/var)>80%:warn' >/dev/null; echo $?
+
+# Service (state contient "running") — nécessite systemd + --with-services
+./target/debug/describe-me --with-services --check 'service=ssh.service:running' >/dev/null; echo $?
+
+# Checks multiples : code de sortie = max(WARN/CRIT)
+./target/debug/describe-me \
+  --with-services \
+  --check 'mem>85%:warn' \
+  --check 'mem>95%:crit' \
+  --check 'disk(/)>90%:crit' \
+  >/dev/null; echo $?
+
+
+Intégration simple Nagios/Icinga (stderr contient les messages) :
+
+/opt/describe-me --with-services \
+  --check 'mem>90%:crit' \
+  --check 'disk(/var)>80%:warn' \
+  >/dev/null
+
+4) Mode Web (SSE temps réel)
+
+Nécessite --features web (et cli côté binaire).
+
+Lancer un mini-serveur SSE avec UI intégrée (HTML/CSS/JS) :
+
+./target/debug/describe-me \
+  --web 0.0.0.0:8080 \
+  --web-interval 2 \
+  --web-debug \
+  --with-services
+
+
+GET / : page HTML (cartes système/mémoire/disque/services)
+
+GET /sse : flux SSE (JSON) émettant périodiquement SystemSnapshot
+
+--web-debug : affiche aussi le JSON brut dans l’UI
+
+Le filtrage des services via config s’applique aussi côté web si --config est fourni
+
+En prod, place-le derrière un reverse proxy/TLS (Nginx/Traefik).
+(Roadmap : TLS natif + Basic Auth optionnelle.)
+
+5) Fichier de configuration (optionnel)
+
+Disponible avec --features config.
+Actuellement, seul le whitelist des services est supporté (pas de exclude dans ce schéma).
+
+Exemple minimal config.toml
+# Filtrage d’affichage des services (si feature systemd et --with-services)
 [services]
-include = ["nginx", "postgresql"]   # ne montrer que ceux-ci
-exclude = ["bluetooth"]             # masquer certains services
+include = ["nginx.service", "postgresql.service"]
 
-# Future extension : règles de sortie, formats, etc.
-```
 
-Dans ton code, tu peux aussi charger/filtrer :
+Utilisation CLI :
 
-```rust
+./target/debug/describe-me --with-services --config ./src/examples/config.toml
+
+
+Utilisation lib :
+
 #[cfg(feature = "config")]
 {
     use describe_me::{load_config_from_path, filter_services, SystemSnapshot, CaptureOptions};
 
     let cfg = load_config_from_path("config.toml")?;
-    let snap = SystemSnapshot::capture_with(CaptureOptions::default())?;
-    let services = filter_services(&cfg, snap.services);
-    // ... affiche/exporte comme tu veux
+    let mut snap = SystemSnapshot::capture_with(CaptureOptions { with_services: true, with_disk_usage: true })?;
+    snap.services_running = filter_services(std::mem::take(&mut snap.services_running), &cfg);
 }
-```
 
-## 4) Utilisation comme bibliothèque
-
-### Snapshot système
-
-```rust
+6) Utilisation comme bibliothèque
+Snapshot système
 use describe_me::SystemSnapshot;
 
 fn main() -> anyhow::Result<()> {
@@ -122,23 +187,18 @@ fn main() -> anyhow::Result<()> {
     println!("RAM totale: {} o", snap.total_memory_bytes);
     Ok(())
 }
-```
 
-### Usage disque
-
-```rust
+Usage disque
 use describe_me::disk_usage;
 
 let du = disk_usage()?;
 println!("Total: {} o, Libre: {} o", du.total_bytes, du.available_bytes);
 for p in du.partitions {
-    println!("{}  {} o / {} o", p.mount_point, p.used_bytes, p.total_bytes);
+    let used = p.total_bytes.saturating_sub(p.available_bytes);
+    println!("{}  used={} o / total={} o", p.mount_point, used, p.total_bytes);
 }
-```
 
-### Sockets d’écoute (feature `net`)
-
-```rust
+Sockets d’écoute (feature net)
 #[cfg(feature = "net")]
 {
     let sockets = describe_me::net_listen()?;
@@ -146,78 +206,70 @@ for p in du.partitions {
         println!("{} {}:{}", s.proto, s.addr, s.port);
     }
 }
-```
 
-### Mini-serveur web (feature `web`)
-
-Pas d’option CLI pour le web à ce stade : tu l’embarques dans ton binaire/app.
-
-```rust
+Serveur web (feature web, via la lib)
 #[cfg(feature = "web")]
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Expose quelques endpoints HTTP renvoyant le snapshot (via axum)
-    describe_me::serve_http(([0,0,0,0], 8080)).await?;
+    // Même impl que le CLI --web
+    describe_me::serve_http(([0,0,0,0], 8080), std::time::Duration::from_secs(2),
+        #[cfg(feature = "config")] None,
+        /* web_debug = */ false
+    ).await?;
     Ok(())
 }
-```
 
-## 5) Matrice des features
+7) Matrice des features
+Feature	Ce que ça ajoute	Dépendances activées
+cli	Binaire describe-me + options ligne de commande	anyhow, clap, serde
+systemd	Listing des services systemd	— (Linux/systemd requis)
+config	Chargement TOML + filtrage (services.include)	serde, toml
+net	Sockets d’écoute (TCP/UDP)	—
+web	UI + SSE HTTP (Axum)	axum, tokio, tokio-stream, serde
 
-| Feature   | Ce que ça ajoute                                  | Dépendances activées                     |
-| --------- | ------------------------------------------------- | ---------------------------------------- |
-| `cli`     | Binaire `describe-me` + options ligne de commande | `anyhow`, `clap`, `serde`                |
-| `systemd` | Listing des services systemd                      | — (Linux/systemd requis)                 |
-| `config`  | Chargement TOML + filtrage                        | `serde`, `toml`                          |
-| `net`     | Sockets d’écoute (TCP/UDP)                        | —                                        |
-| `web`     | Fonctions HTTP (lib) via Axum/Tokio               | `axum`, `tokio`, `tokio-stream`, `serde` |
+Par défaut, aucune feature n’est activée. Active celles dont tu as besoin.
 
-> Par défaut, **aucune feature** n’est activée. Active celles dont tu as besoin.
-
-## 6) Tests & Qualité
-
-```bash
-# Tests unitaires
+8) Tests & Qualité
+# Tests unitaires (sans features)
 cargo test
 
-# Avec features
-cargo test --features "systemd config net"
+# Avec features clés
+cargo test --features "systemd config net web"
 
-# Bench (si tu utilises criterion en local)
-cargo bench
-```
 
-Recommandations (non bloquantes ici, mais conseillées) :
+Recommandations :
 
-- `cargo fmt --all` et `cargo clippy --all-targets -- -D warnings`
-- `cargo deny` / `cargo audit` pour la supply-chain
+cargo fmt --all et cargo clippy --all-targets -- -D warnings
 
-## 7) Plateformes & limites
+cargo deny / cargo audit (supply-chain)
 
-- **Linux** : support principal (systemd requis pour `--with-services`).
-- **Containers CI** : certaines infos peuvent être partielles (ex. partitions).
-- Droits : pour lister certains sockets/services, il peut falloir des privilèges élevés.
+Bench local (si besoin) : cargo bench (criterion)
 
-## 8) FAQ
+9) Plateformes & limites
 
-**Q. Rien n’apparaît pour les services ?**
-R. Compile avec `--features systemd` et exécute sur une machine systemd.
+Linux : support principal. --with-services nécessite systemd.
 
-**Q. L’option `--net-listen` ne marche pas ?**
-R. Rebuild avec `--features net`.
+Containers CI : certaines infos (disques/partitions) peuvent être partielles.
 
-**Q. Je veux une API HTTP prête à l’emploi en CLI.**
-R. Aujourd’hui, le mode web est exposé côté **lib** (`serve_http`). Intègre-le à ton binaire.
+Droits : lister certains sockets/services peut nécessiter des privilèges.
 
----
+10) FAQ
 
-## 9) Licence
+Q. Rien pour les services ?
+R. Compile avec --features systemd et exécute sur une machine systemd (et utilise --with-services).
 
-Apache-2.0. Voir `LICENSE`.
+Q. --net-listen ne renvoie rien ?
+R. Rebuild avec --features net et lance avec des droits suffisants.
 
----
+Q. Comment faire un healthcheck qui échoue la CI ?
+R. Utilise --check puis vérifie le code de sortie (0/1/2). Exemple GitHub Actions :
 
-**Prêt à l’emploi :**
+- name: Healthcheck runner
+  run: |
+    cargo run --features "cli" --bin describe-me -- \
+      --check 'mem>95%:crit' \
+      >/dev/null
 
-- CLI « audit rapide » : `cargo build --features "cli systemd config net"` puis `./target/debug/describe-me ...`
-- Lib intégrable : `SystemSnapshot::capture()`, `disk_usage()`, `net_listen()`, `serve_http()` (selon features).
+Licence
+
+Apache-2.0. Voir LICENSE.
