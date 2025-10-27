@@ -26,7 +26,7 @@ cli = ["dep:anyhow", "dep:clap", "serde"]
 internals = []
 config = ["serde", "dep:toml"]   # <— NEW
 net = []
-web = ["dep:tokio", "dep:axum", "dep:tokio-stream", "serde"]  # NEW     
+web = ["dep:tokio", "dep:axum", "dep:tokio-stream", "serde", "dep:serde_urlencoded"]  # NEW     
 
 [dependencies]
 thiserror = "1.0"
@@ -39,6 +39,7 @@ toml = { version = "0.8", optional = true }
 axum = { version = "0.7", optional = true }
 tokio = { version = "1.40", features = ["rt-multi-thread", "macros"], optional = true }
 tokio-stream = { version = "0.1", optional = true }   
+serde_urlencoded = { version = "0.7", optional = true }
 
 [dev-dependencies]
 proptest = "1.5"
