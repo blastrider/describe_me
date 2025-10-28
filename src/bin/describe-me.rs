@@ -155,6 +155,7 @@ fn ensure_not_root() -> Result<()> {
 }
 
 fn main() -> Result<()> {
+    describe_me::init_logging();
     let opts = Opts::parse();
 
     ensure_not_root()?;

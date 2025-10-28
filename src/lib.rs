@@ -42,5 +42,7 @@ pub use application::health::{eval_checks, parse_check, Severity};
 
 pub use application::exposure::Exposure;
 
+pub use application::logging::init_logging;
+
 #[cfg(feature = "serde")]
 pub use application::exposure::SnapshotView;

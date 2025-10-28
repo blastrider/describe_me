@@ -101,3 +101,4 @@ pub mod web;
 pub mod health;
 
 pub mod exposure;
+pub mod logging;
