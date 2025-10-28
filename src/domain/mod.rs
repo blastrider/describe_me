@@ -4,7 +4,10 @@ pub mod error;
 pub mod model;
 
 #[cfg(feature = "config")]
-pub use config::{DescribeConfig, ExposureConfig, ServiceSelection, WebAccessConfig};
+pub use config::{
+    BruteForceConfig, DescribeConfig, ExposureConfig, RouteLimitConfig, ServiceSelection,
+    SseLimitConfig, WebAccessConfig, WebSecurityConfig,
+};
 pub use error::DescribeError;
 pub use model::{
     CaptureOptions,
