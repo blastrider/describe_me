@@ -2,7 +2,7 @@
 use crate::domain::ServiceInfo;
 use crate::domain::{CaptureOptions, DescribeError, DiskUsage, SystemSnapshot};
 use std::time::Instant;
-use tracing::debug;
+use tracing::{debug, error};
 
 impl SystemSnapshot {
     pub fn capture() -> Result<Self, DescribeError> {
@@ -11,16 +11,27 @@ impl SystemSnapshot {
 
     pub fn capture_with(opts: CaptureOptions) -> Result<Self, DescribeError> {
         let started_at = Instant::now();
-        let base = crate::infrastructure::sysinfo::gather()?;
+        let base = crate::infrastructure::sysinfo::gather().map_err(|err| {
+            error!(r#where = "gather", error = %err, "system_error");
+            err
+        })?;
         let disk_usage = if opts.with_disk_usage {
-            Some(crate::infrastructure::sysinfo::gather_disks()?)
+            Some(
+                crate::infrastructure::sysinfo::gather_disks().map_err(|err| {
+                    error!(r#where = "gather_disks", error = %err, "system_error");
+                    err
+                })?,
+            )
         } else {
             None
         };
 
         #[cfg(feature = "systemd")]
         let services_running: Vec<ServiceInfo> = if opts.with_services {
-            crate::infrastructure::systemd::list_systemd_services()?
+            crate::infrastructure::systemd::list_systemd_services().map_err(|err| {
+                error!(r#where = "systemctl", error = %err, "system_error");
+                err
+            })?
         } else {
             Vec::new()
         };
