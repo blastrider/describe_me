@@ -99,10 +99,13 @@ pub async fn serve_http<A: Into<SocketAddr>>(
         .await
         .map_err(map_io)?;
     let bind_addr = listener.local_addr().unwrap_or(bind_addr);
+    let interval_secs = interval.as_secs_f64();
     tracing::info!(
         addr = %bind_addr,
-        interval_s = interval.as_secs_f64(),
-        "http_server_started"
+        interval_s = interval_secs,
+        "http_server_started addr={} interval_s={}",
+        bind_addr,
+        interval_secs
     );
     axum::serve(listener, app).await.map_err(map_io)?;
 
