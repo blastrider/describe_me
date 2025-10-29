@@ -4,7 +4,10 @@ CARGO ?= cargo
 FEATURES ?= --all-features
 MSRV ?= 1.90.0
 
-.PHONY: fmt fmt-check clippy test test-release doc audit deny bench ci msrv-build tools
+.PHONY: fmt fmt-check clippy test test-release doc audit deny bench ci msrv-build tools build-complete
+
+release-complete:
+	$(CARGO) build --release --all-features
 
 fmt:
 	$(CARGO) fmt

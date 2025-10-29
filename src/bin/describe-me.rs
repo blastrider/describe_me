@@ -2,6 +2,7 @@
 
 use anyhow::{bail, Result};
 use clap::{ArgAction, Parser};
+use describe_me::LogEvent;
 #[cfg(all(unix, feature = "cli"))]
 use nix::unistd::Uid;
 #[cfg(feature = "cli")]
@@ -155,10 +156,7 @@ fn ensure_not_root() -> Result<()> {
 }
 
 fn main() -> Result<()> {
-    describe_me::init_logging();
-    let opts = Opts::parse();
-
-    ensure_not_root()?;
+    let mut opts = Opts::parse();
 
     // Charge optionnellement la config (pour filtrages, web, ...)
     #[cfg(feature = "config")]
@@ -174,6 +172,39 @@ fn main() -> Result<()> {
             "--config nécessite la feature `config` (cargo run --features \"cli systemd config\")."
         );
     }
+
+    #[cfg(feature = "config")]
+    if let Some(cfg) = &cfg {
+        if let Some(runtime) = cfg.runtime.as_ref() {
+            if let Some(value) = runtime.rust_log.as_ref() {
+                if std::env::var_os("RUST_LOG").is_none() {
+                    std::env::set_var("RUST_LOG", value);
+                }
+            }
+            if let Some(cli) = runtime.cli.as_ref() {
+                if opts.web.is_none() {
+                    opts.web = cli.web.clone();
+                }
+                if !opts.with_services {
+                    if let Some(true) = cli.with_services {
+                        opts.with_services = true;
+                    }
+                }
+                if !opts.web_expose_all {
+                    if let Some(true) = cli.web_expose_all {
+                        opts.web_expose_all = true;
+                    }
+                }
+                if opts.web_allow_ip.is_empty() && !cli.web_allow_ip.is_empty() {
+                    opts.web_allow_ip = cli.web_allow_ip.clone();
+                }
+            }
+        }
+    }
+
+    describe_me::init_logging();
+
+    ensure_not_root()?;
 
     #[cfg(feature = "web")]
     let web_debug = opts.web_debug;
@@ -268,6 +299,33 @@ fn main() -> Result<()> {
             web_exposure.disk_partitions = true;
         }
     }
+
+    let exposure_all_effective = exposure.is_all();
+
+    #[cfg(feature = "web")]
+    let web_expose_all_effective = web_exposure.is_all();
+    #[cfg(not(feature = "web"))]
+    let web_expose_all_effective = false;
+
+    let mode = if opts.web.is_some() {
+        "web"
+    } else if opts.pretty {
+        "json_pretty"
+    } else if opts.json {
+        "json"
+    } else {
+        "cli"
+    };
+
+    LogEvent::Startup {
+        mode: mode.into(),
+        with_services: opts.with_services,
+        net_listen: opts.net_listen,
+        expose_all: exposure_all_effective,
+        web_expose_all: web_expose_all_effective,
+        checks: &opts.checks,
+    }
+    .emit();
 
     // --- Mode serveur web (SSE) --------------------------------------------
     #[cfg(not(feature = "web"))]

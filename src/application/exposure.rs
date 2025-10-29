@@ -33,6 +33,10 @@ impl Exposure {
         self.services |= other.services;
         self.disk_partitions |= other.disk_partitions;
     }
+
+    pub fn is_all(&self) -> bool {
+        self.hostname && self.os && self.kernel && self.services && self.disk_partitions
+    }
 }
 
 #[cfg(feature = "config")]
