@@ -173,26 +173,54 @@ async fn sse_stream(State(state): State<AppState>, guard: AuthGuard) -> impl Int
             let max_payload = max_payload;
 
             async move {
-                let payload = match SystemSnapshot::capture_with(CaptureOptions {
-                    with_services,
-                    with_disk_usage: true,
-                }) {
-                    #[allow(unused_mut)]
-                    Ok(mut s) => {
-                        #[cfg(all(feature = "systemd", feature = "config"))]
-                        if let Some(cfg) = config.as_ref() {
-                            s.services_running =
-                                filter_services(std::mem::take(&mut s.services_running), cfg);
+                let (payload, services_count, partitions_count) =
+                    match SystemSnapshot::capture_with(CaptureOptions {
+                        with_services,
+                        with_disk_usage: true,
+                    }) {
+                        #[allow(unused_mut)]
+                        Ok(mut s) => {
+                            #[cfg(all(feature = "systemd", feature = "config"))]
+                            if let Some(cfg) = config.as_ref() {
+                                s.services_running =
+                                    filter_services(std::mem::take(&mut s.services_running), cfg);
+                            }
+                            let view = SnapshotView::new(&s, exposure);
+                            #[cfg(feature = "systemd")]
+                            let services_count = view
+                                .services_running
+                                .as_ref()
+                                .map(|services| services.len());
+                            #[cfg(not(feature = "systemd"))]
+                            let services_count = None::<usize>;
+                            let partitions_count = view
+                                .disk_usage
+                                .as_ref()
+                                .and_then(|du| du.partitions.as_ref().map(|p| p.len()));
+                            (
+                                serde_json::to_string(&view)
+                                    .unwrap_or_else(|e| json_err(e.to_string())),
+                                services_count,
+                                partitions_count,
+                            )
                         }
-                        let view = SnapshotView::new(&s, exposure);
-                        serde_json::to_string(&view).unwrap_or_else(|e| json_err(e.to_string()))
-                    }
-                    Err(e) => json_err(e.to_string()),
-                };
+                        Err(e) => (json_err(e.to_string()), None, None),
+                    };
+                let payload_len = payload.len();
 
-                if payload.len() > max_payload {
+                tracing::debug!(
+                    payload_bytes = payload_len,
+                    services_count = ?services_count,
+                    partitions = ?partitions_count,
+                    "sse_tick payload_bytes={} services_count={:?} partitions={:?}",
+                    payload_len,
+                    services_count,
+                    partitions_count
+                );
+
+                if payload_len > max_payload {
                     warn!(
-                        size = payload.len(),
+                        size = payload_len,
                         limit = max_payload,
                         "Payload SSE dépassant la limite"
                     );
