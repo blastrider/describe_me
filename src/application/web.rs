@@ -2220,6 +2220,10 @@ const INDEX_HTML: &str = r#"<!doctype html>
     const tokenOpen = document.getElementById('tokenOpen');
 
     const pct = (used, total) => total > 0 ? Math.max(0, Math.min(100, (used/total)*100)) : 0;
+    const num = (value) => {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : 0;
+    };
 
     if (WEB_DEBUG && rawCard) {
       rawCard.style.display = "block";
@@ -2479,21 +2483,25 @@ const INDEX_HTML: &str = r#"<!doctype html>
       el('memUsed').textContent = fmtBytes(data.used_memory_bytes || 0);
 
       const du = data.disk_usage || {};
-      const total = du.total_bytes || 0;
-      const avail = du.available_bytes || 0;
-      const used = Math.max(0, total - avail);
+      const total = num(du.total_bytes);
+      const avail = num(du.available_bytes);
+      let used = du.used_bytes != null ? num(du.used_bytes) : Math.max(0, total - avail);
+      if (total > 0 && used > total) {
+        used = total;
+      }
 
       el('diskTotal').textContent = fmtBytes(total);
       el('diskAvail').textContent = fmtBytes(avail);
       el('diskBar').style.width = pct(used, total).toFixed(1) + "%";
 
-      const partsHtml = (du.partitions || []).map(p => {
-        const pt = Number(p.total_bytes||0);
-        const pa = Number(p.available_bytes||0);
-        const pu = Math.max(0, pt - pa);
-        const w = pct(pu, pt).toFixed(1) + "%";
-        const mp = p.mount_point || "?";
-        const fs = p.fs_type || "—";
+      const partitions = Array.isArray(du.partitions) ? du.partitions : [];
+      const partsHtml = partitions.map(p => {
+        const pt = num(p.total_bytes);
+        const pa = num(p.available_bytes);
+        const usedPart = Math.max(0, Math.min(pt, pt - pa));
+        const w = pct(usedPart, pt).toFixed(1) + "%";
+        const mp = esc(p.mount_point || "?");
+        const fs = esc(p.fs_type || "—");
         return [
           `${mp}  (fs: ${fs}) — total: ${fmtBytes(pt)}, libre: ${fmtBytes(pa)}`,
           `<div class="bar"><span style="width:${w}"></span></div>`
