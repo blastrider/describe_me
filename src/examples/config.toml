@@ -1,13 +1,70 @@
 [runtime]
-#rust_log = "info,describe_me=info"
+# Valeur RUST_LOG appliquée par défaut (ex: "info,describe_me=debug").
 rust_log = "debug"
 
 [runtime.cli]
+# Valeurs par défaut alignées sur les flags CLI (--web, --with-services, etc.).
 web = "127.0.0.1:8080"
 with_services = true
 web_expose_all = true
-web_allow_ip = ["127.0.0.1"]
+web_allow_ip = ["127.0.0.1", "::1"]
 
 [services]
-# Noms exacts des unités systemd à afficher
+# Noms exacts des unités systemd à afficher côté CLI/SSE.
 include = ["cron.service", "ssh.service", "nginx.service", "teamviewerd.service"]
+
+[exposure]
+# Exposition des champs sensibles pour la sortie CLI / JSON.
+expose_hostname = true
+expose_os = true
+expose_kernel = true
+expose_services = true
+expose_disk_partitions = true
+redacted = true
+
+[web]
+# Contrôles d'accès pour le serveur HTTP (--web).
+token = "super-secret-token"
+allow_ips = ["127.0.0.1", "10.0.0.0/16", "::1"]
+
+[web.exposure]
+# Exposition fine des champs sensibles côté serveur web.
+expose_hostname = true
+expose_os = true
+expose_kernel = true
+expose_services = true
+expose_disk_partitions = true
+redacted = true
+
+[web.security]
+# Paramétrage des limites de sécurité pour les routes web.
+allowlist_multiplier = 4
+
+[web.security.html]
+# Rate limiting pour la route HTML ("/").
+window_seconds = 60
+per_ip = 120
+per_token = 0
+
+[web.security.sse]
+# Rate limiting spécifique au flux SSE ("/sse").
+window_seconds = 60
+per_ip = 40
+per_token = 24
+max_active_per_ip = 4
+max_active_per_token = 4
+max_stream_seconds = 1800
+min_event_interval_ms = 500
+max_payload_bytes = 98304
+
+[web.security.brute_force]
+# Politique anti-bruteforce appliquée aux tokens d'authentification.
+window_seconds = 600
+threshold = 5
+initial_backoff_seconds = 10
+backoff_multiplier = 2.0
+backoff_ceiling_seconds = 120
+quarantine_seconds = 3600
+token_failure_threshold = 12
+token_ip_spread = 3
+sse_min_retry_seconds = 2
