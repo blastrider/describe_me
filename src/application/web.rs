@@ -119,9 +119,13 @@ pub async fn serve_http<A: Into<SocketAddr>>(
         .into_make_service_with_connect_info::<SocketAddr>();
 
     let bind_addr: SocketAddr = addr.into();
-    let listener = tokio::net::TcpListener::bind(bind_addr)
-        .await
-        .map_err(map_io)?;
+    let listener = match tokio::net::TcpListener::bind(bind_addr).await {
+        Ok(l) => l,
+        Err(err) => {
+            tracing::error!(addr = %bind_addr, error = %err, msg = %err, "http_bind_failed");
+            return Err(map_io(err));
+        }
+    };
     let bind_addr = listener.local_addr().unwrap_or(bind_addr);
     let interval_secs = interval.as_secs_f64();
     tracing::info!(
@@ -824,7 +828,10 @@ mod security {
                 ip = %remote_ip,
                 route = route.as_str(),
                 token = %token_key,
-                "Accès autorisé"
+                "auth_ok ip={} route={} token={}",
+                remote_ip,
+                route.as_str(),
+                token_key
             );
 
             Ok(AuthSession {

@@ -1,5 +1,6 @@
 [runtime]
-rust_log = "info,describe_me=info"
+#rust_log = "info,describe_me=info"
+rust_log = "debug"
 
 [runtime.cli]
 web = "127.0.0.1:8080"
