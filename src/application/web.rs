@@ -127,6 +127,8 @@ async fn sse_stream(State(state): State<AppState>, guard: AuthGuard) -> impl Int
     let with_services = false;
 
     let mut session = guard.into_session();
+    let client_ip = session.ip();
+    let token_key = session.token_key();
     let permit = session.take_sse_permit();
     let policy = state.security.policy();
 
@@ -139,6 +141,22 @@ async fn sse_stream(State(state): State<AppState>, guard: AuthGuard) -> impl Int
 
     let max_payload = policy.sse_max_payload_bytes();
     let max_duration = policy.sse_max_stream_duration();
+    let min_interval_ms = min_interval.as_millis().min(u128::from(u64::MAX)) as u64;
+    let max_stream_s = max_duration.as_secs();
+
+    tracing::info!(
+        ip = %client_ip,
+        token = %token_key,
+        min_interval_ms = min_interval_ms,
+        max_payload = max_payload,
+        max_stream_s = max_stream_s,
+        "sse_stream_open ip={} token={} min_interval_ms={} max_payload={} max_stream_s={}",
+        client_ip,
+        token_key,
+        min_interval_ms,
+        max_payload,
+        max_stream_s
+    );
 
     let mut ticker = time::interval(interval);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -265,12 +283,10 @@ mod security {
             self.route
         }
 
-        #[cfg(test)]
         pub fn ip(&self) -> IpAddr {
             self.ip
         }
 
-        #[cfg(test)]
         pub fn token_key(&self) -> TokenKey {
             self.token
         }
