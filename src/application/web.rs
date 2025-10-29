@@ -35,10 +35,18 @@ use std::{
 };
 
 use crate::application::logging::LogEvent;
+use axum::http::uri::Authority;
+use axum::middleware::Next;
 use axum::response::sse::Event;
 use axum::{
-    extract::State,
-    response::{Html, IntoResponse},
+    extract::{Extension, State},
+    http::{
+        header,
+        header::{HeaderName, HeaderValue, ORIGIN},
+        HeaderMap, StatusCode, Uri,
+    },
+    middleware,
+    response::{Html, IntoResponse, Response},
     routing::get,
     Router,
 };
@@ -80,6 +88,148 @@ struct AppState {
     shutdown: Arc<Notify>,
 }
 
+#[derive(Clone)]
+struct CspNonce(Arc<str>);
+
+impl CspNonce {
+    fn new(value: String) -> Self {
+        Self(Arc::<str>::from(value))
+    }
+
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+const HEADER_CONTENT_SECURITY_POLICY: HeaderName =
+    HeaderName::from_static("content-security-policy");
+const HEADER_REFERRER_POLICY: HeaderName = HeaderName::from_static("referrer-policy");
+const HEADER_X_FRAME_OPTIONS: HeaderName = HeaderName::from_static("x-frame-options");
+const HEADER_X_CONTENT_TYPE_OPTIONS: HeaderName = HeaderName::from_static("x-content-type-options");
+const HEADER_CROSS_ORIGIN_RESOURCE_POLICY: HeaderName =
+    HeaderName::from_static("cross-origin-resource-policy");
+
+type AxumRequest = axum::extract::Request;
+
+async fn http_security_layer(mut req: AxumRequest, next: Next) -> Response {
+    let nonce_value = generate_csp_nonce();
+    let csp_nonce = CspNonce::new(nonce_value);
+
+    if !is_origin_allowed(&req) {
+        let mut response = (
+            StatusCode::FORBIDDEN,
+            "Requête bloquée par la politique CORS (origin non autorisée).",
+        )
+            .into_response();
+        apply_security_headers(response.headers_mut(), &csp_nonce);
+        return response;
+    }
+
+    req.extensions_mut().insert(csp_nonce.clone());
+
+    let mut response = next.run(req).await;
+    apply_security_headers(response.headers_mut(), &csp_nonce);
+    response
+}
+
+fn generate_csp_nonce() -> String {
+    const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    let mut nonce = String::with_capacity(32);
+    for _ in 0..32 {
+        let idx = fastrand::usize(..CHARSET.len());
+        nonce.push(CHARSET[idx] as char);
+    }
+    nonce
+}
+
+fn apply_security_headers(headers: &mut HeaderMap, nonce: &CspNonce) {
+    let csp_value = format!(
+        "default-src 'none'; connect-src 'self'; img-src 'self'; font-src 'self'; \
+         style-src 'nonce-{nonce}'; script-src 'nonce-{nonce}'; base-uri 'none'; form-action 'none'; \
+         frame-ancestors 'none'; object-src 'none'",
+        nonce = nonce.as_str()
+    );
+
+    if let Ok(value) = HeaderValue::from_str(&csp_value) {
+        headers.insert(HEADER_CONTENT_SECURITY_POLICY, value);
+    }
+    headers.insert(
+        HEADER_REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    headers.insert(HEADER_X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    headers.insert(
+        HEADER_X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        HEADER_CROSS_ORIGIN_RESOURCE_POLICY,
+        HeaderValue::from_static("same-origin"),
+    );
+}
+
+fn is_origin_allowed(req: &AxumRequest) -> bool {
+    let origin = match req.headers().get(ORIGIN) {
+        Some(origin) => origin,
+        None => return true,
+    };
+
+    let host_header = match req.headers().get(header::HOST) {
+        Some(host) => host,
+        None => return false,
+    };
+
+    let origin_str = match origin.to_str() {
+        Ok(value) => value,
+        Err(_) => return false,
+    };
+
+    if origin_str.eq_ignore_ascii_case("null") {
+        return false;
+    }
+
+    let host_str = match host_header.to_str() {
+        Ok(value) => value,
+        Err(_) => return false,
+    };
+
+    let origin_uri: Uri = match origin_str.parse() {
+        Ok(uri) => uri,
+        Err(_) => return false,
+    };
+
+    let host_authority: Authority = match host_str.parse() {
+        Ok(authority) => authority,
+        Err(_) => return false,
+    };
+
+    let origin_host = match origin_uri.host() {
+        Some(host) => host,
+        None => return false,
+    };
+
+    if !origin_host.eq_ignore_ascii_case(host_authority.host()) {
+        return false;
+    }
+
+    let origin_port = origin_uri
+        .port_u16()
+        .or_else(|| default_port(origin_uri.scheme_str()));
+    let host_port = host_authority
+        .port_u16()
+        .or_else(|| default_port(origin_uri.scheme_str()));
+
+    origin_port == host_port
+}
+
+fn default_port(scheme: Option<&str>) -> Option<u16> {
+    match scheme {
+        Some("https") => Some(443),
+        Some("http") => Some(80),
+        _ => None,
+    }
+}
+
 pub async fn serve_http<A: Into<SocketAddr>>(
     addr: A,
     interval: Duration,
@@ -117,6 +267,7 @@ pub async fn serve_http<A: Into<SocketAddr>>(
     let app = Router::new()
         .route("/", get(index))
         .route("/sse", get(sse_stream))
+        .layer(middleware::from_fn(http_security_layer))
         .with_state(app_state)
         .into_make_service_with_connect_info::<SocketAddr>();
 
@@ -201,8 +352,12 @@ async fn wait_for_shutdown_signal() -> &'static str {
     }
 }
 
-async fn index(State(state): State<AppState>, _guard: AuthGuard) -> impl IntoResponse {
-    Html(render_index(state.web_debug))
+async fn index(
+    State(state): State<AppState>,
+    _guard: AuthGuard,
+    Extension(csp_nonce): Extension<CspNonce>,
+) -> impl IntoResponse {
+    Html(render_index(state.web_debug, csp_nonce.as_str()))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1859,8 +2014,10 @@ fn json_err(msg: impl AsRef<str>) -> String {
     format!(r#"{{"error":"{}"}}"#, escape_json(msg.as_ref()))
 }
 
-fn render_index(web_debug: bool) -> String {
-    INDEX_HTML.replace("__WEB_DEBUG__", if web_debug { "true" } else { "false" })
+fn render_index(web_debug: bool, csp_nonce: &str) -> String {
+    INDEX_HTML
+        .replace("__WEB_DEBUG__", if web_debug { "true" } else { "false" })
+        .replace("__CSP_NONCE__", csp_nonce)
 }
 
 const INDEX_HTML: &str = r#"<!doctype html>
@@ -1871,7 +2028,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
     name="viewport"
     content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>describe_me — Live</title>
-  <style>
+  <style nonce="__CSP_NONCE__">
     :root {
       --bg: #0f1115;
       --card: #151923;
@@ -2047,7 +2204,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
     <button id="tokenOpen" class="link-button" type="button">Modifier le jeton</button>
   </div>
 
-  <script>
+  <script nonce="__CSP_NONCE__">
     const WEB_DEBUG = __WEB_DEBUG__;
     const dot = document.getElementById('statusDot');
     const raw = document.getElementById('raw');
