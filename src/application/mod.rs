@@ -81,10 +81,23 @@ use crate::domain::DescribeConfig;
 pub fn load_config_from_path<P: AsRef<std::path::Path>>(
     path: P,
 ) -> Result<DescribeConfig, DescribeError> {
-    let data = std::fs::read_to_string(path.as_ref())
-        .map_err(|e| DescribeError::Config(format!("read {}: {e}", path.as_ref().display())))?;
-    toml::from_str::<DescribeConfig>(&data)
-        .map_err(|e| DescribeError::Config(format!("toml parse: {e}")))
+    let path_ref = path.as_ref();
+    let data = std::fs::read_to_string(path_ref).map_err(|e| {
+        tracing::error!(
+            path = %path_ref.display(),
+            error = %e,
+            "config_error"
+        );
+        DescribeError::Config(format!("read {}: {e}", path_ref.display()))
+    })?;
+    toml::from_str::<DescribeConfig>(&data).map_err(|e| {
+        tracing::error!(
+            path = %path_ref.display(),
+            error = %e,
+            "config_error"
+        );
+        DescribeError::Config(format!("toml parse: {e}"))
+    })
 }
 
 /// Filtre une liste de services selon la config.
