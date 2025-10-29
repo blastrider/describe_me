@@ -12,6 +12,8 @@ pub struct DescribeConfig {
     pub web: Option<WebAccessConfig>,
     /// Exposition des champs sensibles pour la sortie JSON.
     pub exposure: Option<ExposureConfig>,
+    /// Paramètres runtime (logging, valeurs par défaut CLI).
+    pub runtime: Option<RuntimeConfig>,
 }
 
 /// Sélection des services (liste blanche simple).
@@ -36,6 +38,32 @@ pub struct WebAccessConfig {
     pub exposure: Option<ExposureConfig>,
     /// Paramétrage des limites de sécurité (rate limiting, anti-bruteforce).
     pub security: Option<WebSecurityConfig>,
+}
+
+/// Paramètres runtime supplémentaires (logging, CLI).
+#[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "serde", derive(Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct RuntimeConfig {
+    /// Valeur à appliquer pour la variable d'environnement RUST_LOG.
+    pub rust_log: Option<String>,
+    /// Valeurs par défaut pour la CLI.
+    pub cli: Option<CliDefaults>,
+}
+
+/// Valeurs par défaut pour la CLI.
+#[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "serde", derive(Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct CliDefaults {
+    /// Valeur par défaut pour --web (ADDR:PORT).
+    pub web: Option<String>,
+    /// Active --with-services si true.
+    pub with_services: Option<bool>,
+    /// Active --web-expose-all si true.
+    pub web_expose_all: Option<bool>,
+    /// Valeurs par défaut pour --web-allow-ip.
+    pub web_allow_ip: Vec<String>,
 }
 
 /// Contrôle fin des champs JSON sensibles.
