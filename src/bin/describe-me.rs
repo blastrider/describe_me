@@ -6,6 +6,7 @@ use clap::{ArgAction, Parser};
 use nix::unistd::Uid;
 #[cfg(feature = "cli")]
 use serde::Serialize;
+use tracing::info;
 
 #[derive(Parser, Debug)]
 #[command(name = "describe-me", version, about = "Décrit rapidement le serveur")]
@@ -268,6 +269,33 @@ fn main() -> Result<()> {
             web_exposure.disk_partitions = true;
         }
     }
+
+    let exposure_all_effective = exposure.is_all();
+
+    #[cfg(feature = "web")]
+    let web_expose_all_effective = web_exposure.is_all();
+    #[cfg(not(feature = "web"))]
+    let web_expose_all_effective = false;
+
+    let mode = if opts.web.is_some() {
+        "web"
+    } else if opts.pretty {
+        "json_pretty"
+    } else if opts.json {
+        "json"
+    } else {
+        "cli"
+    };
+
+    info!(
+        mode = mode,
+        with_services = opts.with_services,
+        net_listen = opts.net_listen,
+        expose_all = exposure_all_effective,
+        web_expose_all = web_expose_all_effective,
+        checks = ?opts.checks,
+        "startup"
+    );
 
     // --- Mode serveur web (SSE) --------------------------------------------
     #[cfg(not(feature = "web"))]
