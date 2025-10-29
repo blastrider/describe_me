@@ -156,10 +156,7 @@ fn ensure_not_root() -> Result<()> {
 }
 
 fn main() -> Result<()> {
-    describe_me::init_logging();
-    let opts = Opts::parse();
-
-    ensure_not_root()?;
+    let mut opts = Opts::parse();
 
     // Charge optionnellement la config (pour filtrages, web, ...)
     #[cfg(feature = "config")]
@@ -175,6 +172,39 @@ fn main() -> Result<()> {
             "--config nécessite la feature `config` (cargo run --features \"cli systemd config\")."
         );
     }
+
+    #[cfg(feature = "config")]
+    if let Some(cfg) = &cfg {
+        if let Some(runtime) = cfg.runtime.as_ref() {
+            if let Some(value) = runtime.rust_log.as_ref() {
+                if std::env::var_os("RUST_LOG").is_none() {
+                    std::env::set_var("RUST_LOG", value);
+                }
+            }
+            if let Some(cli) = runtime.cli.as_ref() {
+                if opts.web.is_none() {
+                    opts.web = cli.web.clone();
+                }
+                if !opts.with_services {
+                    if let Some(true) = cli.with_services {
+                        opts.with_services = true;
+                    }
+                }
+                if !opts.web_expose_all {
+                    if let Some(true) = cli.web_expose_all {
+                        opts.web_expose_all = true;
+                    }
+                }
+                if opts.web_allow_ip.is_empty() && !cli.web_allow_ip.is_empty() {
+                    opts.web_allow_ip = cli.web_allow_ip.clone();
+                }
+            }
+        }
+    }
+
+    describe_me::init_logging();
+
+    ensure_not_root()?;
 
     #[cfg(feature = "web")]
     let web_debug = opts.web_debug;
