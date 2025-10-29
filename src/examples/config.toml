@@ -1,3 +1,13 @@
+[runtime]
+#rust_log = "info,describe_me=info"
+rust_log = "debug"
+
+[runtime.cli]
+web = "127.0.0.1:8080"
+with_services = true
+web_expose_all = true
+web_allow_ip = ["127.0.0.1"]
+
 [services]
 # Noms exacts des unités systemd à afficher
 include = ["cron.service", "ssh.service", "nginx.service", "teamviewerd.service"]

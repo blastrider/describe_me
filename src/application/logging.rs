@@ -1,4 +1,16 @@
+//! Logging helpers for the `describe_me` application layer.
+//!
+//! This module exposes [`init_logging`] to configure `tracing` and the
+//! [`LogEvent`] enum which centralises every structured log the CLI emits.
+//! Developers should prefer constructing a [`LogEvent`] variant and calling
+//! [`LogEvent::emit`] instead of using raw `info!`/`error!` macros. Doing so
+//! keeps field names consistent (critical for journald), makes the log
+//! catalogue discoverable, and simplifies future additions. See
+//! `docs/logging.md` for usage guidelines and examples.
+
+use std::borrow::Cow;
 use tracing::dispatcher;
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::{prelude::*, EnvFilter};
 
 /// Initialise le logging :
@@ -39,4 +51,208 @@ pub fn init_logging() {
         .with(filter)
         .with(fmt_layer)
         .try_init();
+}
+
+/// Énumération centralisée des événements de log applicatifs.
+pub enum LogEvent<'a> {
+    Startup {
+        mode: Cow<'a, str>,
+        with_services: bool,
+        net_listen: bool,
+        expose_all: bool,
+        web_expose_all: bool,
+        checks: &'a [String],
+    },
+    HttpServerStarted {
+        addr: Cow<'a, str>,
+        interval_s: f64,
+    },
+    HttpServerShutdown {
+        signal: Cow<'a, str>,
+    },
+    HttpBindFailed {
+        addr: Cow<'a, str>,
+        error: Cow<'a, str>,
+    },
+    SystemError {
+        location: Cow<'a, str>,
+        error: Cow<'a, str>,
+    },
+    ConfigError {
+        path: Cow<'a, str>,
+        error: Cow<'a, str>,
+    },
+    SseStreamOpen {
+        ip: Cow<'a, str>,
+        token: Cow<'a, str>,
+        min_interval_ms: u64,
+        max_payload: usize,
+        max_stream_s: u64,
+    },
+    SseStreamClosed {
+        ip: Cow<'a, str>,
+        token: Cow<'a, str>,
+        events: u64,
+        duration_s: f64,
+        reason: Cow<'a, str>,
+    },
+    SseTick {
+        payload_bytes: usize,
+        services_count: Option<usize>,
+        partitions: Option<usize>,
+    },
+    SsePayloadOversize {
+        size: usize,
+        limit: usize,
+    },
+    AuthOk {
+        ip: Cow<'a, str>,
+        route: Cow<'a, str>,
+        token: Cow<'a, str>,
+    },
+}
+
+impl<'a> LogEvent<'a> {
+    pub fn emit(self) {
+        match self {
+            LogEvent::Startup {
+                mode,
+                with_services,
+                net_listen,
+                expose_all,
+                web_expose_all,
+                checks,
+            } => {
+                info!(
+                    mode = mode.as_ref(),
+                    with_services,
+                    net_listen,
+                    expose_all,
+                    web_expose_all,
+                    checks = ?checks,
+                    "startup mode={} with_services={} net_listen={} expose_all={} web_expose_all={} checks={:?}",
+                    mode,
+                    with_services,
+                    net_listen,
+                    expose_all,
+                    web_expose_all,
+                    checks
+                );
+            }
+            LogEvent::HttpServerStarted { addr, interval_s } => {
+                info!(
+                    addr = addr.as_ref(),
+                    interval_s, "http_server_started addr={} interval_s={}", addr, interval_s
+                );
+            }
+            LogEvent::HttpServerShutdown { signal } => {
+                info!(
+                    signal = signal.as_ref(),
+                    "http_server_shutdown signal={}", signal
+                );
+            }
+            LogEvent::HttpBindFailed { addr, error } => {
+                error!(
+                    addr = addr.as_ref(),
+                    error = error.as_ref(),
+                    msg = error.as_ref(),
+                    "http_bind_failed addr={} error={}",
+                    addr,
+                    error
+                );
+            }
+            LogEvent::SystemError { location, error } => {
+                error!(
+                    r#where = location.as_ref(),
+                    error = error.as_ref(),
+                    "system_error where={} error={}",
+                    location,
+                    error
+                );
+            }
+            LogEvent::ConfigError { path, error } => {
+                error!(
+                    path = path.as_ref(),
+                    error = error.as_ref(),
+                    "config_error path={} error={}",
+                    path,
+                    error
+                );
+            }
+            LogEvent::SseStreamOpen {
+                ip,
+                token,
+                min_interval_ms,
+                max_payload,
+                max_stream_s,
+            } => {
+                info!(
+                    ip = ip.as_ref(),
+                    token = token.as_ref(),
+                    min_interval_ms,
+                    max_payload,
+                    max_stream_s,
+                    "sse_stream_open ip={} token={} min_interval_ms={} max_payload={} max_stream_s={}",
+                    ip,
+                    token,
+                    min_interval_ms,
+                    max_payload,
+                    max_stream_s
+                );
+            }
+            LogEvent::SseStreamClosed {
+                ip,
+                token,
+                events,
+                duration_s,
+                reason,
+            } => {
+                info!(
+                    ip = ip.as_ref(),
+                    token = token.as_ref(),
+                    events,
+                    duration_s,
+                    reason = reason.as_ref(),
+                    "sse_stream_closed ip={} token={} events={} duration_s={} reason={}",
+                    ip,
+                    token,
+                    events,
+                    duration_s,
+                    reason
+                );
+            }
+            LogEvent::SseTick {
+                payload_bytes,
+                services_count,
+                partitions,
+            } => {
+                debug!(
+                    payload_bytes,
+                    services_count = ?services_count,
+                    partitions = ?partitions,
+                    "sse_tick payload_bytes={} services_count={:?} partitions={:?}",
+                    payload_bytes,
+                    services_count,
+                    partitions
+                );
+            }
+            LogEvent::SsePayloadOversize { size, limit } => {
+                warn!(
+                    size,
+                    limit, "sse_payload_oversize size={} limit={}", size, limit
+                );
+            }
+            LogEvent::AuthOk { ip, route, token } => {
+                debug!(
+                    ip = ip.as_ref(),
+                    route = route.as_ref(),
+                    token = token.as_ref(),
+                    "auth_ok ip={} route={} token={}",
+                    ip,
+                    route,
+                    token
+                );
+            }
+        }
+    }
 }

@@ -1,6 +1,10 @@
+use crate::application::logging::LogEvent;
 #[cfg(any(feature = "systemd", feature = "config"))]
 use crate::domain::ServiceInfo;
 use crate::domain::{CaptureOptions, DescribeError, DiskUsage, SystemSnapshot};
+use std::borrow::Cow;
+use std::time::Instant;
+use tracing::debug;
 
 impl SystemSnapshot {
     pub fn capture() -> Result<Self, DescribeError> {
@@ -8,21 +12,42 @@ impl SystemSnapshot {
     }
 
     pub fn capture_with(opts: CaptureOptions) -> Result<Self, DescribeError> {
-        let base = crate::infrastructure::sysinfo::gather()?;
+        let started_at = Instant::now();
+        let base = crate::infrastructure::sysinfo::gather().inspect_err(|err| {
+            LogEvent::SystemError {
+                location: Cow::Borrowed("gather"),
+                error: Cow::Owned(err.to_string()),
+            }
+            .emit();
+        })?;
         let disk_usage = if opts.with_disk_usage {
-            Some(crate::infrastructure::sysinfo::gather_disks()?)
+            Some(
+                crate::infrastructure::sysinfo::gather_disks().inspect_err(|err| {
+                    LogEvent::SystemError {
+                        location: Cow::Borrowed("gather_disks"),
+                        error: Cow::Owned(err.to_string()),
+                    }
+                    .emit();
+                })?,
+            )
         } else {
             None
         };
 
         #[cfg(feature = "systemd")]
         let services_running: Vec<ServiceInfo> = if opts.with_services {
-            crate::infrastructure::systemd::list_systemd_services()?
+            crate::infrastructure::systemd::list_systemd_services().inspect_err(|err| {
+                LogEvent::SystemError {
+                    location: Cow::Borrowed("systemctl"),
+                    error: Cow::Owned(err.to_string()),
+                }
+                .emit();
+            })?
         } else {
             Vec::new()
         };
 
-        Ok(SystemSnapshot {
+        let snapshot = SystemSnapshot {
             hostname: base.hostname,
             os: base.os,
             kernel: base.kernel,
@@ -36,7 +61,22 @@ impl SystemSnapshot {
             disk_usage,
             #[cfg(feature = "systemd")]
             services_running,
-        })
+        };
+
+        let duration = started_at.elapsed();
+        let disk = snapshot.disk_usage.as_ref();
+        debug!(
+            duration_ms = duration.as_millis(),
+            cpu = snapshot.cpu_count,
+            mem_used = snapshot.used_memory_bytes,
+            mem_total = snapshot.total_memory_bytes,
+            disk_total = disk.map(|du| du.total_bytes),
+            disk_avail = disk.map(|du| du.available_bytes),
+            disk_partitions = disk.map(|du| du.partitions.len()),
+            "snapshot_captured"
+        );
+
+        Ok(snapshot)
     }
 }
 
@@ -52,10 +92,25 @@ use crate::domain::DescribeConfig;
 pub fn load_config_from_path<P: AsRef<std::path::Path>>(
     path: P,
 ) -> Result<DescribeConfig, DescribeError> {
-    let data = std::fs::read_to_string(path.as_ref())
-        .map_err(|e| DescribeError::Config(format!("read {}: {e}", path.as_ref().display())))?;
-    toml::from_str::<DescribeConfig>(&data)
-        .map_err(|e| DescribeError::Config(format!("toml parse: {e}")))
+    let path_ref = path.as_ref();
+    let data = std::fs::read_to_string(path_ref).map_err(|e| {
+        let msg = e.to_string();
+        LogEvent::ConfigError {
+            path: Cow::Owned(path_ref.display().to_string()),
+            error: Cow::Owned(msg),
+        }
+        .emit();
+        DescribeError::Config(format!("read {}: {e}", path_ref.display()))
+    })?;
+    toml::from_str::<DescribeConfig>(&data).map_err(|e| {
+        let msg = e.to_string();
+        LogEvent::ConfigError {
+            path: Cow::Owned(path_ref.display().to_string()),
+            error: Cow::Owned(msg),
+        }
+        .emit();
+        DescribeError::Config(format!("toml parse: {e}"))
+    })
 }
 
 /// Filtre une liste de services selon la config.

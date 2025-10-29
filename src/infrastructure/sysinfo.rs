@@ -1,6 +1,7 @@
 use crate::domain::DescribeError;
 use std::os::unix::fs::MetadataExt;
 use sysinfo::{CpuRefreshKind, Disks, MemoryRefreshKind, RefreshKind, System};
+use tracing::debug;
 
 pub(crate) struct SysinfoSnapshot {
     pub hostname: String,
@@ -167,6 +168,15 @@ pub(crate) fn gather_disks() -> Result<DiskUsage, DescribeError> {
     }
 
     let used = total.saturating_sub(avail);
+
+    debug!(
+        partitions = partitions.len(),
+        counted_devices = counted_devs.len(),
+        total_bytes = total,
+        available_bytes = avail,
+        used_bytes = used,
+        "disk_aggregate"
+    );
 
     Ok(DiskUsage {
         total_bytes: total,
