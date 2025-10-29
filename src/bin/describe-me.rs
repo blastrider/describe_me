@@ -86,6 +86,10 @@ struct Opts {
     #[arg(long = "expose-disk-partitions", action = ArgAction::SetTrue)]
     expose_disk_partitions: bool,
 
+    /// Désactive le mode redacted (versions OS/noyau tronquées par défaut).
+    #[arg(long = "no-redacted", action = ArgAction::SetTrue)]
+    no_redacted: bool,
+
     /// Active tous les champs sensibles d'un coup (hostname, kernel, services...)
     #[arg(long = "expose-all", action = ArgAction::SetTrue)]
     expose_all: bool,
@@ -267,6 +271,10 @@ fn main() -> Result<()> {
         }
     }
 
+    if opts.no_redacted {
+        exposure.redacted = false;
+    }
+
     #[cfg(feature = "web")]
     let mut web_exposure = exposure;
 
@@ -298,6 +306,11 @@ fn main() -> Result<()> {
         if opts.web_expose_disk_partitions {
             web_exposure.disk_partitions = true;
         }
+    }
+
+    #[cfg(feature = "web")]
+    if opts.no_redacted {
+        web_exposure.redacted = false;
     }
 
     let exposure_all_effective = exposure.is_all();

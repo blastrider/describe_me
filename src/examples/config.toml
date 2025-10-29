@@ -20,6 +20,7 @@ expose_os = true
 expose_kernel = true
 expose_services = true
 expose_disk_partitions = true
+redacted = true
 
 [web]
 # Contrôles d'accès pour le serveur HTTP (--web).
@@ -33,6 +34,7 @@ expose_os = true
 expose_kernel = true
 expose_services = true
 expose_disk_partitions = true
+redacted = true
 
 [web.security]
 # Paramétrage des limites de sécurité pour les routes web.
