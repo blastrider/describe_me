@@ -2,11 +2,11 @@
 
 use anyhow::{bail, Result};
 use clap::{ArgAction, Parser};
+use describe_me::LogEvent;
 #[cfg(all(unix, feature = "cli"))]
 use nix::unistd::Uid;
 #[cfg(feature = "cli")]
 use serde::Serialize;
-use tracing::info;
 
 #[derive(Parser, Debug)]
 #[command(name = "describe-me", version, about = "Décrit rapidement le serveur")]
@@ -317,20 +317,15 @@ fn main() -> Result<()> {
         "cli"
     };
 
-    info!(
-        mode = mode,
-        with_services = opts.with_services,
-        net_listen = opts.net_listen,
-        expose_all = exposure_all_effective,
-        web_expose_all = web_expose_all_effective,
-        checks = ?opts.checks,
-        "startup mode={mode} with_services={} net_listen={} expose_all={} web_expose_all={} checks={:?}",
-        opts.with_services,
-        opts.net_listen,
-        exposure_all_effective,
-        web_expose_all_effective,
-        opts.checks
-    );
+    LogEvent::Startup {
+        mode: mode.into(),
+        with_services: opts.with_services,
+        net_listen: opts.net_listen,
+        expose_all: exposure_all_effective,
+        web_expose_all: web_expose_all_effective,
+        checks: &opts.checks,
+    }
+    .emit();
 
     // --- Mode serveur web (SSE) --------------------------------------------
     #[cfg(not(feature = "web"))]

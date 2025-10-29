@@ -18,6 +18,7 @@
 //!       describe_me::Exposure::all(),
 //!   ).await?;
 
+use std::borrow::Cow;
 use std::convert::Infallible;
 #[cfg(unix)]
 use std::future::pending;
@@ -33,6 +34,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::application::logging::LogEvent;
 use axum::response::sse::Event;
 use axum::{
     extract::State,
@@ -122,23 +124,29 @@ pub async fn serve_http<A: Into<SocketAddr>>(
     let listener = match tokio::net::TcpListener::bind(bind_addr).await {
         Ok(l) => l,
         Err(err) => {
-            tracing::error!(addr = %bind_addr, error = %err, msg = %err, "http_bind_failed");
+            let msg = err.to_string();
+            LogEvent::HttpBindFailed {
+                addr: Cow::Owned(bind_addr.to_string()),
+                error: Cow::Owned(msg),
+            }
+            .emit();
             return Err(map_io(err));
         }
     };
     let bind_addr = listener.local_addr().unwrap_or(bind_addr);
     let interval_secs = interval.as_secs_f64();
-    tracing::info!(
-        addr = %bind_addr,
-        interval_s = interval_secs,
-        "http_server_started addr={} interval_s={}",
-        bind_addr,
-        interval_secs
-    );
+    LogEvent::HttpServerStarted {
+        addr: Cow::Owned(bind_addr.to_string()),
+        interval_s: interval_secs,
+    }
+    .emit();
 
     let shutdown = async move {
         let signal = wait_for_shutdown_signal().await;
-        tracing::info!(signal, "http_server_shutdown signal={signal}");
+        LogEvent::HttpServerShutdown {
+            signal: Cow::Owned(signal.to_string()),
+        }
+        .emit();
         shutdown_for_task.notify_waiters();
     };
 
@@ -372,20 +380,16 @@ where
 impl<S> PinnedDrop for MetricsStream<S> {
     fn drop(self: Pin<&mut Self>) {
         let this = self.project();
-        let reason = this.metrics.reason();
-        tracing::info!(
-            ip = %this.metrics.ip(),
-            token = %this.metrics.token(),
-            events = this.metrics.events(),
-            duration_s = this.metrics.duration_seconds(),
-            reason = reason.as_str(),
-            "sse_stream_closed ip={} token={} events={} duration_s={} reason={}",
-            this.metrics.ip(),
-            this.metrics.token(),
-            this.metrics.events(),
-            this.metrics.duration_seconds(),
-            reason.as_str()
-        );
+        let metrics = this.metrics;
+        let reason = metrics.reason();
+        LogEvent::SseStreamClosed {
+            ip: Cow::Owned(metrics.ip().to_string()),
+            token: Cow::Owned(metrics.token().to_string()),
+            events: metrics.events(),
+            duration_s: metrics.duration_seconds(),
+            reason: Cow::Borrowed(reason.as_str()),
+        }
+        .emit();
     }
 }
 
@@ -421,19 +425,14 @@ async fn sse_stream(State(state): State<AppState>, guard: AuthGuard) -> impl Int
     let metrics = Arc::new(SseMetrics::new(client_ip, token_key, max_duration));
     let metrics_for_stream = metrics.clone();
 
-    tracing::info!(
-        ip = %client_ip,
-        token = %token_key,
-        min_interval_ms = min_interval_ms,
-        max_payload = max_payload,
-        max_stream_s = max_stream_s,
-        "sse_stream_open ip={} token={} min_interval_ms={} max_payload={} max_stream_s={}",
-        client_ip,
-        token_key,
+    LogEvent::SseStreamOpen {
+        ip: Cow::Owned(client_ip.to_string()),
+        token: Cow::Owned(token_key.to_string()),
         min_interval_ms,
         max_payload,
-        max_stream_s
-    );
+        max_stream_s,
+    }
+    .emit();
 
     let mut ticker = time::interval(interval);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -491,22 +490,19 @@ async fn sse_stream(State(state): State<AppState>, guard: AuthGuard) -> impl Int
                 };
             let payload_len = payload.len();
 
-            tracing::debug!(
-                payload_bytes = payload_len,
-                services_count = ?services_count,
-                partitions = ?partitions_count,
-                "sse_tick payload_bytes={} services_count={:?} partitions={:?}",
-                payload_len,
+            LogEvent::SseTick {
+                payload_bytes: payload_len,
                 services_count,
-                partitions_count
-            );
+                partitions: partitions_count,
+            }
+            .emit();
 
             let event = if payload_len > max_payload {
-                warn!(
-                    size = payload_len,
-                    limit = max_payload,
-                    "sse_payload_oversize"
-                );
+                LogEvent::SsePayloadOversize {
+                    size: payload_len,
+                    limit: max_payload,
+                }
+                .emit();
                 Event::default().data(json_err("payload SSE trop volumineux"))
             } else {
                 Event::default().data(payload)
@@ -529,6 +525,7 @@ mod security {
     #[cfg(feature = "config")]
     use super::WebSecurityConfig;
     use super::{AppState, DescribeError, WebAccess};
+    use crate::application::logging::LogEvent;
     use axum::{
         async_trait,
         extract::{ConnectInfo, FromRequestParts},
@@ -536,6 +533,7 @@ mod security {
         response::{IntoResponse, Response},
     };
     use std::{
+        borrow::Cow,
         collections::{HashMap, HashSet, VecDeque},
         fmt,
         hash::{Hash, Hasher},
@@ -545,7 +543,7 @@ mod security {
     };
     use subtle::ConstantTimeEq;
     use tokio::sync::Mutex;
-    use tracing::{debug, warn};
+    use tracing::warn;
 
     const GENERIC_AUTH_MESSAGE: &str = "authentification requise";
     const GENERIC_RATE_LIMIT_MESSAGE: &str = "trop de requêtes, réessayez plus tard";
@@ -824,15 +822,12 @@ mod security {
 
             self.state.note_success(remote_ip, token_key).await;
 
-            debug!(
-                ip = %remote_ip,
-                route = route.as_str(),
-                token = %token_key,
-                "auth_ok ip={} route={} token={}",
-                remote_ip,
-                route.as_str(),
-                token_key
-            );
+            LogEvent::AuthOk {
+                ip: Cow::Owned(remote_ip.to_string()),
+                route: Cow::Owned(route.as_str().to_string()),
+                token: Cow::Owned(token_key.to_string()),
+            }
+            .emit();
 
             Ok(AuthSession {
                 route,
