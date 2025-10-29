@@ -1,6 +1,8 @@
 #[cfg(any(feature = "systemd", feature = "config"))]
 use crate::domain::ServiceInfo;
 use crate::domain::{CaptureOptions, DescribeError, DiskUsage, SystemSnapshot};
+use std::time::Instant;
+use tracing::debug;
 
 impl SystemSnapshot {
     pub fn capture() -> Result<Self, DescribeError> {
@@ -8,6 +10,7 @@ impl SystemSnapshot {
     }
 
     pub fn capture_with(opts: CaptureOptions) -> Result<Self, DescribeError> {
+        let started_at = Instant::now();
         let base = crate::infrastructure::sysinfo::gather()?;
         let disk_usage = if opts.with_disk_usage {
             Some(crate::infrastructure::sysinfo::gather_disks()?)
@@ -22,7 +25,7 @@ impl SystemSnapshot {
             Vec::new()
         };
 
-        Ok(SystemSnapshot {
+        let snapshot = SystemSnapshot {
             hostname: base.hostname,
             os: base.os,
             kernel: base.kernel,
@@ -36,7 +39,22 @@ impl SystemSnapshot {
             disk_usage,
             #[cfg(feature = "systemd")]
             services_running,
-        })
+        };
+
+        let duration = started_at.elapsed();
+        let disk = snapshot.disk_usage.as_ref();
+        debug!(
+            duration_ms = duration.as_millis(),
+            cpu = snapshot.cpu_count,
+            mem_used = snapshot.used_memory_bytes,
+            mem_total = snapshot.total_memory_bytes,
+            disk_total = disk.map(|du| du.total_bytes),
+            disk_avail = disk.map(|du| du.available_bytes),
+            disk_partitions = disk.map(|du| du.partitions.len()),
+            "snapshot_captured"
+        );
+
+        Ok(snapshot)
     }
 }
 
