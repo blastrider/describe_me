@@ -294,7 +294,12 @@ fn main() -> Result<()> {
         expose_all = exposure_all_effective,
         web_expose_all = web_expose_all_effective,
         checks = ?opts.checks,
-        "startup"
+        "startup mode={mode} with_services={} net_listen={} expose_all={} web_expose_all={} checks={:?}",
+        opts.with_services,
+        opts.net_listen,
+        exposure_all_effective,
+        web_expose_all_effective,
+        opts.checks
     );
 
     // --- Mode serveur web (SSE) --------------------------------------------
