@@ -94,9 +94,16 @@ pub async fn serve_http<A: Into<SocketAddr>>(
         .with_state(app_state)
         .into_make_service_with_connect_info::<SocketAddr>();
 
-    let listener = tokio::net::TcpListener::bind(addr.into())
+    let bind_addr: SocketAddr = addr.into();
+    let listener = tokio::net::TcpListener::bind(bind_addr)
         .await
         .map_err(map_io)?;
+    let bind_addr = listener.local_addr().unwrap_or(bind_addr);
+    tracing::info!(
+        addr = %bind_addr,
+        interval_s = interval.as_secs_f64(),
+        "http_server_started"
+    );
     axum::serve(listener, app).await.map_err(map_io)?;
 
     Ok(())
