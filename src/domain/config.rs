@@ -67,7 +67,7 @@ pub struct CliDefaults {
 }
 
 /// Contrôle fin des champs JSON sensibles.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct ExposureConfig {
@@ -81,6 +81,28 @@ pub struct ExposureConfig {
     pub expose_services: bool,
     /// Autoriser le détail des partitions disque (points de montage, fs, ...).
     pub expose_disk_partitions: bool,
+    /// Fournir des valeurs masquées (versions tronquées) lorsque l'exposition complète est désactivée.
+    #[cfg_attr(feature = "serde", serde(default = "ExposureConfig::default_redacted"))]
+    pub redacted: bool,
+}
+
+impl ExposureConfig {
+    const fn default_redacted() -> bool {
+        true
+    }
+}
+
+impl Default for ExposureConfig {
+    fn default() -> Self {
+        Self {
+            expose_hostname: false,
+            expose_os: false,
+            expose_kernel: false,
+            expose_services: false,
+            expose_disk_partitions: false,
+            redacted: true,
+        }
+    }
 }
 
 /// Paramétrage global des limites de sécurité côté web.
