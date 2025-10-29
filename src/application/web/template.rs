@@ -459,7 +459,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
 
       el('hostname').textContent = data.hostname || "—";
       el('os').textContent = data.os || data.os_name || "—";
-      el('kernel').textContent = data.kernel || "—";
+      el('kernel').textContent = data.kernel || data.kernel_release || "—";
       el('uptime').textContent = fmtSecs(data.uptime_seconds || 0);
       el('cpus').textContent = data.cpu_count ?? "—";
 

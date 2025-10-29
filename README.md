@@ -202,6 +202,7 @@ expose_disk_partitions = true
 expose_hostname = true
 expose_os = true
 expose_kernel = true
+redacted = true
 
 
 Utilisation CLI :

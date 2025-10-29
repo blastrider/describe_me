@@ -6,13 +6,28 @@ use crate::domain::ServiceInfo;
 #[cfg(feature = "serde")]
 use crate::domain::{DiskPartition, SystemSnapshot};
 
-#[derive(Debug, Copy, Clone, Default)]
+#[derive(Debug, Copy, Clone)]
 pub struct Exposure {
     pub hostname: bool,
     pub os: bool,
     pub kernel: bool,
     pub services: bool,
     pub disk_partitions: bool,
+    /// Affiche des valeurs masquées (ex: versions tronquées) lorsque les détails complets sont interdits.
+    pub redacted: bool,
+}
+
+impl Default for Exposure {
+    fn default() -> Self {
+        Self {
+            hostname: false,
+            os: false,
+            kernel: false,
+            services: false,
+            disk_partitions: false,
+            redacted: true,
+        }
+    }
 }
 
 impl Exposure {
@@ -23,6 +38,7 @@ impl Exposure {
             kernel: true,
             services: true,
             disk_partitions: true,
+            redacted: false,
         }
     }
 
@@ -32,6 +48,7 @@ impl Exposure {
         self.kernel |= other.kernel;
         self.services |= other.services;
         self.disk_partitions |= other.disk_partitions;
+        self.redacted |= other.redacted;
     }
 
     pub fn is_all(&self) -> bool {
@@ -48,6 +65,7 @@ impl From<&crate::domain::ExposureConfig> for Exposure {
             kernel: cfg.expose_kernel,
             services: cfg.expose_services,
             disk_partitions: cfg.expose_disk_partitions,
+            redacted: cfg.redacted,
         }
     }
 }
@@ -58,6 +76,8 @@ use serde::Serialize;
 #[cfg(feature = "serde")]
 #[derive(Debug, Clone, Serialize)]
 pub struct SnapshotView {
+    #[serde(skip_serializing_if = "is_false")]
+    pub redacted: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hostname: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -73,6 +93,10 @@ pub struct SnapshotView {
     pub used_swap_bytes: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub disk_usage: Option<DiskUsageView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub os_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kernel_release: Option<String>,
     #[cfg(feature = "systemd")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub services_running: Option<Vec<ServiceInfo>>,
@@ -97,18 +121,45 @@ impl SnapshotView {
 
         #[cfg(feature = "systemd")]
         let services_summary = compute_service_summary(&snapshot.services_running);
+
+        let os_hint = snapshot
+            .os
+            .as_ref()
+            .and_then(|value| sanitize_os_hint(value));
+        let kernel_hint = snapshot
+            .kernel
+            .as_ref()
+            .and_then(|value| sanitize_kernel_hint(value));
+
+        let mut redacted = false;
+
+        let os = if exposure.os {
+            snapshot.os.clone()
+        } else if exposure.redacted {
+            if os_hint.is_some() {
+                redacted = true;
+            }
+            os_hint.clone()
+        } else {
+            None
+        };
+
+        let kernel = if exposure.kernel {
+            snapshot.kernel.clone()
+        } else if exposure.redacted {
+            if kernel_hint.is_some() {
+                redacted = true;
+            }
+            kernel_hint.clone()
+        } else {
+            None
+        };
+
         Self {
+            redacted,
             hostname: exposure.hostname.then(|| snapshot.hostname.clone()),
-            os: if exposure.os {
-                snapshot.os.clone()
-            } else {
-                None
-            },
-            kernel: if exposure.kernel {
-                snapshot.kernel.clone()
-            } else {
-                None
-            },
+            os,
+            kernel,
             uptime_seconds: snapshot.uptime_seconds,
             cpu_count: snapshot.cpu_count,
             load_average: snapshot.load_average,
@@ -117,6 +168,16 @@ impl SnapshotView {
             total_swap_bytes: snapshot.total_swap_bytes,
             used_swap_bytes: snapshot.used_swap_bytes,
             disk_usage,
+            os_name: if exposure.redacted || exposure.os {
+                os_hint
+            } else {
+                None
+            },
+            kernel_release: if exposure.redacted || exposure.kernel {
+                kernel_hint
+            } else {
+                None
+            },
             #[cfg(feature = "systemd")]
             services_running: if exposure.services {
                 Some(snapshot.services_running.clone())
@@ -126,6 +187,80 @@ impl SnapshotView {
             #[cfg(feature = "systemd")]
             services_summary,
         }
+    }
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+fn sanitize_os_hint(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut base = trimmed.to_string();
+    for delim in ['(', '[', '{'] {
+        if let Some(idx) = base.find(delim) {
+            base = base[..idx].trim().to_string();
+        }
+    }
+    if base.is_empty() {
+        return None;
+    }
+
+    let mut words = base.split_whitespace();
+    let vendor = words.next()?;
+    let version_token = find_version_token(&base);
+
+    let mut result = String::from(vendor);
+    if let Some(token) = version_token {
+        if let Some(version) = truncate_version(&token) {
+            if !version.is_empty() {
+                result.push(' ');
+                result.push_str(&version);
+            }
+        }
+    }
+
+    if result.is_empty() {
+        None
+    } else {
+        Some(result)
+    }
+}
+
+fn sanitize_kernel_hint(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let version_token = find_version_token(trimmed)?;
+    truncate_version(&version_token)
+}
+
+fn find_version_token(text: &str) -> Option<String> {
+    let mut current = String::new();
+    for ch in text.chars() {
+        if ch.is_ascii_digit() || ch == '.' {
+            current.push(ch);
+        } else if !current.is_empty() {
+            break;
+        }
+    }
+    if current.is_empty() {
+        None
+    } else {
+        Some(current)
+    }
+}
+
+fn truncate_version(token: &str) -> Option<String> {
+    let segments: Vec<&str> = token.split('.').filter(|seg| !seg.is_empty()).collect();
+    match segments.len() {
+        0 => None,
+        1 => Some(segments[0].to_string()),
+        _ => Some(format!("{}.{}", segments[0], segments[1])),
     }
 }
 
