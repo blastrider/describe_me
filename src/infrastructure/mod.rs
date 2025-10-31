@@ -5,3 +5,5 @@ pub mod systemd;
 
 #[cfg(feature = "net")]
 pub mod net;
+
+pub mod updates;

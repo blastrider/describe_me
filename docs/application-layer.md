@@ -7,8 +7,9 @@ La couche `application` compose les services de `domain` et
 
 - `mod.rs`
   - `SystemSnapshot::capture[_with]` : point d’entrée principal. Mesure
-    l’état système (CPU, mémoire, disques, services) et normalise
-    l’agrégation (log `snapshot_captured`).
+    l’état système (CPU, mémoire, disques, services, mises à jour) et normalise
+    l’agrégation (log `snapshot_captured`). La détection des mises à jour
+    s’appuie sur `infrastructure::updates::gather_updates` (best effort).
   - `disk_usage()` : expose l’agrégat disque directement depuis
     l’infrastructure.
   - `load_config_from_path` (feature `config`) : lit un TOML,
@@ -25,7 +26,7 @@ La couche `application` compose les services de `domain` et
     `DiskUsageView::from_snapshot`) pour uniformiser la redaction.
   - Fournit `Exposure` et `SnapshotView` utilisés par le CLI et le serveur web.
   - Gère également l’exposition des sockets en écoute (via
-    `exposure.listening_sockets`).
+    `exposure.listening_sockets`) et du statut des mises à jour (`exposure.updates`).
   - Les listes volumineuses (services, sockets, partitions) sont partagées via
     `SharedSlice` (`src/shared.rs`), qui s’appuie sur `Arc<Vec<T>>` pour
     limiter les clones lorsqu’on sérialise la même vue plusieurs fois.
