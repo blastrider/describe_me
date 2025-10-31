@@ -27,12 +27,16 @@ pub struct SystemSnapshot {
     pub disk_usage: Option<DiskUsage>,
     #[cfg(feature = "systemd")]
     pub services_running: Vec<crate::domain::model::ServiceInfo>,
+    #[cfg(feature = "net")]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub listening_sockets: Option<Vec<crate::domain::ListeningSocket>>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CaptureOptions {
     pub with_services: bool,
     pub with_disk_usage: bool,
+    pub with_listening_sockets: bool,
 }
 
 /// Une partition/point de montage.

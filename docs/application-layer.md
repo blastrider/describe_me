@@ -24,6 +24,8 @@ La couche `application` compose les services de `domain` et
   - `SnapshotView::new` inclut maintenant des helpers (`build_sensitive_field`,
     `DiskUsageView::from_snapshot`) pour uniformiser la redaction.
   - Fournit `Exposure` et `SnapshotView` utilisés par le CLI et le serveur web.
+  - Gère également l’exposition des sockets en écoute (via
+    `exposure.listening_sockets`).
 
 - `logging.rs`
   - `init_logging` : configure `tracing_subscriber`, journald (optionnel),
