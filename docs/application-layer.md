@@ -27,7 +27,7 @@ La couche `application` compose les services de `domain` et
   - Gère également l’exposition des sockets en écoute (via
     `exposure.listening_sockets`).
   - Les listes volumineuses (services, sockets, partitions) sont partagées via
-    `SharedSlice` (`application/shared.rs`), qui s’appuie sur `Arc<[T]>` pour
+    `SharedSlice` (`src/shared.rs`), qui s’appuie sur `Arc<Vec<T>>` pour
     limiter les clones lorsqu’on sérialise la même vue plusieurs fois.
 
 - `logging.rs`
