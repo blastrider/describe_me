@@ -108,52 +108,26 @@ pub struct SnapshotView {
 #[cfg(feature = "serde")]
 impl SnapshotView {
     pub fn new(snapshot: &SystemSnapshot, exposure: Exposure) -> Self {
-        let disk_usage = snapshot.disk_usage.as_ref().map(|du| DiskUsageView {
-            total_bytes: du.total_bytes,
-            available_bytes: du.available_bytes,
-            used_bytes: du.used_bytes,
-            partitions: if exposure.disk_partitions {
-                Some(du.partitions.clone())
-            } else {
-                None
-            },
-        });
+        let disk_usage = DiskUsageView::from_snapshot(snapshot, exposure);
 
         #[cfg(feature = "systemd")]
         let services_summary = compute_service_summary(&snapshot.services_running);
 
-        let os_hint = snapshot
-            .os
-            .as_ref()
-            .and_then(|value| sanitize_os_hint(value));
-        let kernel_hint = snapshot
-            .kernel
-            .as_ref()
-            .and_then(|value| sanitize_kernel_hint(value));
+        let (os, os_name, os_redacted) = build_sensitive_field(
+            &snapshot.os,
+            exposure.os,
+            exposure.redacted,
+            sanitize_os_hint,
+        );
 
-        let mut redacted = false;
+        let (kernel, kernel_release, kernel_redacted) = build_sensitive_field(
+            &snapshot.kernel,
+            exposure.kernel,
+            exposure.redacted,
+            sanitize_kernel_hint,
+        );
 
-        let os = if exposure.os {
-            snapshot.os.clone()
-        } else if exposure.redacted {
-            if os_hint.is_some() {
-                redacted = true;
-            }
-            os_hint.clone()
-        } else {
-            None
-        };
-
-        let kernel = if exposure.kernel {
-            snapshot.kernel.clone()
-        } else if exposure.redacted {
-            if kernel_hint.is_some() {
-                redacted = true;
-            }
-            kernel_hint.clone()
-        } else {
-            None
-        };
+        let redacted = os_redacted || kernel_redacted;
 
         Self {
             redacted,
@@ -168,16 +142,8 @@ impl SnapshotView {
             total_swap_bytes: snapshot.total_swap_bytes,
             used_swap_bytes: snapshot.used_swap_bytes,
             disk_usage,
-            os_name: if exposure.redacted || exposure.os {
-                os_hint
-            } else {
-                None
-            },
-            kernel_release: if exposure.redacted || exposure.kernel {
-                kernel_hint
-            } else {
-                None
-            },
+            os_name,
+            kernel_release,
             #[cfg(feature = "systemd")]
             services_running: if exposure.services {
                 Some(snapshot.services_running.clone())
@@ -188,6 +154,39 @@ impl SnapshotView {
             services_summary,
         }
     }
+}
+
+#[cfg(feature = "serde")]
+fn build_sensitive_field<F>(
+    raw: &Option<String>,
+    allow_full: bool,
+    allow_redacted: bool,
+    hint_fn: F,
+) -> (Option<String>, Option<String>, bool)
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let hint = raw.as_ref().and_then(|value| hint_fn(value));
+    let mut used_redaction = false;
+
+    let value = if allow_full {
+        raw.clone()
+    } else if allow_redacted {
+        if hint.is_some() {
+            used_redaction = true;
+        }
+        hint.clone()
+    } else {
+        None
+    };
+
+    let hint_for_view = if allow_redacted || allow_full {
+        hint
+    } else {
+        None
+    };
+
+    (value, hint_for_view, used_redaction)
 }
 
 fn is_false(value: &bool) -> bool {
@@ -272,6 +271,24 @@ pub struct DiskUsageView {
     pub used_bytes: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub partitions: Option<Vec<DiskPartition>>,
+}
+
+#[cfg(feature = "serde")]
+impl DiskUsageView {
+    fn from_snapshot(snapshot: &SystemSnapshot, exposure: Exposure) -> Option<Self> {
+        let du = snapshot.disk_usage.as_ref()?;
+        let partitions = if exposure.disk_partitions {
+            Some(du.partitions.clone())
+        } else {
+            None
+        };
+        Some(Self {
+            total_bytes: du.total_bytes,
+            available_bytes: du.available_bytes,
+            used_bytes: du.used_bytes,
+            partitions,
+        })
+    }
 }
 
 #[cfg(feature = "systemd")]
