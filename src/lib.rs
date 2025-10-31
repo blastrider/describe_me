@@ -12,6 +12,7 @@
 mod application;
 pub mod domain;
 mod infrastructure;
+mod shared;
 
 pub use domain::{
     CaptureOptions, DescribeError, DiskPartition, DiskUsage, ServiceInfo, SystemSnapshot,
@@ -46,3 +47,5 @@ pub use application::logging::{init_logging, LogEvent};
 
 #[cfg(feature = "serde")]
 pub use application::exposure::SnapshotView;
+
+pub use shared::SharedSlice;

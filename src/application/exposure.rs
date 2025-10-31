@@ -1,14 +1,14 @@
 #[cfg(all(feature = "systemd", feature = "serde"))]
 use std::collections::BTreeMap;
 
-#[cfg(feature = "serde")]
-use crate::application::SharedSlice;
 #[cfg(all(feature = "serde", feature = "net"))]
 use crate::domain::ListeningSocket;
 #[cfg(all(feature = "systemd", feature = "serde"))]
 use crate::domain::ServiceInfo;
 #[cfg(feature = "serde")]
 use crate::domain::{DiskPartition, SystemSnapshot};
+#[cfg(feature = "serde")]
+use crate::SharedSlice;
 
 #[derive(Debug, Copy, Clone)]
 pub struct Exposure {
@@ -163,17 +163,12 @@ impl SnapshotView {
             kernel_release,
             #[cfg(feature = "net")]
             listening_sockets: if exposure.listening_sockets {
-                snapshot
-                    .listening_sockets
-                    .as_ref()
-                    .map(|s| SharedSlice::from_slice(s))
+                snapshot.listening_sockets.clone()
             } else {
                 None
             },
             #[cfg(feature = "systemd")]
-            services_running: exposure
-                .services
-                .then(|| SharedSlice::from_slice(&snapshot.services_running)),
+            services_running: exposure.services.then(|| snapshot.services_running.clone()),
             #[cfg(feature = "systemd")]
             services_summary,
         }
@@ -301,9 +296,7 @@ pub struct DiskUsageView {
 impl DiskUsageView {
     fn from_snapshot(snapshot: &SystemSnapshot, exposure: &Exposure) -> Option<Self> {
         let du = snapshot.disk_usage.as_ref()?;
-        let partitions = exposure
-            .disk_partitions
-            .then(|| SharedSlice::from_slice(&du.partitions));
+        let partitions = exposure.disk_partitions.then(|| du.partitions.clone());
         Some(Self {
             total_bytes: du.total_bytes,
             available_bytes: du.available_bytes,

@@ -407,8 +407,9 @@ fn main() -> Result<()> {
     // Filtre les services si demandé (systemd + config)
     #[cfg(all(feature = "systemd", feature = "config"))]
     if let Some(cfg) = &cfg {
-        snap.services_running =
-            describe_me::filter_services(std::mem::take(&mut snap.services_running), cfg);
+        let services_mut = snap.services_running.make_mut();
+        let filtered = describe_me::filter_services(std::mem::take(services_mut), cfg);
+        *services_mut = filtered;
     }
 
     // Récupère les sockets si --net-listen (et map vers struct sérialisable locale)
@@ -486,7 +487,7 @@ fn main() -> Result<()> {
     if opts.disks {
         if let Some(du) = &snap.disk_usage {
             println!("Disque total: {} Gio", du.total_bytes as f64 / 1e9);
-            for p in &du.partitions {
+            for p in du.partitions.as_slice() {
                 println!(
                     "{}  total={} Gio  dispo={} Gio  fs={:?}",
                     p.mount_point,
