@@ -412,13 +412,11 @@ fn main() -> Result<()> {
         *services_mut = filtered;
     }
 
-    // Récupère les sockets si --net-listen (et map vers struct sérialisable locale)
-    let snapshot_view = describe_me::SnapshotView::new(&snap, exposure);
-
     // Si JSON demandé: on ne sort qu'un seul document JSON combiné
     if opts.json || opts.pretty {
         #[cfg(feature = "cli")]
         {
+            let snapshot_view = describe_me::SnapshotView::new(&snap, exposure);
             let combined = CombinedOutput {
                 snapshot: &snapshot_view,
                 #[cfg(feature = "net")]
@@ -439,10 +437,13 @@ fn main() -> Result<()> {
         }
         #[cfg(not(feature = "cli"))]
         {
+            let snapshot_view = describe_me::SnapshotView::new(&snap, exposure);
             println!("{}", serde_json::to_string_pretty(&snapshot_view)?);
             return Ok(());
         }
     }
+
+    let snapshot_view = describe_me::SnapshotView::new(&snap, exposure);
 
     // --- Mode non-JSON (comportement existant + snapshot JSON à la fin) ---
 
