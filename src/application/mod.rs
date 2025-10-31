@@ -128,6 +128,7 @@ pub fn capture_snapshot_with_view(
     exposure: Exposure,
     #[cfg(feature = "config")] cfg: Option<&DescribeConfig>,
 ) -> Result<(SystemSnapshot, SnapshotView), DescribeError> {
+    #[cfg_attr(not(all(feature = "systemd", feature = "config")), allow(unused_mut))]
     let mut snapshot = SystemSnapshot::capture_with(opts)?;
 
     #[cfg(all(feature = "systemd", feature = "config"))]
