@@ -42,6 +42,10 @@ struct Opts {
     #[arg(long, action = ArgAction::SetTrue)]
     pretty: bool,
 
+    /// Affiche un résumé concis sur une ligne (ex: updates=3 reboot=no)
+    #[arg(long, action = ArgAction::SetTrue)]
+    summary: bool,
+
     /// Lance un serveur web SSE (HTML/CSS/JS) — nécessite la feature `web`.
     /// Optionnellement préciser l'adresse:port (ex: 127.0.0.1:9000). Par défaut: 127.0.0.1:8080.
     #[arg(
@@ -88,6 +92,10 @@ struct Opts {
     #[arg(long = "expose-disk-partitions", action = ArgAction::SetTrue)]
     expose_disk_partitions: bool,
 
+    /// Expose le statut des mises à jour (nombre, reboot requis)
+    #[arg(long = "expose-updates", action = ArgAction::SetTrue)]
+    expose_updates: bool,
+
     /// Désactive le mode redacted (versions OS/noyau tronquées par défaut).
     #[arg(long = "no-redacted", action = ArgAction::SetTrue)]
     no_redacted: bool,
@@ -116,6 +124,10 @@ struct Opts {
     #[arg(long = "web-expose-disk-partitions", action = ArgAction::SetTrue)]
     web_expose_disk_partitions: bool,
 
+    /// Expose le statut des mises à jour côté --web
+    #[arg(long = "web-expose-updates", action = ArgAction::SetTrue)]
+    web_expose_updates: bool,
+
     /// Active tous les détails sensibles pour --web
     #[arg(long = "web-expose-all", action = ArgAction::SetTrue)]
     web_expose_all: bool,
@@ -134,6 +146,18 @@ struct CombinedOutput<'a> {
     snapshot: &'a describe_me::SnapshotView,
     #[serde(skip_serializing_if = "Option::is_none")]
     net_listen: Option<&'a [ListeningSocket]>,
+}
+
+#[cfg(feature = "cli")]
+fn print_summary_line(view: &describe_me::SnapshotView) {
+    let (pending, reboot) = match view.updates.as_ref() {
+        Some(info) => (
+            info.pending.to_string(),
+            if info.reboot_required { "yes" } else { "no" },
+        ),
+        None => (String::from("?"), "unknown"),
+    };
+    println!("updates={pending} reboot={reboot}");
 }
 
 #[cfg(unix)]
@@ -261,6 +285,9 @@ fn main() -> Result<()> {
         if opts.expose_disk_partitions {
             exposure.disk_partitions = true;
         }
+        if opts.expose_updates {
+            exposure.updates = true;
+        }
     }
 
     if opts.no_redacted {
@@ -300,6 +327,9 @@ fn main() -> Result<()> {
         if opts.web_expose_disk_partitions {
             web_exposure.disk_partitions = true;
         }
+        if opts.web_expose_updates {
+            web_exposure.updates = true;
+        }
     }
 
     #[cfg(feature = "web")]
@@ -310,6 +340,7 @@ fn main() -> Result<()> {
     #[cfg(feature = "web")]
     {
         web_exposure.listening_sockets |= exposure.listening_sockets;
+        web_exposure.updates |= exposure.updates;
     }
 
     let exposure_all_effective = exposure.is_all();
@@ -417,6 +448,9 @@ fn main() -> Result<()> {
         #[cfg(feature = "cli")]
         {
             let snapshot_view = describe_me::SnapshotView::new(&snap, exposure);
+            if opts.summary {
+                print_summary_line(&snapshot_view);
+            }
             let combined = CombinedOutput {
                 snapshot: &snapshot_view,
                 #[cfg(feature = "net")]
@@ -444,6 +478,10 @@ fn main() -> Result<()> {
     }
 
     let snapshot_view = describe_me::SnapshotView::new(&snap, exposure);
+
+    if opts.summary {
+        print_summary_line(&snapshot_view);
+    }
 
     // --- Mode non-JSON (comportement existant + snapshot JSON à la fin) ---
 

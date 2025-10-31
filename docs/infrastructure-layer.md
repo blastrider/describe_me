@@ -29,6 +29,16 @@ de bord.
   pour associer les sockets LISTEN/UNCONN à leurs PID éventuels.
 - Implémente un parsing minimal IPv4 little-endian, extensible vers IPv6.
 
+## `updates.rs`
+
+- Détection best-effort des mises à jour via les gestionnaires de paquets
+  (`apt-get -s upgrade`, `dnf check-update`, `checkupdates`, `apk version -l '<'`,
+  `pkg version -l '<'`).
+- Fournit `gather_updates()` qui retourne `Option<UpdatesInfo>` sans échec fatal
+  si l’outil est absent ou échoue.
+- Implémente des helpers de parsing (`count_apt_lines`, `count_dnf_updates`)
+  couverts par des tests unitaires.
+
 ## Approche commune
 
 - Pas de `unsafe`.

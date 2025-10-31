@@ -6,7 +6,7 @@ use crate::domain::ListeningSocket;
 #[cfg(all(feature = "systemd", feature = "serde"))]
 use crate::domain::ServiceInfo;
 #[cfg(feature = "serde")]
-use crate::domain::{DiskPartition, SystemSnapshot};
+use crate::domain::{DiskPartition, SystemSnapshot, UpdatesInfo};
 #[cfg(feature = "serde")]
 use crate::SharedSlice;
 
@@ -18,6 +18,7 @@ pub struct Exposure {
     pub services: bool,
     pub disk_partitions: bool,
     pub listening_sockets: bool,
+    pub updates: bool,
     /// Affiche des valeurs masquées (ex: versions tronquées) lorsque les détails complets sont interdits.
     pub redacted: bool,
 }
@@ -31,6 +32,7 @@ impl Default for Exposure {
             services: false,
             disk_partitions: false,
             listening_sockets: false,
+            updates: false,
             redacted: true,
         }
     }
@@ -45,6 +47,7 @@ impl Exposure {
             services: true,
             disk_partitions: true,
             listening_sockets: true,
+            updates: true,
             redacted: false,
         }
     }
@@ -56,6 +59,7 @@ impl Exposure {
         self.services |= other.services;
         self.disk_partitions |= other.disk_partitions;
         self.listening_sockets |= other.listening_sockets;
+        self.updates |= other.updates;
         self.redacted |= other.redacted;
     }
 
@@ -66,6 +70,7 @@ impl Exposure {
             && self.services
             && self.disk_partitions
             && self.listening_sockets
+            && self.updates
     }
 }
 
@@ -79,6 +84,7 @@ impl From<&crate::domain::ExposureConfig> for Exposure {
             services: cfg.expose_services,
             disk_partitions: cfg.expose_disk_partitions,
             listening_sockets: cfg.expose_listening_sockets,
+            updates: cfg.expose_updates,
             redacted: cfg.redacted,
         }
     }
@@ -120,6 +126,8 @@ pub struct SnapshotView {
     #[cfg(feature = "systemd")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub services_summary: Option<ServiceSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updates: Option<UpdatesInfo>,
 }
 
 #[cfg(feature = "serde")]
@@ -171,6 +179,11 @@ impl SnapshotView {
             services_running: exposure.services.then(|| snapshot.services_running.clone()),
             #[cfg(feature = "systemd")]
             services_summary,
+            updates: if exposure.updates {
+                snapshot.updates
+            } else {
+                None
+            },
         }
     }
 }
@@ -208,10 +221,12 @@ where
     (value, hint_for_view, used_redaction)
 }
 
+#[cfg(feature = "serde")]
 fn is_false(value: &bool) -> bool {
     !*value
 }
 
+#[cfg(feature = "serde")]
 fn sanitize_os_hint(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -248,6 +263,7 @@ fn sanitize_os_hint(raw: &str) -> Option<String> {
     }
 }
 
+#[cfg(feature = "serde")]
 fn sanitize_kernel_hint(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -257,6 +273,7 @@ fn sanitize_kernel_hint(raw: &str) -> Option<String> {
     truncate_version(&version_token)
 }
 
+#[cfg(feature = "serde")]
 fn find_version_token(text: &str) -> Option<String> {
     let mut current = String::new();
     for ch in text.chars() {
@@ -273,6 +290,7 @@ fn find_version_token(text: &str) -> Option<String> {
     }
 }
 
+#[cfg(feature = "serde")]
 fn truncate_version(token: &str) -> Option<String> {
     let segments: Vec<&str> = token.split('.').filter(|seg| !seg.is_empty()).collect();
     match segments.len() {

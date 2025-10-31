@@ -11,6 +11,8 @@ par des consommateurs externes.
   - `SystemSnapshot` : état complet du serveur (hostname, OS, load, mémoire,
     disques, services). Des options (`CaptureOptions`) déterminent si les
     informations disque/services/sockets doivent être collectées.
+  - `UpdatesInfo` : nombre de mises à jour détectées + besoin de reboot. Inclus
+    dans `SystemSnapshot::updates` lorsque la collecte a réussi.
   - `DiskPartition` / `DiskUsage` : modèles partagés entre capture disque,
     sérialisation JSON et web UI.
   - `ListeningSocket` : décrit un socket TCP/UDP en écoute (protocole, adresse,
@@ -24,8 +26,8 @@ par des consommateurs externes.
   - Structures reflétant le fichier TOML (`DescribeConfig`, `WebAccessConfig`,
     `ExposureConfig`, `RuntimeConfig`, `WebSecurityConfig`, etc.).
   - Valeurs par défaut et validation légère (ex. `default_redacted`).
-  - `ExposureConfig` inclut des drapeaux pour les services, partitions disque et
-    désormais les sockets en écoute.
+  - `ExposureConfig` inclut des drapeaux pour les services, partitions disque,
+    sockets en écoute et le statut des mises à jour.
 
 - `mod.rs`
   - Ré-exporte les types clés pour l’API publique : `CaptureOptions`,

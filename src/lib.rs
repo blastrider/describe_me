@@ -16,6 +16,7 @@ mod shared;
 
 pub use domain::{
     CaptureOptions, DescribeError, DiskPartition, DiskUsage, ServiceInfo, SystemSnapshot,
+    UpdatesInfo,
 };
 
 #[cfg(feature = "config")]

@@ -20,6 +20,8 @@ expose_os = true
 expose_kernel = true
 expose_services = true
 expose_disk_partitions = true
+expose_listening_sockets = true
+expose_updates = true
 redacted = true
 
 [web]
@@ -34,6 +36,8 @@ expose_os = true
 expose_kernel = true
 expose_services = true
 expose_disk_partitions = true
+expose_listening_sockets = true
+expose_updates = true
 redacted = true
 
 [web.security]

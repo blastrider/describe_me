@@ -2,7 +2,8 @@ use crate::application::logging::LogEvent;
 #[cfg(any(feature = "systemd", feature = "config"))]
 use crate::domain::ServiceInfo;
 use crate::domain::{CaptureOptions, DescribeError, DiskUsage, SystemSnapshot};
-use crate::shared::SharedSlice;
+#[cfg(any(feature = "systemd", feature = "net"))]
+use crate::SharedSlice;
 use std::borrow::Cow;
 use std::time::Instant;
 use tracing::debug;
@@ -65,6 +66,8 @@ impl SystemSnapshot {
             None
         };
 
+        let updates = crate::infrastructure::updates::gather_updates();
+
         let snapshot = SystemSnapshot {
             hostname: base.hostname,
             os: base.os,
@@ -81,6 +84,7 @@ impl SystemSnapshot {
             services_running,
             #[cfg(feature = "net")]
             listening_sockets,
+            updates,
         };
 
         let duration = started_at.elapsed();
@@ -89,6 +93,8 @@ impl SystemSnapshot {
         let net_sockets = snapshot.listening_sockets.as_ref().map(|s| s.len());
         #[cfg(not(feature = "net"))]
         let net_sockets: Option<usize> = None;
+        let updates_pending = snapshot.updates.as_ref().map(|u| u.pending);
+        let updates_reboot = snapshot.updates.as_ref().map(|u| u.reboot_required);
         debug!(
             duration_ms = duration.as_millis(),
             cpu = snapshot.cpu_count,
@@ -98,6 +104,8 @@ impl SystemSnapshot {
             disk_avail = disk.map(|du| du.available_bytes),
             disk_partitions = disk.map(|du| du.partitions.len()),
             net_sockets,
+            updates_pending,
+            updates_reboot,
             "snapshot_captured"
         );
 
