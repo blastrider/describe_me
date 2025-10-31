@@ -10,7 +10,7 @@ inventaire réseau et serveur web SSE.
 |-----------------------------|-------------------------------------------------------------|
 | `--with-services`           | Inclut les services systemd (feature `systemd`)             |
 | `--disks`                   | Force le calcul des partitions dans la sortie CLI           |
-| `--net-listen`              | Affiche les sockets TCP/UDP (feature `net`)                 |
+| `--net-listen`              | Affiche les sockets TCP/UDP (feature `net`) et les ajoute à `SnapshotView` |
 | `--process`                 | Affiche le PID propriétaire (requiert `--net-listen`)       |
 | `--json` / `--pretty`       | Sortie JSON brute/indentée                                  |
 | `--check <expr>`            | Health checks (`mem`, `disk`, `service`)                    |

@@ -10,9 +10,11 @@ par des consommateurs externes.
   - `ServiceInfo` : description d’un service systemd (nom, état, résumé).
   - `SystemSnapshot` : état complet du serveur (hostname, OS, load, mémoire,
     disques, services). Des options (`CaptureOptions`) déterminent si les
-    informations disque/services doivent être collectées.
+    informations disque/services/sockets doivent être collectées.
   - `DiskPartition` / `DiskUsage` : modèles partagés entre capture disque,
     sérialisation JSON et web UI.
+  - `ListeningSocket` : décrit un socket TCP/UDP en écoute (protocole, adresse,
+    port, PID éventuel) et est sérialisable lorsque la feature `serde` est active.
 
 - `error.rs`
   - `DescribeError` (via `thiserror`) : catégorise les erreurs système,
@@ -22,6 +24,8 @@ par des consommateurs externes.
   - Structures reflétant le fichier TOML (`DescribeConfig`, `WebAccessConfig`,
     `ExposureConfig`, `RuntimeConfig`, `WebSecurityConfig`, etc.).
   - Valeurs par défaut et validation légère (ex. `default_redacted`).
+  - `ExposureConfig` inclut des drapeaux pour les services, partitions disque et
+    désormais les sockets en écoute.
 
 - `mod.rs`
   - Ré-exporte les types clés pour l’API publique : `CaptureOptions`,

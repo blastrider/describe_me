@@ -1,6 +1,8 @@
 #[cfg(all(feature = "systemd", feature = "serde"))]
 use std::collections::BTreeMap;
 
+#[cfg(all(feature = "serde", feature = "net"))]
+use crate::domain::ListeningSocket;
 #[cfg(all(feature = "systemd", feature = "serde"))]
 use crate::domain::ServiceInfo;
 #[cfg(feature = "serde")]
@@ -13,6 +15,7 @@ pub struct Exposure {
     pub kernel: bool,
     pub services: bool,
     pub disk_partitions: bool,
+    pub listening_sockets: bool,
     /// Affiche des valeurs masquées (ex: versions tronquées) lorsque les détails complets sont interdits.
     pub redacted: bool,
 }
@@ -25,6 +28,7 @@ impl Default for Exposure {
             kernel: false,
             services: false,
             disk_partitions: false,
+            listening_sockets: false,
             redacted: true,
         }
     }
@@ -38,6 +42,7 @@ impl Exposure {
             kernel: true,
             services: true,
             disk_partitions: true,
+            listening_sockets: true,
             redacted: false,
         }
     }
@@ -48,11 +53,17 @@ impl Exposure {
         self.kernel |= other.kernel;
         self.services |= other.services;
         self.disk_partitions |= other.disk_partitions;
+        self.listening_sockets |= other.listening_sockets;
         self.redacted |= other.redacted;
     }
 
     pub fn is_all(&self) -> bool {
-        self.hostname && self.os && self.kernel && self.services && self.disk_partitions
+        self.hostname
+            && self.os
+            && self.kernel
+            && self.services
+            && self.disk_partitions
+            && self.listening_sockets
     }
 }
 
@@ -65,6 +76,7 @@ impl From<&crate::domain::ExposureConfig> for Exposure {
             kernel: cfg.expose_kernel,
             services: cfg.expose_services,
             disk_partitions: cfg.expose_disk_partitions,
+            listening_sockets: cfg.expose_listening_sockets,
             redacted: cfg.redacted,
         }
     }
@@ -97,6 +109,9 @@ pub struct SnapshotView {
     pub os_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kernel_release: Option<String>,
+    #[cfg(feature = "net")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub listening_sockets: Option<Vec<ListeningSocket>>,
     #[cfg(feature = "systemd")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub services_running: Option<Vec<ServiceInfo>>,
@@ -108,7 +123,7 @@ pub struct SnapshotView {
 #[cfg(feature = "serde")]
 impl SnapshotView {
     pub fn new(snapshot: &SystemSnapshot, exposure: Exposure) -> Self {
-        let disk_usage = DiskUsageView::from_snapshot(snapshot, exposure);
+        let disk_usage = DiskUsageView::from_snapshot(snapshot, &exposure);
 
         #[cfg(feature = "systemd")]
         let services_summary = compute_service_summary(&snapshot.services_running);
@@ -144,6 +159,12 @@ impl SnapshotView {
             disk_usage,
             os_name,
             kernel_release,
+            #[cfg(feature = "net")]
+            listening_sockets: if exposure.listening_sockets {
+                snapshot.listening_sockets.clone()
+            } else {
+                None
+            },
             #[cfg(feature = "systemd")]
             services_running: if exposure.services {
                 Some(snapshot.services_running.clone())
@@ -275,7 +296,7 @@ pub struct DiskUsageView {
 
 #[cfg(feature = "serde")]
 impl DiskUsageView {
-    fn from_snapshot(snapshot: &SystemSnapshot, exposure: Exposure) -> Option<Self> {
+    fn from_snapshot(snapshot: &SystemSnapshot, exposure: &Exposure) -> Option<Self> {
         let du = snapshot.disk_usage.as_ref()?;
         let partitions = if exposure.disk_partitions {
             Some(du.partitions.clone())

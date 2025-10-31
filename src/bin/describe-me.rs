@@ -127,7 +127,7 @@ struct Opts {
 }
 
 #[cfg(feature = "cli")]
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct ListeningSocketOut {
     proto: String,
     addr: String,
@@ -275,6 +275,8 @@ fn main() -> Result<()> {
         exposure.redacted = false;
     }
 
+    exposure.listening_sockets |= opts.net_listen;
+
     #[cfg(feature = "web")]
     let mut web_exposure = exposure;
 
@@ -311,6 +313,11 @@ fn main() -> Result<()> {
     #[cfg(feature = "web")]
     if opts.no_redacted {
         web_exposure.redacted = false;
+    }
+
+    #[cfg(feature = "web")]
+    {
+        web_exposure.listening_sockets |= exposure.listening_sockets;
     }
 
     let exposure_all_effective = exposure.is_all();
@@ -402,6 +409,7 @@ fn main() -> Result<()> {
     let mut snap = describe_me::SystemSnapshot::capture_with(describe_me::CaptureOptions {
         with_services: opts.with_services,
         with_disk_usage: true, // on garde true pour un JSON complet
+        with_listening_sockets: opts.net_listen || exposure.listening_sockets,
     })?;
 
     // Filtre les services si demandé (systemd + config)
@@ -412,25 +420,21 @@ fn main() -> Result<()> {
     }
 
     // Récupère les sockets si --net-listen (et map vers struct sérialisable locale)
+    let snapshot_view = describe_me::SnapshotView::new(&snap, exposure);
+
     #[cfg(feature = "net")]
-    let net_listen_vec: Option<Vec<ListeningSocketOut>> = if opts.net_listen {
-        let socks = describe_me::net_listen()?;
-        Some(
+    let net_listen_vec: Option<Vec<ListeningSocketOut>> =
+        snapshot_view.listening_sockets.as_ref().map(|socks| {
             socks
-                .into_iter()
+                .iter()
                 .map(|s| ListeningSocketOut {
-                    proto: s.proto,
-                    addr: s.addr,
+                    proto: s.proto.clone(),
+                    addr: s.addr.clone(),
                     port: s.port,
                     pid: s.process,
                 })
-                .collect(),
-        )
-    } else {
-        None
-    };
-
-    let snapshot_view = describe_me::SnapshotView::new(&snap, exposure);
+                .collect()
+        });
 
     // Si JSON demandé: on ne sort qu'un seul document JSON combiné
     if opts.json || opts.pretty {
@@ -439,7 +443,7 @@ fn main() -> Result<()> {
             let combined = CombinedOutput {
                 snapshot: snapshot_view.clone(),
                 #[cfg(feature = "net")]
-                net_listen: net_listen_vec,
+                net_listen: net_listen_vec.clone(),
                 #[cfg(not(feature = "net"))]
                 net_listen: None,
             };

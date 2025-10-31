@@ -279,6 +279,7 @@ pub(super) async fn sse_stream(
                 match SystemSnapshot::capture_with(CaptureOptions {
                     with_services,
                     with_disk_usage: true,
+                    with_listening_sockets: exposure.listening_sockets,
                 }) {
                     #[allow(unused_mut)]
                     Ok(mut s) => {
