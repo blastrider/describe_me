@@ -2,9 +2,9 @@
 
 use anyhow::{bail, Result};
 use clap::{ArgAction, Parser};
-use describe_me::LogEvent;
 #[cfg(feature = "net")]
 use describe_me::domain::ListeningSocket;
+use describe_me::LogEvent;
 #[cfg(all(unix, feature = "cli"))]
 use nix::unistd::Uid;
 #[cfg(feature = "cli")]
@@ -464,7 +464,10 @@ fn main() -> Result<()> {
             } else {
                 for s in slice {
                     if opts.show_process {
-                        let pid = s.process.map(|p| p.to_string()).unwrap_or_else(|| "-".into());
+                        let pid = s
+                            .process
+                            .map(|p| p.to_string())
+                            .unwrap_or_else(|| "-".into());
                         let name = s.process_name.as_deref().unwrap_or("?");
                         println!(
                             "{:<5} {:<15} {:<6} {:<8} {}",

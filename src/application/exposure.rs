@@ -1,14 +1,14 @@
 #[cfg(all(feature = "systemd", feature = "serde"))]
 use std::collections::BTreeMap;
 
+#[cfg(feature = "serde")]
+use crate::application::SharedSlice;
 #[cfg(all(feature = "serde", feature = "net"))]
 use crate::domain::ListeningSocket;
 #[cfg(all(feature = "systemd", feature = "serde"))]
 use crate::domain::ServiceInfo;
 #[cfg(feature = "serde")]
 use crate::domain::{DiskPartition, SystemSnapshot};
-#[cfg(feature = "serde")]
-use crate::application::SharedSlice;
 
 #[derive(Debug, Copy, Clone)]
 pub struct Exposure {
