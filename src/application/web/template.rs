@@ -163,6 +163,21 @@ const INDEX_HTML: &str = r#"<!doctype html>
       </div>
     </section>
 
+    <div class="grid" id="socketsGrid" style="display:none">
+      <section class="card" id="socketsTcpCard">
+        <h2>Ports TCP en écoute</h2>
+        <div class="services-list" id="socketsTcp">
+          <div class="service-empty">—</div>
+        </div>
+      </section>
+      <section class="card" id="socketsUdpCard">
+        <h2>Ports UDP en écoute</h2>
+        <div class="services-list" id="socketsUdp">
+          <div class="service-empty">—</div>
+        </div>
+      </section>
+    </div>
+
     <section class="card" id="rawCard" style="display:none">
       <h2>JSON brut</h2>
       <pre class="mono" id="raw">—</pre>
@@ -542,6 +557,86 @@ const INDEX_HTML: &str = r#"<!doctype html>
         } else {
           servicesCard.style.display = "none";
           servicesList.innerHTML = "";
+        }
+      }
+
+      const socketsCard = document.getElementById('socketsCard');
+      const socketsGrid = document.getElementById('socketsGrid');
+      const socketsTcpCard = document.getElementById('socketsTcpCard');
+      const socketsUdpCard = document.getElementById('socketsUdpCard');
+      const socketsTcp = document.getElementById('socketsTcp');
+      const socketsUdp = document.getElementById('socketsUdp');
+      if (socketsGrid && socketsTcp && socketsUdp && socketsTcpCard && socketsUdpCard) {
+        const sockets = Array.isArray(data.listening_sockets) ? data.listening_sockets : [];
+        if (sockets.length > 0) {
+          socketsGrid.style.display = "grid";
+          const grouped = sockets.reduce(
+            (acc, sock) => {
+              const proto = (sock?.proto || "").toLowerCase();
+              const normalized = proto === "udp" ? "udp" : "tcp";
+              acc[normalized].push(sock);
+              return acc;
+            },
+            { tcp: [], udp: [] }
+          );
+
+          const renderSockets = (list) =>
+            list
+              .map((sock) => {
+                const proto = esc(sock?.proto || "?");
+                const addr = esc(sock?.addr || "—");
+                const port = sock?.port != null ? Number(sock.port) : "—";
+                const pid =
+                  sock && typeof sock.pid === "number"
+                    ? `PID ${sock.pid}`
+                    : "";
+                const procName = sock?.process_name ? esc(sock.process_name) : "";
+                const details = [`${addr}:${port}`];
+                if (procName) {
+                  details.push(procName);
+                }
+                if (pid) {
+                  details.push(pid);
+                }
+                return `
+                  <div class="service-row">
+                    <span class="dot service-dot ok"></span>
+                    <div>
+                      <div class="service-name">${proto.toUpperCase()}</div>
+                      <div class="service-meta">${details.join(" • ")}</div>
+                    </div>
+                  </div>
+                `;
+              })
+              .join("");
+
+          if (grouped.tcp.length) {
+            socketsTcpCard.style.display = "block";
+            socketsTcp.innerHTML = renderSockets(grouped.tcp);
+          } else {
+            socketsTcpCard.style.display = "block";
+            socketsTcp.innerHTML = `<div class="service-empty">Aucun port TCP</div>`;
+          }
+
+          if (grouped.udp.length) {
+            socketsUdpCard.style.display = "block";
+            socketsUdp.innerHTML = renderSockets(grouped.udp);
+          } else {
+            socketsUdpCard.style.display = "block";
+            socketsUdp.innerHTML = `<div class="service-empty">Aucun port UDP</div>`;
+          }
+        } else if ('listening_sockets' in data) {
+          socketsGrid.style.display = "grid";
+          socketsTcpCard.style.display = "block";
+          socketsUdpCard.style.display = "block";
+          socketsTcp.innerHTML = `<div class="service-empty">Aucun port TCP</div>`;
+          socketsUdp.innerHTML = `<div class="service-empty">Aucun port UDP</div>`;
+        } else {
+          socketsGrid.style.display = "none";
+          socketsTcpCard.style.display = "none";
+          socketsUdpCard.style.display = "none";
+          socketsTcp.innerHTML = "";
+          socketsUdp.innerHTML = "";
         }
       }
 

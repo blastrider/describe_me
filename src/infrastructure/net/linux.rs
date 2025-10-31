@@ -1,18 +1,35 @@
 use crate::domain::{DescribeError, ListeningSocket};
-use std::{collections::HashMap, fs, io, path::Path};
+use std::{
+    collections::HashMap,
+    fs, io,
+    path::{Path, PathBuf},
+};
 
 pub fn collect_listening_sockets() -> Result<Vec<ListeningSocket>, DescribeError> {
     // Map inode -> pid (meilleur-effort)
     let inode_to_pid = build_inode_pid_map().unwrap_or_default();
+    let mut pid_cache: HashMap<u32, Option<String>> = HashMap::new();
 
     let mut out = Vec::new();
 
     // TCPv4 LISTEN (st == "0A")
-    if let Ok(mut v) = parse_table("/proc/net/tcp", "tcp", Some("0A"), &inode_to_pid) {
+    if let Ok(mut v) = parse_table(
+        "/proc/net/tcp",
+        "tcp",
+        Some("0A"),
+        &inode_to_pid,
+        &mut pid_cache,
+    ) {
         out.append(&mut v);
     }
     // UDPv4 "UNCONN" (st == "07") — sockets en attente (équivalent "listening" pour UDP)
-    if let Ok(mut v) = parse_table("/proc/net/udp", "udp", Some("07"), &inode_to_pid) {
+    if let Ok(mut v) = parse_table(
+        "/proc/net/udp",
+        "udp",
+        Some("07"),
+        &inode_to_pid,
+        &mut pid_cache,
+    ) {
         out.append(&mut v);
     }
 
@@ -25,6 +42,7 @@ fn parse_table(
     proto: &str,
     required_state_hex: Option<&str>,
     inode_to_pid: &HashMap<u64, u32>,
+    pid_cache: &mut HashMap<u32, Option<String>>,
 ) -> io::Result<Vec<ListeningSocket>> {
     let content = fs::read_to_string(path)?;
     let mut sockets = Vec::new();
@@ -58,12 +76,14 @@ fn parse_table(
             .parse::<u64>()
             .ok()
             .and_then(|ino| inode_to_pid.get(&ino).copied());
+        let process_name = pid.and_then(|p| resolve_process_name(p, pid_cache));
 
         sockets.push(ListeningSocket {
             proto: proto.to_string(),
             addr,
             port,
             process: pid,
+            process_name,
         });
     }
 
@@ -127,4 +147,24 @@ fn build_inode_pid_map() -> io::Result<HashMap<u64, u32>> {
         }
     }
     Ok(map)
+}
+
+fn resolve_process_name(pid: u32, cache: &mut HashMap<u32, Option<String>>) -> Option<String> {
+    if let Some(entry) = cache.get(&pid) {
+        return entry.clone();
+    }
+
+    let name = read_process_name(pid);
+    cache.insert(pid, name.clone());
+    name
+}
+
+fn read_process_name(pid: u32) -> Option<String> {
+    let mut path = PathBuf::from("/proc");
+    path.push(pid.to_string());
+    path.push("comm");
+    fs::read_to_string(&path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|name| !name.is_empty())
 }
