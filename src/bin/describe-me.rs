@@ -134,6 +134,8 @@ struct ListeningSocketOut {
     port: u16,
     #[serde(skip_serializing_if = "Option::is_none")]
     pid: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    process_name: Option<String>,
 }
 
 #[cfg(feature = "cli")]
@@ -432,6 +434,7 @@ fn main() -> Result<()> {
                     addr: s.addr.clone(),
                     port: s.port,
                     pid: s.process,
+                    process_name: s.process_name.clone(),
                 })
                 .collect()
         });
@@ -468,7 +471,7 @@ fn main() -> Result<()> {
     #[cfg(feature = "net")]
     if opts.net_listen {
         if opts.show_process {
-            println!("{:<5} {:<15} {:<6} {:<6}", "PROTO", "ADDR", "PORT", "PID");
+            println!("{:<5} {:<15} {:<6} {:<8} {:<}", "PROTO", "ADDR", "PORT", "PID", "PROCESS");
         } else {
             println!("{:<5} {:<15} {:<6}", "PROTO", "ADDR", "PORT");
         }
@@ -480,7 +483,11 @@ fn main() -> Result<()> {
                 for s in list {
                     if opts.show_process {
                         let pid = s.pid.map(|p| p.to_string()).unwrap_or_else(|| "-".into());
-                        println!("{:<5} {:<15} {:<6} {:<6}", s.proto, s.addr, s.port, pid);
+                        let name = s.process_name.as_deref().unwrap_or("?");
+                        println!(
+                            "{:<5} {:<15} {:<6} {:<8} {}",
+                            s.proto, s.addr, s.port, pid, name
+                        );
                     } else {
                         println!("{:<5} {:<15} {:<6}", s.proto, s.addr, s.port);
                     }

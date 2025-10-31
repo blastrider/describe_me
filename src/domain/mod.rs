@@ -32,6 +32,8 @@ pub struct ListeningSocket {
     pub port: u16,
     /// PID propriétaire si résolu
     pub process: Option<u32>,
+    /// Nom du processus si résolu
+    pub process_name: Option<String>,
 }
 
 impl fmt::Display for ListeningSocket {
