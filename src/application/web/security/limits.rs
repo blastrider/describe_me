@@ -5,6 +5,7 @@ use super::{
 };
 use std::{
     collections::{HashMap, HashSet, VecDeque},
+    hash::Hash,
     net::IpAddr,
     sync::Arc,
     time::{Duration, Instant},
@@ -234,26 +235,26 @@ impl BruteForcePolicy {
 
 #[derive(Debug)]
 pub(super) struct SecurityState {
-    html_ip: Mutex<HashMap<IpAddr, RateCounter>>,
-    sse_ip: Mutex<HashMap<IpAddr, RateCounter>>,
-    html_token: Mutex<HashMap<TokenKey, RateCounter>>,
-    sse_token: Mutex<HashMap<TokenKey, RateCounter>>,
-    failures_ip: Mutex<HashMap<IpAddr, FailureRecord>>,
-    failures_token: Mutex<HashMap<TokenKey, FailureRecord>>,
-    token_spread: Mutex<HashMap<TokenKey, TokenSpread>>,
+    html_ip: RateLimiter<IpAddr>,
+    sse_ip: RateLimiter<IpAddr>,
+    html_token: RateLimiter<TokenKey>,
+    sse_token: RateLimiter<TokenKey>,
+    failures_ip: FailureTracker<IpAddr>,
+    failures_token: FailureTracker<TokenKey>,
+    token_spread: TokenSpreadTracker,
     sse_active: Arc<ActiveSseState>,
 }
 
 impl SecurityState {
     pub(crate) fn new() -> Self {
         Self {
-            html_ip: Mutex::new(HashMap::new()),
-            sse_ip: Mutex::new(HashMap::new()),
-            html_token: Mutex::new(HashMap::new()),
-            sse_token: Mutex::new(HashMap::new()),
-            failures_ip: Mutex::new(HashMap::new()),
-            failures_token: Mutex::new(HashMap::new()),
-            token_spread: Mutex::new(HashMap::new()),
+            html_ip: RateLimiter::new(),
+            sse_ip: RateLimiter::new(),
+            html_token: RateLimiter::new(),
+            sse_token: RateLimiter::new(),
+            failures_ip: FailureTracker::new(),
+            failures_token: FailureTracker::new(),
+            token_spread: TokenSpreadTracker::new(),
             sse_active: ActiveSseState::new(),
         }
     }
@@ -272,17 +273,10 @@ impl SecurityState {
             return None;
         }
         let window = limits.window;
-        let map = match route {
-            WebRoute::Html => &self.html_ip,
-            WebRoute::Sse => &self.sse_ip,
-        };
-        let mut guard = map.lock().await;
-        let counter = guard.entry(ip).or_default();
-        let wait = counter.register(now, window, cap);
-        if counter.is_empty() {
-            guard.remove(&ip);
+        match route {
+            WebRoute::Html => self.html_ip.register(ip, now, window, cap).await,
+            WebRoute::Sse => self.sse_ip.register(ip, now, window, cap).await,
         }
-        wait
     }
 
     pub(super) async fn register_token_hit(
@@ -298,17 +292,10 @@ impl SecurityState {
             return None;
         }
         let window = limits.window;
-        let map = match route {
-            WebRoute::Html => &self.html_token,
-            WebRoute::Sse => &self.sse_token,
-        };
-        let mut guard = map.lock().await;
-        let counter = guard.entry(token).or_default();
-        let wait = counter.register(now, window, cap);
-        if counter.is_empty() {
-            guard.remove(&token);
+        match route {
+            WebRoute::Html => self.html_token.register(token, now, window, cap).await,
+            WebRoute::Sse => self.sse_token.register(token, now, window, cap).await,
         }
-        wait
     }
 
     pub(super) async fn check_existing_block(
@@ -317,40 +304,11 @@ impl SecurityState {
         token: TokenKey,
         now: Instant,
     ) -> Option<Duration> {
-        let mut delay = None;
-
-        {
-            let guard = self.failures_ip.lock().await;
-            if let Some(record) = guard.get(&ip) {
-                if let Some(until) = record.blocked_until {
-                    if until > now {
-                        delay = combine_delay(delay, until.saturating_duration_since(now));
-                    }
-                }
-            }
-        }
+        let mut delay = self.failures_ip.existing_block(ip, now).await;
 
         if token != TokenKey::Anonymous {
-            {
-                let guard = self.failures_token.lock().await;
-                if let Some(record) = guard.get(&token) {
-                    if let Some(until) = record.blocked_until {
-                        if until > now {
-                            delay = combine_delay(delay, until.saturating_duration_since(now));
-                        }
-                    }
-                }
-            }
-            {
-                let guard = self.token_spread.lock().await;
-                if let Some(spread) = guard.get(&token) {
-                    if let Some(until) = spread.locked_until {
-                        if until > now {
-                            delay = combine_delay(delay, until.saturating_duration_since(now));
-                        }
-                    }
-                }
-            }
+            delay = combine_delay(delay, self.failures_token.existing_block(token, now).await);
+            delay = combine_delay(delay, self.token_spread.existing_block(token, now).await);
         }
 
         delay
@@ -366,39 +324,27 @@ impl SecurityState {
     ) -> FailureOutcome {
         let mut delay = None;
 
-        {
-            let mut guard = self.failures_ip.lock().await;
-            let record = guard.entry(ip).or_default();
-            if let Some(until) = record.register(now, policy.brute_force()) {
-                delay = combine_delay(delay, until.saturating_duration_since(now));
-            }
-            if record.is_clear() {
-                guard.remove(&ip);
-            }
-        }
+        delay = combine_delay(
+            delay,
+            self.failures_ip
+                .register(ip, now, policy.brute_force())
+                .await,
+        );
 
         if token != TokenKey::Anonymous {
-            {
-                let mut guard = self.failures_token.lock().await;
-                let record = guard.entry(token).or_default();
-                if let Some(until) = record.register(now, policy.brute_force()) {
-                    delay = combine_delay(delay, until.saturating_duration_since(now));
-                }
-                if record.is_clear() {
-                    guard.remove(&token);
-                }
-            }
+            delay = combine_delay(
+                delay,
+                self.failures_token
+                    .register(token, now, policy.brute_force())
+                    .await,
+            );
 
-            {
-                let mut guard = self.token_spread.lock().await;
-                let spread = guard.entry(token).or_default();
-                if let Some(until) = spread.register(ip, now, policy.brute_force()) {
-                    delay = combine_delay(delay, until.saturating_duration_since(now));
-                }
-                if spread.is_clear() {
-                    guard.remove(&token);
-                }
-            }
+            delay = combine_delay(
+                delay,
+                self.token_spread
+                    .register(token, ip, now, policy.brute_force())
+                    .await,
+            );
         }
 
         FailureOutcome {
@@ -407,19 +353,10 @@ impl SecurityState {
     }
 
     pub(super) async fn note_success(&self, ip: IpAddr, token: TokenKey) {
-        {
-            let mut guard = self.failures_ip.lock().await;
-            guard.remove(&ip);
-        }
+        self.failures_ip.clear(ip).await;
         if token != TokenKey::Anonymous {
-            {
-                let mut guard = self.failures_token.lock().await;
-                guard.remove(&token);
-            }
-            {
-                let mut guard = self.token_spread.lock().await;
-                guard.remove(&token);
-            }
+            self.failures_token.clear(token).await;
+            self.token_spread.clear(token).await;
         }
     }
 
@@ -501,6 +438,119 @@ pub(super) async fn enforce_rate_limits(
 
 pub(super) struct FailureOutcome {
     pub(super) retry_after: Option<Duration>,
+}
+
+#[derive(Debug, Default)]
+struct RateLimiter<K> {
+    inner: Mutex<HashMap<K, RateCounter>>,
+}
+
+impl<K> RateLimiter<K>
+where
+    K: Eq + Hash + Copy + Send + 'static,
+{
+    fn new() -> Self {
+        Self {
+            inner: Mutex::new(HashMap::new()),
+        }
+    }
+
+    async fn register(
+        &self,
+        key: K,
+        now: Instant,
+        window: Duration,
+        limit: u32,
+    ) -> Option<Duration> {
+        let mut guard = self.inner.lock().await;
+        let counter = guard.entry(key).or_default();
+        let wait = counter.register(now, window, limit);
+        if counter.is_empty() {
+            guard.remove(&key);
+        }
+        wait
+    }
+}
+
+#[derive(Debug, Default)]
+struct FailureTracker<K> {
+    inner: Mutex<HashMap<K, FailureRecord>>,
+}
+
+impl<K> FailureTracker<K>
+where
+    K: Eq + Hash + Copy + Send + 'static,
+{
+    fn new() -> Self {
+        Self {
+            inner: Mutex::new(HashMap::new()),
+        }
+    }
+
+    async fn register(&self, key: K, now: Instant, policy: &BruteForcePolicy) -> Option<Duration> {
+        let mut guard = self.inner.lock().await;
+        let record = guard.entry(key).or_default();
+        let delay = record
+            .register(now, policy)
+            .map(|until| until.saturating_duration_since(now));
+        if record.is_clear() {
+            guard.remove(&key);
+        }
+        delay
+    }
+
+    async fn existing_block(&self, key: K, now: Instant) -> Option<Duration> {
+        let guard = self.inner.lock().await;
+        guard.get(&key).and_then(|record| record.blocked_delay(now))
+    }
+
+    async fn clear(&self, key: K) {
+        let mut guard = self.inner.lock().await;
+        guard.remove(&key);
+    }
+}
+
+#[derive(Debug, Default)]
+struct TokenSpreadTracker {
+    inner: Mutex<HashMap<TokenKey, TokenSpread>>,
+}
+
+impl TokenSpreadTracker {
+    fn new() -> Self {
+        Self {
+            inner: Mutex::new(HashMap::new()),
+        }
+    }
+
+    async fn register(
+        &self,
+        token: TokenKey,
+        ip: IpAddr,
+        now: Instant,
+        policy: &BruteForcePolicy,
+    ) -> Option<Duration> {
+        let mut guard = self.inner.lock().await;
+        let spread = guard.entry(token).or_default();
+        let delay = spread
+            .register(ip, now, policy)
+            .map(|until| until.saturating_duration_since(now));
+        if spread.is_clear() {
+            guard.remove(&token);
+        }
+        delay
+    }
+
+    async fn existing_block(&self, token: TokenKey, now: Instant) -> Option<Duration> {
+        let guard = self.inner.lock().await;
+        guard
+            .get(&token)
+            .and_then(|spread| spread.locked_delay(now))
+    }
+
+    async fn clear(&self, token: TokenKey) {
+        let mut guard = self.inner.lock().await;
+        guard.remove(&token);
+    }
 }
 
 #[derive(Debug, Default)]
@@ -608,6 +658,12 @@ impl FailureRecord {
     fn is_clear(&self) -> bool {
         self.attempts.is_empty() && self.blocked_until.is_none()
     }
+
+    fn blocked_delay(&self, now: Instant) -> Option<Duration> {
+        self.blocked_until
+            .filter(|until| *until > now)
+            .map(|until| until.saturating_duration_since(now))
+    }
 }
 
 #[derive(Debug, Default)]
@@ -650,16 +706,22 @@ impl TokenSpread {
     fn is_clear(&self) -> bool {
         self.failure_count == 0 && self.locked_until.is_none()
     }
+
+    fn locked_delay(&self, now: Instant) -> Option<Duration> {
+        self.locked_until
+            .filter(|until| *until > now)
+            .map(|until| until.saturating_duration_since(now))
+    }
 }
 
-fn combine_delay(current: Option<Duration>, new_delay: Duration) -> Option<Duration> {
-    if new_delay.is_zero() {
-        return current;
+fn combine_delay(current: Option<Duration>, new_delay: Option<Duration>) -> Option<Duration> {
+    match new_delay {
+        Some(delay) if !delay.is_zero() => Some(match current {
+            Some(existing) => existing.max(delay),
+            None => delay,
+        }),
+        _ => current,
     }
-    Some(match current {
-        Some(existing) => existing.max(new_delay),
-        None => new_delay,
-    })
 }
 
 #[cfg(feature = "config")]
