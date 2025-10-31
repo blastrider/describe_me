@@ -11,6 +11,9 @@ Licence : Apache-2.0
 
 Repo : https://github.com/Max-Perso/describe_me
 
+Documentation supplémentaire : voir le dossier `docs/` (ex. `docs/logging.md`,
+`docs/web-security.md`).
+
 1) Installation
 Depuis les sources
 # Cloner
