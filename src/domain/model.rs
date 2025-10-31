@@ -1,3 +1,4 @@
+use crate::SharedSlice;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
@@ -26,10 +27,10 @@ pub struct SystemSnapshot {
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub disk_usage: Option<DiskUsage>,
     #[cfg(feature = "systemd")]
-    pub services_running: Vec<crate::domain::model::ServiceInfo>,
+    pub services_running: SharedSlice<crate::domain::model::ServiceInfo>,
     #[cfg(feature = "net")]
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub listening_sockets: Option<Vec<crate::domain::ListeningSocket>>,
+    pub listening_sockets: Option<SharedSlice<crate::domain::ListeningSocket>>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -62,5 +63,5 @@ pub struct DiskUsage {
     pub available_bytes: u64,
     pub used_bytes: u64,
     /// Détail par partition.
-    pub partitions: Vec<DiskPartition>,
+    pub partitions: SharedSlice<DiskPartition>,
 }

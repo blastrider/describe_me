@@ -1,4 +1,5 @@
-use crate::domain::DescribeError;
+use crate::domain::{DescribeError, DiskPartition, DiskUsage};
+use crate::SharedSlice;
 use std::os::unix::fs::MetadataExt;
 use sysinfo::{CpuRefreshKind, Disks, MemoryRefreshKind, RefreshKind, System};
 use tracing::debug;
@@ -53,7 +54,6 @@ pub(crate) fn gather() -> Result<SysinfoSnapshot, DescribeError> {
 
 // -------- Disks --------
 
-use crate::domain::{DiskPartition, DiskUsage};
 use std::{
     collections::{HashMap, HashSet},
     fs,
@@ -182,6 +182,6 @@ pub(crate) fn gather_disks() -> Result<DiskUsage, DescribeError> {
         total_bytes: total,
         available_bytes: avail,
         used_bytes: used,
-        partitions,
+        partitions: SharedSlice::from_vec(partitions),
     })
 }
