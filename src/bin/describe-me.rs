@@ -471,7 +471,10 @@ fn main() -> Result<()> {
     #[cfg(feature = "net")]
     if opts.net_listen {
         if opts.show_process {
-            println!("{:<5} {:<15} {:<6} {:<8} {:<}", "PROTO", "ADDR", "PORT", "PID", "PROCESS");
+            println!(
+                "{:<5} {:<15} {:<6} {:<8} {:<}",
+                "PROTO", "ADDR", "PORT", "PID", "PROCESS"
+            );
         } else {
             println!("{:<5} {:<15} {:<6}", "PROTO", "ADDR", "PORT");
         }
