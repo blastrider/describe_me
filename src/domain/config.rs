@@ -111,6 +111,24 @@ impl Default for ExposureConfig {
     }
 }
 
+#[cfg(all(test, feature = "serde"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expose_updates_defaults_to_false() {
+        let cfg: ExposureConfig = toml::from_str("").expect("deserialize default exposure");
+        assert!(!cfg.expose_updates);
+    }
+
+    #[test]
+    fn expose_updates_can_be_enabled() {
+        let cfg: ExposureConfig =
+            toml::from_str("expose_updates = true").expect("deserialize exposure");
+        assert!(cfg.expose_updates);
+    }
+}
+
 /// Paramétrage global des limites de sécurité côté web.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Deserialize))]

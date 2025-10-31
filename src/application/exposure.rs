@@ -300,6 +300,88 @@ fn truncate_version(token: &str) -> Option<String> {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[cfg(feature = "serde")]
+    use crate::domain::{SystemSnapshot, UpdatesInfo};
+
+    #[test]
+    fn updates_hidden_when_not_exposed() {
+        let exposure = Exposure {
+            updates: false,
+            ..Exposure::default()
+        };
+
+        #[cfg(feature = "serde")]
+        {
+            let snapshot = SystemSnapshot {
+                hostname: "host".into(),
+                os: None,
+                kernel: None,
+                uptime_seconds: 0,
+                cpu_count: 1,
+                load_average: (0.0, 0.0, 0.0),
+                total_memory_bytes: 0,
+                used_memory_bytes: 0,
+                total_swap_bytes: 0,
+                used_swap_bytes: 0,
+                disk_usage: None,
+                #[cfg(feature = "systemd")]
+                services_running: crate::shared::SharedSlice::from_vec(Vec::new()),
+                #[cfg(feature = "net")]
+                listening_sockets: None,
+                updates: Some(UpdatesInfo {
+                    pending: 3,
+                    reboot_required: true,
+                }),
+            };
+            let view = SnapshotView::new(&snapshot, exposure);
+            assert!(view.updates.is_none());
+        }
+        #[cfg(not(feature = "serde"))]
+        {
+            // When serde is disabled SnapshotView is unavailable; ensure the flag stays false.
+            assert!(!exposure.updates);
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn updates_retained_when_exposed() {
+        let snapshot = SystemSnapshot {
+            hostname: "host".into(),
+            os: None,
+            kernel: None,
+            uptime_seconds: 0,
+            cpu_count: 1,
+            load_average: (0.0, 0.0, 0.0),
+            total_memory_bytes: 0,
+            used_memory_bytes: 0,
+            total_swap_bytes: 0,
+            used_swap_bytes: 0,
+            disk_usage: None,
+            #[cfg(feature = "systemd")]
+            services_running: crate::shared::SharedSlice::from_vec(Vec::new()),
+            #[cfg(feature = "net")]
+            listening_sockets: None,
+            updates: Some(UpdatesInfo {
+                pending: 2,
+                reboot_required: false,
+            }),
+        };
+
+        let exposure = Exposure {
+            updates: true,
+            ..Exposure::default()
+        };
+        let view = SnapshotView::new(&snapshot, exposure);
+        let info = view.updates.expect("updates should be present");
+        assert_eq!(info.pending, 2);
+        assert!(!info.reboot_required);
+    }
+}
+
 #[cfg(feature = "serde")]
 #[derive(Debug, Clone, Serialize)]
 pub struct DiskUsageView {

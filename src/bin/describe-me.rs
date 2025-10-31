@@ -150,6 +150,10 @@ struct CombinedOutput<'a> {
 
 #[cfg(feature = "cli")]
 fn print_summary_line(view: &describe_me::SnapshotView) {
+    println!("{}", summary_line(view));
+}
+
+fn summary_line(view: &describe_me::SnapshotView) -> String {
     let (pending, reboot) = match view.updates.as_ref() {
         Some(info) => (
             info.pending.to_string(),
@@ -157,7 +161,7 @@ fn print_summary_line(view: &describe_me::SnapshotView) {
         ),
         None => (String::from("?"), "unknown"),
     };
-    println!("updates={pending} reboot={reboot}");
+    format!("updates={pending} reboot={reboot}")
 }
 
 #[cfg(unix)]
@@ -577,4 +581,82 @@ fn main() -> Result<()> {
 
     Ok(())
     // ------------------------------------------------------------------------
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn parses_expose_updates_flags() {
+        let opts = Opts::try_parse_from(["describe-me", "--expose-updates"]).unwrap();
+        assert!(opts.expose_updates);
+        assert!(!opts.web_expose_updates);
+
+        let opts = Opts::try_parse_from(["describe-me", "--web-expose-updates"]).unwrap();
+        assert!(!opts.expose_updates);
+        assert!(opts.web_expose_updates);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn summary_line_uses_updates_info() {
+        let snapshot = describe_me::SystemSnapshot {
+            hostname: "host".into(),
+            os: None,
+            kernel: None,
+            uptime_seconds: 0,
+            cpu_count: 1,
+            load_average: (0.0, 0.0, 0.0),
+            total_memory_bytes: 0,
+            used_memory_bytes: 0,
+            total_swap_bytes: 0,
+            used_swap_bytes: 0,
+            disk_usage: None,
+            #[cfg(feature = "systemd")]
+            services_running: describe_me::SharedSlice::from_vec(Vec::new()),
+            #[cfg(feature = "net")]
+            listening_sockets: None,
+            updates: Some(describe_me::UpdatesInfo {
+                pending: 5,
+                reboot_required: true,
+            }),
+        };
+        let exposure = describe_me::Exposure {
+            updates: true,
+            ..describe_me::Exposure::default()
+        };
+        let view = describe_me::SnapshotView::new(&snapshot, exposure);
+        assert_eq!(super::summary_line(&view), "updates=5 reboot=yes");
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn summary_line_handles_missing_updates() {
+        let snapshot = describe_me::SystemSnapshot {
+            hostname: "host".into(),
+            os: None,
+            kernel: None,
+            uptime_seconds: 0,
+            cpu_count: 1,
+            load_average: (0.0, 0.0, 0.0),
+            total_memory_bytes: 0,
+            used_memory_bytes: 0,
+            total_swap_bytes: 0,
+            used_swap_bytes: 0,
+            disk_usage: None,
+            #[cfg(feature = "systemd")]
+            services_running: describe_me::SharedSlice::from_vec(Vec::new()),
+            #[cfg(feature = "net")]
+            listening_sockets: None,
+            updates: None,
+        };
+        let exposure = describe_me::Exposure {
+            updates: true,
+            ..describe_me::Exposure::default()
+        };
+        let view = describe_me::SnapshotView::new(&snapshot, exposure);
+        assert_eq!(super::summary_line(&view), "updates=? reboot=unknown");
+    }
 }
