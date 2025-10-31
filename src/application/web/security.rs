@@ -88,6 +88,15 @@ impl AuthGuard {
     }
 }
 
+struct AuthRequest {
+    route: WebRoute,
+    remote_ip: IpAddr,
+    provided_token: Option<String>,
+    token_key: TokenKey,
+    require_token: bool,
+    trusted_ip: bool,
+}
+
 #[async_trait]
 impl FromRequestParts<AppState> for AuthGuard {
     type Rejection = Response;
@@ -167,6 +176,36 @@ impl WebSecurity {
         route: WebRoute,
     ) -> Result<AuthSession, SecurityRejection> {
         let now = Instant::now();
+        let request = self.build_request(parts, route)?;
+        self.ensure_not_blocked(&request, now).await?;
+        self.verify_token(&request, now).await?;
+        self.enforce_rate_limits(&request, now).await?;
+        let sse_permit = self.acquire_sse_permit(&request)?;
+
+        self.state
+            .note_success(request.remote_ip, request.token_key)
+            .await;
+
+        LogEvent::AuthOk {
+            ip: Cow::Owned(request.remote_ip.to_string()),
+            route: Cow::Owned(request.route.as_str().to_string()),
+            token: Cow::Owned(request.token_key.to_string()),
+        }
+        .emit();
+
+        Ok(AuthSession {
+            route: request.route,
+            ip: request.remote_ip,
+            token: request.token_key,
+            sse_permit,
+        })
+    }
+
+    fn build_request(
+        &self,
+        parts: &Parts,
+        route: WebRoute,
+    ) -> Result<AuthRequest, SecurityRejection> {
         let remote_ip = parts
             .extensions
             .get::<ConnectInfo<SocketAddr>>()
@@ -186,7 +225,11 @@ impl WebSecurity {
         };
 
         if !self.allow.is_empty() && !trusted_ip {
-            warn!(ip = %remote_ip, route = route.as_str(), "IP refusée par la allowlist");
+            warn!(
+                ip = %remote_ip,
+                route = route.as_str(),
+                "IP refusée par la allowlist"
+            );
             return Err(SecurityRejection::forbidden_ip());
         }
 
@@ -195,67 +238,111 @@ impl WebSecurity {
             .as_ref()
             .map(|value| TokenKey::from_value(value))
             .unwrap_or(TokenKey::Anonymous);
-        let require_token = route != WebRoute::Html;
 
+        Ok(AuthRequest {
+            route,
+            remote_ip,
+            provided_token,
+            token_key,
+            require_token: route != WebRoute::Html,
+            trusted_ip,
+        })
+    }
+
+    async fn ensure_not_blocked(
+        &self,
+        request: &AuthRequest,
+        now: Instant,
+    ) -> Result<(), SecurityRejection> {
         if let Some(delay) = self
             .state
-            .check_existing_block(remote_ip, token_key, now)
+            .check_existing_block(request.remote_ip, request.token_key, now)
             .await
         {
-            let delay = self.policy.adjust_retry(route, delay);
+            let delay = self.policy.adjust_retry(request.route, delay);
             warn!(
-                ip = %remote_ip,
-                route = route.as_str(),
+                ip = %request.remote_ip,
+                route = request.route.as_str(),
                 retry_after = %delay.as_secs_f32(),
                 "Refus (cooldown en cours)"
             );
             return Err(SecurityRejection::cooldown(delay));
         }
+        Ok(())
+    }
 
-        if let Some(expected) = &self.token {
-            let auth_ok = provided_token
-                .as_deref()
-                .map(|provided| tokens_match(expected, provided))
-                .unwrap_or(false);
+    async fn verify_token(
+        &self,
+        request: &AuthRequest,
+        now: Instant,
+    ) -> Result<(), SecurityRejection> {
+        let Some(expected) = &self.token else {
+            return Ok(());
+        };
 
-            let missing = provided_token.is_none();
-            let missing_allowed = missing && !require_token;
+        let auth_ok = request
+            .provided_token
+            .as_deref()
+            .map(|provided| tokens_match(expected, provided))
+            .unwrap_or(false);
 
-            if !(auth_ok || missing_allowed) {
-                let failure = self
-                    .state
-                    .note_failure(remote_ip, token_key, now, &self.policy, route)
-                    .await;
-                if let Some(delay) = failure.retry_after {
-                    warn!(
-                        ip = %remote_ip,
-                        route = route.as_str(),
-                        token = %token_key,
-                        retry_after = %delay.as_secs_f32(),
-                        "Echec authentification (backoff)"
-                    );
-                    return Err(SecurityRejection::unauthorized(Some(delay)));
-                } else {
-                    warn!(
-                        ip = %remote_ip,
-                        route = route.as_str(),
-                        token = %token_key,
-                        "Echec authentification"
-                    );
-                    return Err(SecurityRejection::unauthorized(None));
-                }
-            }
+        let missing = request.provided_token.is_none();
+        let missing_allowed = missing && !request.require_token;
+
+        if auth_ok || missing_allowed {
+            return Ok(());
         }
 
+        let failure = self
+            .state
+            .note_failure(
+                request.remote_ip,
+                request.token_key,
+                now,
+                &self.policy,
+                request.route,
+            )
+            .await;
+        if let Some(delay) = failure.retry_after {
+            warn!(
+                ip = %request.remote_ip,
+                route = request.route.as_str(),
+                token = %request.token_key,
+                retry_after = %delay.as_secs_f32(),
+                "Echec authentification (backoff)"
+            );
+            Err(SecurityRejection::unauthorized(Some(delay)))
+        } else {
+            warn!(
+                ip = %request.remote_ip,
+                route = request.route.as_str(),
+                token = %request.token_key,
+                "Echec authentification"
+            );
+            Err(SecurityRejection::unauthorized(None))
+        }
+    }
+
+    async fn enforce_rate_limits(
+        &self,
+        request: &AuthRequest,
+        now: Instant,
+    ) -> Result<(), SecurityRejection> {
         if let Some(delay) = self
             .state
-            .register_ip_hit(route, remote_ip, &self.policy, trusted_ip, now)
+            .register_ip_hit(
+                request.route,
+                request.remote_ip,
+                &self.policy,
+                request.trusted_ip,
+                now,
+            )
             .await
         {
-            let delay = self.policy.adjust_retry(route, delay);
+            let delay = self.policy.adjust_retry(request.route, delay);
             warn!(
-                ip = %remote_ip,
-                route = route.as_str(),
+                ip = %request.remote_ip,
+                route = request.route.as_str(),
                 retry_after = %delay.as_secs_f32(),
                 "Rate limit IP dépassé"
             );
@@ -264,54 +351,48 @@ impl WebSecurity {
 
         if let Some(delay) = self
             .state
-            .register_token_hit(route, token_key, &self.policy, now)
+            .register_token_hit(request.route, request.token_key, &self.policy, now)
             .await
         {
-            let delay = self.policy.adjust_retry(route, delay);
+            let delay = self.policy.adjust_retry(request.route, delay);
             warn!(
-                ip = %remote_ip,
-                route = route.as_str(),
-                token = %token_key,
+                ip = %request.remote_ip,
+                route = request.route.as_str(),
+                token = %request.token_key,
                 retry_after = %delay.as_secs_f32(),
                 "Rate limit token dépassé"
             );
             return Err(SecurityRejection::rate_limited(delay));
         }
 
-        let sse_permit = if route == WebRoute::Sse {
-            match self.state.acquire_sse(remote_ip, token_key, &self.policy) {
-                Ok(permit) => permit,
-                Err(delay) => {
-                    let delay = self.policy.adjust_retry(route, delay);
-                    warn!(
-                        ip = %remote_ip,
-                        route = route.as_str(),
-                        token = %token_key,
-                        retry_after = %delay.as_secs_f32(),
-                        "Limite de connexions SSE atteinte"
-                    );
-                    return Err(SecurityRejection::rate_limited(delay));
-                }
-            }
-        } else {
-            None
-        };
+        Ok(())
+    }
 
-        self.state.note_success(remote_ip, token_key).await;
-
-        LogEvent::AuthOk {
-            ip: Cow::Owned(remote_ip.to_string()),
-            route: Cow::Owned(route.as_str().to_string()),
-            token: Cow::Owned(token_key.to_string()),
+    fn acquire_sse_permit(
+        &self,
+        request: &AuthRequest,
+    ) -> Result<Option<SsePermit>, SecurityRejection> {
+        if request.route != WebRoute::Sse {
+            return Ok(None);
         }
-        .emit();
 
-        Ok(AuthSession {
-            route,
-            ip: remote_ip,
-            token: token_key,
-            sse_permit,
-        })
+        match self
+            .state
+            .acquire_sse(request.remote_ip, request.token_key, &self.policy)
+        {
+            Ok(permit) => Ok(permit),
+            Err(delay) => {
+                let delay = self.policy.adjust_retry(request.route, delay);
+                warn!(
+                    ip = %request.remote_ip,
+                    route = request.route.as_str(),
+                    token = %request.token_key,
+                    retry_after = %delay.as_secs_f32(),
+                    "Limite de connexions SSE atteinte"
+                );
+                Err(SecurityRejection::rate_limited(delay))
+            }
+        }
     }
 }
 
