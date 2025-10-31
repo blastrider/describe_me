@@ -7,6 +7,8 @@ use crate::domain::ListeningSocket;
 use crate::domain::ServiceInfo;
 #[cfg(feature = "serde")]
 use crate::domain::{DiskPartition, SystemSnapshot};
+#[cfg(feature = "serde")]
+use crate::application::SharedSlice;
 
 #[derive(Debug, Copy, Clone)]
 pub struct Exposure {
@@ -111,10 +113,10 @@ pub struct SnapshotView {
     pub kernel_release: Option<String>,
     #[cfg(feature = "net")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub listening_sockets: Option<Vec<ListeningSocket>>,
+    pub listening_sockets: Option<SharedSlice<ListeningSocket>>,
     #[cfg(feature = "systemd")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub services_running: Option<Vec<ServiceInfo>>,
+    pub services_running: Option<SharedSlice<ServiceInfo>>,
     #[cfg(feature = "systemd")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub services_summary: Option<ServiceSummary>,
@@ -161,16 +163,17 @@ impl SnapshotView {
             kernel_release,
             #[cfg(feature = "net")]
             listening_sockets: if exposure.listening_sockets {
-                snapshot.listening_sockets.clone()
+                snapshot
+                    .listening_sockets
+                    .as_ref()
+                    .map(|s| SharedSlice::from_slice(s))
             } else {
                 None
             },
             #[cfg(feature = "systemd")]
-            services_running: if exposure.services {
-                Some(snapshot.services_running.clone())
-            } else {
-                None
-            },
+            services_running: exposure
+                .services
+                .then(|| SharedSlice::from_slice(&snapshot.services_running)),
             #[cfg(feature = "systemd")]
             services_summary,
         }
@@ -291,18 +294,16 @@ pub struct DiskUsageView {
     pub available_bytes: u64,
     pub used_bytes: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub partitions: Option<Vec<DiskPartition>>,
+    pub partitions: Option<SharedSlice<DiskPartition>>,
 }
 
 #[cfg(feature = "serde")]
 impl DiskUsageView {
     fn from_snapshot(snapshot: &SystemSnapshot, exposure: &Exposure) -> Option<Self> {
         let du = snapshot.disk_usage.as_ref()?;
-        let partitions = if exposure.disk_partitions {
-            Some(du.partitions.clone())
-        } else {
-            None
-        };
+        let partitions = exposure
+            .disk_partitions
+            .then(|| SharedSlice::from_slice(&du.partitions));
         Some(Self {
             total_bytes: du.total_bytes,
             available_bytes: du.available_bytes,

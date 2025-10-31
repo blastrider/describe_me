@@ -177,3 +177,5 @@ pub mod health;
 
 pub mod exposure;
 pub mod logging;
+mod shared;
+pub(crate) use shared::SharedSlice;
