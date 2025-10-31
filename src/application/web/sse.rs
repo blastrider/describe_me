@@ -285,8 +285,9 @@ pub(super) async fn sse_stream(
                     Ok(mut s) => {
                         #[cfg(all(feature = "systemd", feature = "config"))]
                         if let Some(cfg) = config.as_ref() {
-                            s.services_running =
-                                filter_services(std::mem::take(&mut s.services_running), cfg);
+                            let services_mut = s.services_running.make_mut();
+                            let filtered = filter_services(std::mem::take(services_mut), cfg);
+                            *services_mut = filtered;
                         }
                         let view = SnapshotView::new(&s, exposure);
                         #[cfg(feature = "systemd")]

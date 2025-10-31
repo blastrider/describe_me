@@ -20,6 +20,7 @@ Documentation supplémentaire : voir le dossier `docs/` :
 - `docs/cli.md` — options et flux du binaire `describe-me`.
 - `docs/testing.md` — stratégie de tests, benchmarks et fuzzing.
 - `docs/logging.md` — conventions de logging structurés.
+- `docs/shared-slices.md` — partage mémoire des listes (services, sockets, etc.).
 
 1) Installation
 Depuis les sources
