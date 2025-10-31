@@ -1,4 +1,8 @@
+#[cfg(feature = "serde")]
+use crate::application::exposure::{Exposure, SnapshotView};
 use crate::application::logging::LogEvent;
+#[cfg(feature = "config")]
+use crate::domain::DescribeConfig;
 #[cfg(any(feature = "systemd", feature = "config"))]
 use crate::domain::ServiceInfo;
 use crate::domain::{CaptureOptions, DescribeError, DiskUsage, SystemSnapshot};
@@ -118,8 +122,24 @@ pub fn disk_usage() -> Result<DiskUsage, DescribeError> {
     crate::infrastructure::sysinfo::gather_disks()
 }
 
-#[cfg(feature = "config")]
-use crate::domain::DescribeConfig;
+#[cfg(feature = "serde")]
+pub fn capture_snapshot_with_view(
+    opts: CaptureOptions,
+    exposure: Exposure,
+    #[cfg(feature = "config")] cfg: Option<&DescribeConfig>,
+) -> Result<(SystemSnapshot, SnapshotView), DescribeError> {
+    let mut snapshot = SystemSnapshot::capture_with(opts)?;
+
+    #[cfg(all(feature = "systemd", feature = "config"))]
+    if let Some(cfg) = cfg {
+        let services_mut = snapshot.services_running.make_mut();
+        let filtered = filter_services(std::mem::take(services_mut), cfg);
+        *services_mut = filtered;
+    }
+
+    let view = SnapshotView::new(&snapshot, exposure);
+    Ok((snapshot, view))
+}
 
 #[cfg(feature = "config")]
 pub fn load_config_from_path<P: AsRef<std::path::Path>>(

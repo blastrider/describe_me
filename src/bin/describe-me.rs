@@ -432,26 +432,23 @@ fn main() -> Result<()> {
     }
 
     // Capture le snapshot complet
-    #[allow(unused_mut)]
-    let mut snap = describe_me::SystemSnapshot::capture_with(describe_me::CaptureOptions {
+    let capture_opts = describe_me::CaptureOptions {
         with_services: opts.with_services,
         with_disk_usage: true, // on garde true pour un JSON complet
         with_listening_sockets: opts.net_listen || exposure.listening_sockets,
-    })?;
+    };
 
-    // Filtre les services si demandé (systemd + config)
-    #[cfg(all(feature = "systemd", feature = "config"))]
-    if let Some(cfg) = &cfg {
-        let services_mut = snap.services_running.make_mut();
-        let filtered = describe_me::filter_services(std::mem::take(services_mut), cfg);
-        *services_mut = filtered;
-    }
+    let (snap, snapshot_view) = describe_me::capture_snapshot_with_view(
+        capture_opts,
+        exposure,
+        #[cfg(feature = "config")]
+        cfg.as_ref(),
+    )?;
 
     // Si JSON demandé: on ne sort qu'un seul document JSON combiné
     if opts.json || opts.pretty {
         #[cfg(feature = "cli")]
         {
-            let snapshot_view = describe_me::SnapshotView::new(&snap, exposure);
             if opts.summary {
                 print_summary_line(&snapshot_view);
             }
@@ -475,13 +472,10 @@ fn main() -> Result<()> {
         }
         #[cfg(not(feature = "cli"))]
         {
-            let snapshot_view = describe_me::SnapshotView::new(&snap, exposure);
             println!("{}", serde_json::to_string_pretty(&snapshot_view)?);
             return Ok(());
         }
     }
-
-    let snapshot_view = describe_me::SnapshotView::new(&snap, exposure);
 
     if opts.summary {
         print_summary_line(&snapshot_view);
