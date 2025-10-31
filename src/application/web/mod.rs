@@ -18,6 +18,7 @@
 //!       describe_me::Exposure::all(),
 //!   ).await?;
 
+mod assets;
 mod security;
 mod sse;
 mod template;
