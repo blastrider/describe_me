@@ -15,6 +15,7 @@ pub use model::{
     DiskUsage, // <-- NEW
     ServiceInfo,
     SystemSnapshot,
+    UpdatesInfo,
 };
 
 #[cfg(feature = "serde")]

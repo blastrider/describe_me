@@ -10,6 +10,13 @@ pub struct ServiceInfo {
     pub summary: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct UpdatesInfo {
+    pub pending: u32,
+    pub reboot_required: bool,
+}
+
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct SystemSnapshot {
@@ -31,6 +38,8 @@ pub struct SystemSnapshot {
     #[cfg(feature = "net")]
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub listening_sockets: Option<SharedSlice<crate::domain::ListeningSocket>>,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub updates: Option<UpdatesInfo>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]

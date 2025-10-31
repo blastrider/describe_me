@@ -21,6 +21,7 @@ Documentation supplémentaire : voir le dossier `docs/` :
 - `docs/testing.md` — stratégie de tests, benchmarks et fuzzing.
 - `docs/logging.md` — conventions de logging structurés.
 - `docs/shared-slices.md` — partage mémoire des listes (services, sockets, etc.).
+- `docs/updates.md` — détection des mises à jour système et exposition des résultats.
 
 1) Installation
 Depuis les sources

@@ -53,6 +53,8 @@ const INDEX_HTML: &str = r#"<!doctype html>
     h2 { font-size: 16px; margin: 0 0 10px; color: var(--muted); }
     .k { color: var(--muted); }
     .v { font-family: var(--mono); }
+    .status-ok { color: var(--ok); }
+    .status-warn { color: var(--warn); }
     .mono { font-family: var(--mono); font-size: 14px; }
     .row { display: flex; justify-content: space-between; gap: 10px; margin: 6px 0; }
     .badge { padding: 2px 8px; border-radius: 999px; background: #1d2333; border: 1px solid #2a3147; }
@@ -139,6 +141,13 @@ const INDEX_HTML: &str = r#"<!doctype html>
         <div class="row"><span class="k">CPU(s)</span><span class="v" id="cpus">—</span></div>
       </section>
 
+      <section class="card" id="updatesCard" style="display:none">
+        <h2>Mises à jour</h2>
+        <div class="row"><span class="k">En attente</span><span class="v" id="updatesPending">—</span></div>
+        <div class="row"><span class="k">Redémarrage</span><span class="v" id="updatesReboot">—</span></div>
+        <div class="row"><span class="k">Statut</span><span class="v" id="updatesStatus">—</span></div>
+      </section>
+
       <section class="card">
         <h2>Mémoire</h2>
         <div class="row"><span class="k">Total</span><span class="v" id="memTotal">—</span></div>
@@ -210,6 +219,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
     const err = document.getElementById('error');
     const last = document.getElementById('lastUpdate');
     const rawCard = document.getElementById('rawCard');
+    const updatesCard = document.getElementById('updatesCard');
 
     const tokenOverlay = document.getElementById('tokenOverlay');
     const tokenForm = document.getElementById('tokenForm');
@@ -477,6 +487,52 @@ const INDEX_HTML: &str = r#"<!doctype html>
       el('kernel').textContent = data.kernel || data.kernel_release || "—";
       el('uptime').textContent = fmtSecs(data.uptime_seconds || 0);
       el('cpus').textContent = data.cpu_count ?? "—";
+      const updatesPendingEl = el('updatesPending');
+      const updatesRebootEl = el('updatesReboot');
+      const updatesStatusEl = el('updatesStatus');
+      if (updatesPendingEl && updatesRebootEl && updatesStatusEl) {
+        updatesStatusEl.classList.remove('status-ok', 'status-warn');
+        const info = data.updates;
+        if (info && typeof info.pending !== 'undefined') {
+          if (updatesCard) {
+            updatesCard.style.display = "block";
+          }
+          const pendingRaw = Number(info.pending);
+          if (Number.isFinite(pendingRaw) && pendingRaw >= 0) {
+            const pending = Math.trunc(pendingRaw);
+            const rebootRequired = Boolean(info.reboot_required);
+            updatesPendingEl.textContent = pending.toString();
+            updatesRebootEl.textContent = rebootRequired ? "Oui" : "Non";
+            if (pending === 0 && !rebootRequired) {
+              updatesStatusEl.textContent = "À jour";
+              updatesStatusEl.classList.add('status-ok');
+            } else {
+              updatesStatusEl.textContent = rebootRequired
+                ? "Redémarrage requis"
+                : "Mise à jour disponible";
+              updatesStatusEl.classList.add('status-warn');
+            }
+          } else {
+            updatesPendingEl.textContent = "—";
+            updatesRebootEl.textContent = "—";
+            updatesStatusEl.textContent = "Collecte indisponible";
+          }
+        } else if (Object.prototype.hasOwnProperty.call(data, 'updates')) {
+          if (updatesCard) {
+            updatesCard.style.display = "block";
+          }
+          updatesPendingEl.textContent = "—";
+          updatesRebootEl.textContent = "—";
+          updatesStatusEl.textContent = "Collecte indisponible";
+        } else {
+          if (updatesCard) {
+            updatesCard.style.display = "none";
+          }
+          updatesPendingEl.textContent = "—";
+          updatesRebootEl.textContent = "—";
+          updatesStatusEl.textContent = "—";
+        }
+      }
 
       el('memTotal').textContent = fmtBytes(data.total_memory_bytes || 0);
       el('memUsed').textContent = fmtBytes(data.used_memory_bytes || 0);
