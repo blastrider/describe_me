@@ -47,6 +47,8 @@ pub use application::exposure::Exposure;
 pub use application::logging::{init_logging, LogEvent};
 
 #[cfg(feature = "serde")]
+pub use application::capture_snapshot_with_view;
+#[cfg(feature = "serde")]
 pub use application::exposure::SnapshotView;
 
 pub use shared::SharedSlice;

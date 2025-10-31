@@ -23,12 +23,9 @@ use tokio::sync::Notify;
 use tokio::time::{self, MissedTickBehavior};
 use tokio_stream::wrappers::IntervalStream;
 
-use crate::application::exposure::SnapshotView;
-#[cfg(all(feature = "config", feature = "systemd"))]
-use crate::application::filter_services;
+use crate::application::capture_snapshot_with_view;
 use crate::application::logging::LogEvent;
 use crate::domain::CaptureOptions;
-use crate::domain::SystemSnapshot;
 
 use super::security::{AuthGuard, SsePermit, TokenKey};
 use super::AppState;
@@ -276,20 +273,17 @@ pub(super) async fn sse_stream(
 
         async move {
             let (payload, services_count, partitions_count, close_after) =
-                match SystemSnapshot::capture_with(CaptureOptions {
-                    with_services,
-                    with_disk_usage: true,
-                    with_listening_sockets: exposure.listening_sockets,
-                }) {
-                    #[allow(unused_mut)]
-                    Ok(mut s) => {
-                        #[cfg(all(feature = "systemd", feature = "config"))]
-                        if let Some(cfg) = config.as_ref() {
-                            let services_mut = s.services_running.make_mut();
-                            let filtered = filter_services(std::mem::take(services_mut), cfg);
-                            *services_mut = filtered;
-                        }
-                        let view = SnapshotView::new(&s, exposure);
+                match capture_snapshot_with_view(
+                    CaptureOptions {
+                        with_services,
+                        with_disk_usage: true,
+                        with_listening_sockets: exposure.listening_sockets,
+                    },
+                    exposure,
+                    #[cfg(feature = "config")]
+                    config.as_ref(),
+                ) {
+                    Ok((_snapshot, view)) => {
                         #[cfg(feature = "systemd")]
                         let services_count = view
                             .services_running
