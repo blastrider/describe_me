@@ -11,6 +11,16 @@ Licence : Apache-2.0
 
 Repo : https://github.com/Max-Perso/describe_me
 
+Documentation supplémentaire : voir le dossier `docs/` :
+- `docs/architecture.md` — vue d’ensemble des couches et features.
+- `docs/application-layer.md` — logique applicative et serveurs.
+- `docs/domain-layer.md` — modèles métier et configuration.
+- `docs/infrastructure-layer.md` — intégrations OS (sysinfo, systemd, net).
+- `docs/web-security.md` — détails sur l’authentification/rate limiting web.
+- `docs/cli.md` — options et flux du binaire `describe-me`.
+- `docs/testing.md` — stratégie de tests, benchmarks et fuzzing.
+- `docs/logging.md` — conventions de logging structurés.
+
 1) Installation
 Depuis les sources
 # Cloner
