@@ -11,7 +11,7 @@ web_allow_ip = ["127.0.0.1", "::1"]
 
 [services]
 # Noms exacts des unités systemd à afficher côté CLI/SSE.
-include = ["cron.service", "ssh.service", "nginx.service", "teamviewerd.service"]
+include = ["cron.service", "ssh.service", "teamviewerd.service"]
 
 [exposure]
 # Exposition des champs sensibles pour la sortie CLI / JSON.

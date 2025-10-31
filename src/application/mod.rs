@@ -47,6 +47,19 @@ impl SystemSnapshot {
             Vec::new()
         };
 
+        #[cfg(feature = "net")]
+        let listening_sockets = if opts.with_listening_sockets {
+            Some(crate::application::net::net_listen().inspect_err(|err| {
+                LogEvent::SystemError {
+                    location: Cow::Borrowed("net_listen"),
+                    error: Cow::Owned(err.to_string()),
+                }
+                .emit();
+            })?)
+        } else {
+            None
+        };
+
         let snapshot = SystemSnapshot {
             hostname: base.hostname,
             os: base.os,
@@ -61,10 +74,16 @@ impl SystemSnapshot {
             disk_usage,
             #[cfg(feature = "systemd")]
             services_running,
+            #[cfg(feature = "net")]
+            listening_sockets,
         };
 
         let duration = started_at.elapsed();
         let disk = snapshot.disk_usage.as_ref();
+        #[cfg(feature = "net")]
+        let net_sockets = snapshot.listening_sockets.as_ref().map(|s| s.len());
+        #[cfg(not(feature = "net"))]
+        let net_sockets: Option<usize> = None;
         debug!(
             duration_ms = duration.as_millis(),
             cpu = snapshot.cpu_count,
@@ -73,6 +92,7 @@ impl SystemSnapshot {
             disk_total = disk.map(|du| du.total_bytes),
             disk_avail = disk.map(|du| du.available_bytes),
             disk_partitions = disk.map(|du| du.partitions.len()),
+            net_sockets,
             "snapshot_captured"
         );
 
