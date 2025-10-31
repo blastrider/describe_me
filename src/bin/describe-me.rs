@@ -265,93 +265,14 @@ fn main() -> Result<()> {
     }
 
     #[cfg(feature = "config")]
-    if let Some(cfg) = &cfg {
-        if let Some(cfg_exp) = cfg.exposure.as_ref() {
-            exposure.merge(describe_me::Exposure::from(cfg_exp));
-        }
-    }
+    apply_cli_exposure_flags(&mut exposure, &opts, cfg.as_ref());
+    #[cfg(not(feature = "config"))]
+    apply_cli_exposure_flags(&mut exposure, &opts);
 
-    if opts.expose_all {
-        exposure = describe_me::Exposure::all();
-    } else {
-        if opts.expose_hostname {
-            exposure.set_hostname(true);
-        }
-        if opts.expose_os {
-            exposure.set_os(true);
-        }
-        if opts.expose_kernel {
-            exposure.set_kernel(true);
-        }
-        if opts.expose_services {
-            exposure.set_services(true);
-        }
-        if opts.expose_disk_partitions {
-            exposure.set_disk_partitions(true);
-        }
-        if opts.expose_updates {
-            exposure.set_updates(true);
-        }
-    }
-
-    if opts.no_redacted {
-        exposure.redacted = false;
-    }
-
-    if opts.net_listen {
-        exposure.set_listening_sockets(true);
-    }
-
-    #[cfg(feature = "web")]
-    let mut web_exposure = exposure;
-
-    #[cfg(all(feature = "web", feature = "config"))]
-    if let Some(cfg) = &cfg {
-        if let Some(web_cfg) = &cfg.web {
-            if let Some(web_exp) = web_cfg.exposure.as_ref() {
-                web_exposure.merge(describe_me::Exposure::from(web_exp));
-            }
-        }
-    }
-
-    #[cfg(feature = "web")]
-    if opts.web_expose_all {
-        web_exposure = describe_me::Exposure::all();
-    } else {
-        if opts.web_expose_hostname {
-            web_exposure.set_hostname(true);
-        }
-        if opts.web_expose_os {
-            web_exposure.set_os(true);
-        }
-        if opts.web_expose_kernel {
-            web_exposure.set_kernel(true);
-        }
-        if opts.web_expose_services {
-            web_exposure.set_services(true);
-        }
-        if opts.web_expose_disk_partitions {
-            web_exposure.set_disk_partitions(true);
-        }
-        if opts.web_expose_updates {
-            web_exposure.set_updates(true);
-        }
-    }
-
-    #[cfg(feature = "web")]
-    if opts.no_redacted {
-        web_exposure.redacted = false;
-    }
-
-    #[cfg(feature = "web")]
-    {
-        if exposure.listening_sockets() {
-            web_exposure.set_listening_sockets(true);
-        }
-        if exposure.updates() {
-            web_exposure.set_updates(true);
-        }
-    }
+    #[cfg(feature = "config")]
+    let web_exposure = apply_web_exposure_flags(exposure, &opts, cfg.as_ref());
+    #[cfg(not(feature = "config"))]
+    let web_exposure = apply_web_exposure_flags(exposure, &opts);
 
     let exposure_all_effective = exposure.is_all();
 
@@ -581,6 +502,114 @@ fn main() -> Result<()> {
 
     Ok(())
     // ------------------------------------------------------------------------
+}
+
+#[cfg(feature = "config")]
+fn apply_cli_exposure_flags(
+    exposure: &mut describe_me::Exposure,
+    opts: &Opts,
+    cfg: Option<&describe_me::DescribeConfig>,
+) {
+    if let Some(cfg) = cfg {
+        if let Some(cfg_exp) = cfg.exposure.as_ref() {
+            exposure.merge(describe_me::Exposure::from(cfg_exp));
+        }
+    }
+    apply_cli_flags(exposure, opts);
+}
+
+#[cfg(not(feature = "config"))]
+fn apply_cli_exposure_flags(exposure: &mut describe_me::Exposure, opts: &Opts) {
+    apply_cli_flags(exposure, opts);
+}
+
+fn apply_cli_flags(exposure: &mut describe_me::Exposure, opts: &Opts) {
+    if opts.expose_all {
+        *exposure = describe_me::Exposure::all();
+    } else {
+        if opts.expose_hostname {
+            exposure.set_hostname(true);
+        }
+        if opts.expose_os {
+            exposure.set_os(true);
+        }
+        if opts.expose_kernel {
+            exposure.set_kernel(true);
+        }
+        if opts.expose_services {
+            exposure.set_services(true);
+        }
+        if opts.expose_disk_partitions {
+            exposure.set_disk_partitions(true);
+        }
+        if opts.expose_updates {
+            exposure.set_updates(true);
+        }
+    }
+
+    if opts.no_redacted {
+        exposure.redacted = false;
+    }
+
+    if opts.net_listen {
+        exposure.set_listening_sockets(true);
+    }
+}
+
+#[cfg(feature = "config")]
+fn apply_web_exposure_flags(
+    exposure: describe_me::Exposure,
+    opts: &Opts,
+    cfg: Option<&describe_me::DescribeConfig>,
+) -> describe_me::Exposure {
+    let mut web_exposure = exposure;
+
+    if let Some(cfg) = cfg {
+        if let Some(web_cfg) = cfg.web.as_ref() {
+            if let Some(web_exp) = web_cfg.exposure.as_ref() {
+                web_exposure.merge(describe_me::Exposure::from(web_exp));
+            }
+        }
+    }
+
+    apply_web_flags(&mut web_exposure, opts);
+    web_exposure
+}
+
+#[cfg(not(feature = "config"))]
+fn apply_web_exposure_flags(exposure: describe_me::Exposure, opts: &Opts) -> describe_me::Exposure {
+    let mut web_exposure = exposure;
+    apply_web_flags(&mut web_exposure, opts);
+    web_exposure
+}
+
+fn apply_web_flags(exposure: &mut describe_me::Exposure, opts: &Opts) {
+    if opts.web_expose_all {
+        *exposure = describe_me::Exposure::all();
+    } else {
+        if opts.web_expose_hostname {
+            exposure.set_hostname(true);
+        }
+        if opts.web_expose_os {
+            exposure.set_os(true);
+        }
+        if opts.web_expose_kernel {
+            exposure.set_kernel(true);
+        }
+        if opts.web_expose_services {
+            exposure.set_services(true);
+        }
+        if opts.web_expose_disk_partitions {
+            exposure.set_disk_partitions(true);
+        }
+        if opts.web_expose_updates {
+            exposure.set_updates(true);
+        }
+    }
+
+    if opts.no_redacted {
+        exposure.redacted = false;
+    }
 }
 
 #[cfg(test)]
