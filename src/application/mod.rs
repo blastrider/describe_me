@@ -2,6 +2,7 @@ use crate::application::logging::LogEvent;
 #[cfg(any(feature = "systemd", feature = "config"))]
 use crate::domain::ServiceInfo;
 use crate::domain::{CaptureOptions, DescribeError, DiskUsage, SystemSnapshot};
+use crate::shared::SharedSlice;
 use std::borrow::Cow;
 use std::time::Instant;
 use tracing::debug;
@@ -35,27 +36,31 @@ impl SystemSnapshot {
         };
 
         #[cfg(feature = "systemd")]
-        let services_running: Vec<ServiceInfo> = if opts.with_services {
-            crate::infrastructure::systemd::list_systemd_services().inspect_err(|err| {
-                LogEvent::SystemError {
-                    location: Cow::Borrowed("systemctl"),
-                    error: Cow::Owned(err.to_string()),
-                }
-                .emit();
-            })?
+        let services_running = if opts.with_services {
+            let list =
+                crate::infrastructure::systemd::list_systemd_services().inspect_err(|err| {
+                    LogEvent::SystemError {
+                        location: Cow::Borrowed("systemctl"),
+                        error: Cow::Owned(err.to_string()),
+                    }
+                    .emit();
+                })?;
+            SharedSlice::from_vec(list)
         } else {
-            Vec::new()
+            SharedSlice::from_vec(Vec::new())
         };
 
         #[cfg(feature = "net")]
         let listening_sockets = if opts.with_listening_sockets {
-            Some(crate::application::net::net_listen().inspect_err(|err| {
-                LogEvent::SystemError {
-                    location: Cow::Borrowed("net_listen"),
-                    error: Cow::Owned(err.to_string()),
-                }
-                .emit();
-            })?)
+            Some(SharedSlice::from_vec(
+                crate::application::net::net_listen().inspect_err(|err| {
+                    LogEvent::SystemError {
+                        location: Cow::Borrowed("net_listen"),
+                        error: Cow::Owned(err.to_string()),
+                    }
+                    .emit();
+                })?,
+            ))
         } else {
             None
         };

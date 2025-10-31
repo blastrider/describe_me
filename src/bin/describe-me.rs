@@ -2,6 +2,8 @@
 
 use anyhow::{bail, Result};
 use clap::{ArgAction, Parser};
+#[cfg(feature = "net")]
+use describe_me::domain::ListeningSocket;
 use describe_me::LogEvent;
 #[cfg(all(unix, feature = "cli"))]
 use nix::unistd::Uid;
@@ -127,23 +129,11 @@ struct Opts {
 }
 
 #[cfg(feature = "cli")]
-#[derive(Clone, Serialize)]
-struct ListeningSocketOut {
-    proto: String,
-    addr: String,
-    port: u16,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pid: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    process_name: Option<String>,
-}
-
-#[cfg(feature = "cli")]
 #[derive(Serialize)]
-struct CombinedOutput {
-    snapshot: describe_me::SnapshotView,
+struct CombinedOutput<'a> {
+    snapshot: &'a describe_me::SnapshotView,
     #[serde(skip_serializing_if = "Option::is_none")]
-    net_listen: Option<Vec<ListeningSocketOut>>,
+    net_listen: Option<&'a [ListeningSocket]>,
 }
 
 #[cfg(unix)]
@@ -417,36 +407,23 @@ fn main() -> Result<()> {
     // Filtre les services si demandé (systemd + config)
     #[cfg(all(feature = "systemd", feature = "config"))]
     if let Some(cfg) = &cfg {
-        snap.services_running =
-            describe_me::filter_services(std::mem::take(&mut snap.services_running), cfg);
+        let services_mut = snap.services_running.make_mut();
+        let filtered = describe_me::filter_services(std::mem::take(services_mut), cfg);
+        *services_mut = filtered;
     }
-
-    // Récupère les sockets si --net-listen (et map vers struct sérialisable locale)
-    let snapshot_view = describe_me::SnapshotView::new(&snap, exposure);
-
-    #[cfg(feature = "net")]
-    let net_listen_vec: Option<Vec<ListeningSocketOut>> =
-        snapshot_view.listening_sockets.as_ref().map(|socks| {
-            socks
-                .iter()
-                .map(|s| ListeningSocketOut {
-                    proto: s.proto.clone(),
-                    addr: s.addr.clone(),
-                    port: s.port,
-                    pid: s.process,
-                    process_name: s.process_name.clone(),
-                })
-                .collect()
-        });
 
     // Si JSON demandé: on ne sort qu'un seul document JSON combiné
     if opts.json || opts.pretty {
         #[cfg(feature = "cli")]
         {
+            let snapshot_view = describe_me::SnapshotView::new(&snap, exposure);
             let combined = CombinedOutput {
-                snapshot: snapshot_view.clone(),
+                snapshot: &snapshot_view,
                 #[cfg(feature = "net")]
-                net_listen: net_listen_vec.clone(),
+                net_listen: snapshot_view
+                    .listening_sockets
+                    .as_ref()
+                    .map(|s| s.as_slice()),
                 #[cfg(not(feature = "net"))]
                 net_listen: None,
             };
@@ -460,10 +437,13 @@ fn main() -> Result<()> {
         }
         #[cfg(not(feature = "cli"))]
         {
+            let snapshot_view = describe_me::SnapshotView::new(&snap, exposure);
             println!("{}", serde_json::to_string_pretty(&snapshot_view)?);
             return Ok(());
         }
     }
+
+    let snapshot_view = describe_me::SnapshotView::new(&snap, exposure);
 
     // --- Mode non-JSON (comportement existant + snapshot JSON à la fin) ---
 
@@ -479,13 +459,17 @@ fn main() -> Result<()> {
             println!("{:<5} {:<15} {:<6}", "PROTO", "ADDR", "PORT");
         }
 
-        if let Some(list) = &net_listen_vec {
-            if list.is_empty() {
+        if let Some(list) = snapshot_view.listening_sockets.as_ref() {
+            let slice = list.as_slice();
+            if slice.is_empty() {
                 println!("(aucune socket d’écoute trouvée)");
             } else {
-                for s in list {
+                for s in slice {
                     if opts.show_process {
-                        let pid = s.pid.map(|p| p.to_string()).unwrap_or_else(|| "-".into());
+                        let pid = s
+                            .process
+                            .map(|p| p.to_string())
+                            .unwrap_or_else(|| "-".into());
                         let name = s.process_name.as_deref().unwrap_or("?");
                         println!(
                             "{:<5} {:<15} {:<6} {:<8} {}",
@@ -504,7 +488,7 @@ fn main() -> Result<()> {
     if opts.disks {
         if let Some(du) = &snap.disk_usage {
             println!("Disque total: {} Gio", du.total_bytes as f64 / 1e9);
-            for p in &du.partitions {
+            for p in du.partitions.as_slice() {
                 println!(
                     "{}  total={} Gio  dispo={} Gio  fs={:?}",
                     p.mount_point,
