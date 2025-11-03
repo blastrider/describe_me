@@ -18,4 +18,8 @@ pub enum DescribeError {
     /// Erreur de config.
     #[error("config error: {0}")] // <— NEW
     Config(String),
+
+    /// Fonctionnalité non supportée pour cette plateforme.
+    #[error("unsupported: {0}")]
+    Unsupported(&'static str),
 }

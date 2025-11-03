@@ -1,12 +1,12 @@
 #[cfg(all(feature = "systemd", feature = "serde"))]
 use std::collections::BTreeMap;
 
-#[cfg(all(feature = "serde", feature = "net"))]
-use crate::domain::ListeningSocket;
 #[cfg(all(feature = "systemd", feature = "serde"))]
 use crate::domain::ServiceInfo;
 #[cfg(feature = "serde")]
 use crate::domain::{DiskPartition, SystemSnapshot, UpdatesInfo};
+#[cfg(all(feature = "serde", feature = "net"))]
+use crate::domain::{ListeningSocket, NetworkInterfaceTraffic};
 #[cfg(feature = "serde")]
 use crate::SharedSlice;
 
@@ -21,6 +21,7 @@ impl ExposureFlags {
     const DISK: Self = Self(1 << 4);
     const SOCKETS: Self = Self(1 << 5);
     const UPDATES: Self = Self(1 << 6);
+    const NETWORK: Self = Self(1 << 7);
     const ALL: Self = Self(
         Self::HOSTNAME.0
             | Self::OS.0
@@ -28,7 +29,8 @@ impl ExposureFlags {
             | Self::SERVICES.0
             | Self::DISK.0
             | Self::SOCKETS.0
-            | Self::UPDATES.0,
+            | Self::UPDATES.0
+            | Self::NETWORK.0,
     );
 
     const fn empty() -> Self {
@@ -164,6 +166,14 @@ impl Exposure {
     pub fn set_updates(&mut self, value: bool) {
         self.flags.set(ExposureFlags::UPDATES, value);
     }
+
+    pub fn network_traffic(&self) -> bool {
+        self.flags.contains(ExposureFlags::NETWORK)
+    }
+
+    pub fn set_network_traffic(&mut self, value: bool) {
+        self.flags.set(ExposureFlags::NETWORK, value);
+    }
 }
 
 #[cfg(feature = "config")]
@@ -177,6 +187,7 @@ impl From<&crate::domain::ExposureConfig> for Exposure {
         exposure.set_disk_partitions(cfg.expose_disk_partitions);
         exposure.set_listening_sockets(cfg.expose_listening_sockets);
         exposure.set_updates(cfg.expose_updates);
+        exposure.set_network_traffic(cfg.expose_network_traffic);
         exposure.redacted = cfg.redacted;
         exposure
     }
@@ -220,6 +231,9 @@ pub struct SnapshotView {
     pub services_summary: Option<ServiceSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub updates: Option<UpdatesInfo>,
+    #[cfg(feature = "net")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network_traffic: Option<SharedSlice<NetworkInterfaceTraffic>>,
 }
 
 #[cfg(feature = "serde")]
@@ -275,6 +289,12 @@ impl SnapshotView {
             services_summary,
             updates: if exposure.updates() {
                 snapshot.updates
+            } else {
+                None
+            },
+            #[cfg(feature = "net")]
+            network_traffic: if exposure.network_traffic() {
+                snapshot.network_traffic.clone()
             } else {
                 None
             },
@@ -422,6 +442,8 @@ mod tests {
                 services_running: crate::shared::SharedSlice::from_vec(Vec::new()),
                 #[cfg(feature = "net")]
                 listening_sockets: None,
+                #[cfg(feature = "net")]
+                network_traffic: None,
                 updates: Some(UpdatesInfo {
                     pending: 3,
                     reboot_required: true,
@@ -456,6 +478,8 @@ mod tests {
             services_running: crate::shared::SharedSlice::from_vec(Vec::new()),
             #[cfg(feature = "net")]
             listening_sockets: None,
+            #[cfg(feature = "net")]
+            network_traffic: None,
             updates: Some(UpdatesInfo {
                 pending: 2,
                 reboot_required: false,

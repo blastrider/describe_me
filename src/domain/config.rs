@@ -83,6 +83,8 @@ pub struct ExposureConfig {
     pub expose_disk_partitions: bool,
     /// Autoriser la liste des sockets en écoute.
     pub expose_listening_sockets: bool,
+    /// Autoriser l'exposition du trafic réseau par interface.
+    pub expose_network_traffic: bool,
     /// Autoriser l'exposition des informations de mises à jour.
     pub expose_updates: bool,
     /// Fournir des valeurs masquées (versions tronquées) lorsque l'exposition complète est désactivée.
@@ -105,6 +107,7 @@ impl Default for ExposureConfig {
             expose_services: false,
             expose_disk_partitions: false,
             expose_listening_sockets: false,
+            expose_network_traffic: false,
             expose_updates: false,
             redacted: true,
         }

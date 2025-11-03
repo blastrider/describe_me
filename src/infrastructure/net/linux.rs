@@ -1,4 +1,4 @@
-use crate::domain::{DescribeError, ListeningSocket};
+use crate::domain::{DescribeError, ListeningSocket, NetworkInterfaceTraffic};
 use std::{
     collections::HashMap,
     fs, io,
@@ -167,4 +167,58 @@ fn read_process_name(pid: u32) -> Option<String> {
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|name| !name.is_empty())
+}
+
+pub fn collect_network_traffic() -> Result<Vec<NetworkInterfaceTraffic>, DescribeError> {
+    let content = fs::read_to_string("/proc/net/dev")
+        .map_err(|err| DescribeError::System(format!("read /proc/net/dev: {err}")))?;
+
+    let mut interfaces = Vec::new();
+
+    for line in content.lines().skip(2) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let (iface_raw, stats_raw) = match trimmed.split_once(':') {
+            Some(parts) => parts,
+            None => continue,
+        };
+
+        let name = iface_raw.trim();
+        if name.is_empty() {
+            continue;
+        }
+
+        let fields: Vec<&str> = stats_raw.split_whitespace().collect();
+        if fields.len() < 16 {
+            continue;
+        }
+
+        let parse_field = |idx: usize| -> Result<u64, DescribeError> {
+            fields[idx].parse::<u64>().map_err(|err| {
+                DescribeError::Parse(format!(
+                    "invalid counter '{}' for interface {name}: {err}",
+                    fields[idx]
+                ))
+            })
+        };
+
+        let entry = NetworkInterfaceTraffic {
+            name: name.to_string(),
+            rx_bytes: parse_field(0)?,
+            rx_packets: parse_field(1)?,
+            rx_errors: parse_field(2)?,
+            rx_dropped: parse_field(3)?,
+            tx_bytes: parse_field(8)?,
+            tx_packets: parse_field(9)?,
+            tx_errors: parse_field(10)?,
+            tx_dropped: parse_field(11)?,
+        };
+
+        interfaces.push(entry);
+    }
+
+    Ok(interfaces)
 }

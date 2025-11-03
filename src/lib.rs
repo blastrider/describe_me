@@ -15,8 +15,8 @@ mod infrastructure;
 mod shared;
 
 pub use domain::{
-    CaptureOptions, DescribeError, DiskPartition, DiskUsage, ServiceInfo, SystemSnapshot,
-    UpdatesInfo,
+    CaptureOptions, DescribeError, DiskPartition, DiskUsage, NetworkInterfaceTraffic, ServiceInfo,
+    SystemSnapshot, UpdatesInfo,
 };
 
 #[cfg(feature = "config")]
@@ -29,7 +29,7 @@ pub use application::disk_usage;
 pub use application::{filter_services, load_config_from_path};
 
 #[cfg(feature = "net")]
-pub use application::net_listen; // <— NEW
+pub use application::{net_listen, network_traffic}; // <— NEW
 
 // Outils de test/fuzz internes
 #[cfg(all(feature = "systemd", any(test, feature = "internals")))]

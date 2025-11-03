@@ -70,6 +70,21 @@ impl SystemSnapshot {
             None
         };
 
+        #[cfg(feature = "net")]
+        let network_traffic = if opts.with_network_traffic {
+            Some(SharedSlice::from_vec(
+                crate::application::net::network_traffic().inspect_err(|err| {
+                    LogEvent::SystemError {
+                        location: Cow::Borrowed("net_traffic"),
+                        error: Cow::Owned(err.to_string()),
+                    }
+                    .emit();
+                })?,
+            ))
+        } else {
+            None
+        };
+
         let updates = crate::infrastructure::updates::gather_updates();
 
         let snapshot = SystemSnapshot {
@@ -88,6 +103,8 @@ impl SystemSnapshot {
             services_running,
             #[cfg(feature = "net")]
             listening_sockets,
+            #[cfg(feature = "net")]
+            network_traffic,
             updates,
         };
 
@@ -97,6 +114,10 @@ impl SystemSnapshot {
         let net_sockets = snapshot.listening_sockets.as_ref().map(|s| s.len());
         #[cfg(not(feature = "net"))]
         let net_sockets: Option<usize> = None;
+        #[cfg(feature = "net")]
+        let net_interfaces = snapshot.network_traffic.as_ref().map(|t| t.len());
+        #[cfg(not(feature = "net"))]
+        let net_interfaces: Option<usize> = None;
         let updates_pending = snapshot.updates.as_ref().map(|u| u.pending);
         let updates_reboot = snapshot.updates.as_ref().map(|u| u.reboot_required);
         debug!(
@@ -108,6 +129,7 @@ impl SystemSnapshot {
             disk_avail = disk.map(|du| du.available_bytes),
             disk_partitions = disk.map(|du| du.partitions.len()),
             net_sockets,
+            net_interfaces,
             updates_pending,
             updates_reboot,
             "snapshot_captured"
@@ -202,7 +224,7 @@ pub fn filter_services(services: Vec<ServiceInfo>, cfg: &DescribeConfig) -> Vec<
 mod net;
 
 #[cfg(feature = "net")]
-pub use net::net_listen;
+pub use net::{net_listen, network_traffic};
 
 #[cfg(feature = "web")]
 pub mod web;

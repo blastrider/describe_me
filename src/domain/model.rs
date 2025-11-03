@@ -38,6 +38,9 @@ pub struct SystemSnapshot {
     #[cfg(feature = "net")]
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub listening_sockets: Option<SharedSlice<crate::domain::ListeningSocket>>,
+    #[cfg(feature = "net")]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub network_traffic: Option<SharedSlice<crate::domain::NetworkInterfaceTraffic>>,
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub updates: Option<UpdatesInfo>,
 }
@@ -47,6 +50,7 @@ pub struct CaptureOptions {
     pub with_services: bool,
     pub with_disk_usage: bool,
     pub with_listening_sockets: bool,
+    pub with_network_traffic: bool,
 }
 
 /// Une partition/point de montage.
@@ -73,4 +77,28 @@ pub struct DiskUsage {
     pub used_bytes: u64,
     /// Détail par partition.
     pub partitions: SharedSlice<DiskPartition>,
+}
+
+/// Trafic réseau pour une interface donnée.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct NetworkInterfaceTraffic {
+    /// Nom de l'interface (ex: eth0, enp3s0, lo).
+    pub name: String,
+    /// Octets reçus depuis le démarrage.
+    pub rx_bytes: u64,
+    /// Paquets reçus.
+    pub rx_packets: u64,
+    /// Paquets reçus en erreur.
+    pub rx_errors: u64,
+    /// Paquets reçus et abandonnés.
+    pub rx_dropped: u64,
+    /// Octets émis.
+    pub tx_bytes: u64,
+    /// Paquets émis.
+    pub tx_packets: u64,
+    /// Paquets émis en erreur.
+    pub tx_errors: u64,
+    /// Paquets émis abandonnés.
+    pub tx_dropped: u64,
 }
