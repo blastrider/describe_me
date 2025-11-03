@@ -74,6 +74,9 @@ Options courantes :
 # Sockets d’écoute (feature net requise)
 ./target/debug/describe-me --net-listen
 
+# Trafic réseau (feature net requise)
+./target/debug/describe-me --net-traffic
+
 # Charger une config TOML (feature config requise)
 ./target/debug/describe-me --config ./src/examples/config.toml
 
@@ -83,7 +86,7 @@ Options courantes :
 
 
 Astuce : combine librement, ex.
-./describe-me --with-services --disks --net-listen --config config.toml --pretty
+./describe-me --with-services --disks --net-listen --net-traffic --config config.toml --pretty
 
 Exemple de sortie (résumé lisible)
 Hostname: srv-app-01
@@ -94,6 +97,7 @@ RAM: 16.0 GiB (utilisée 6.3 GiB)
 Disque total: 500 GiB (libre 320 GiB)
 Services actifs: nginx, postgresql, ...
 Sockets écoute: tcp/0.0.0.0:22, tcp/127.0.0.1:5432, ...
+Trafic reseau: eth0 Rx 120.5 Go / Tx 95.3 Go, eno1 Rx 4.2 Go / Tx 3.8 Go
 
 2 bis) Service systemd durci
 

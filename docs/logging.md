@@ -11,6 +11,7 @@ LogEvent::Startup {
     mode: "cli".into(),
     with_services: false,
     net_listen: false,
+    net_traffic: false,
     expose_all: false,
     web_expose_all: false,
     checks: &[],
