@@ -4,6 +4,8 @@
   const err = document.getElementById('error');
   const last = document.getElementById('lastUpdate');
   const rawCard = document.getElementById('rawCard');
+  const rawBody = document.getElementById('rawBody');
+  const rawToggle = document.getElementById('rawToggle');
   const updatesCard = document.getElementById('updatesCard');
   const networkCard = document.getElementById('networkCard');
   const networkList = document.getElementById('networkList');
@@ -23,6 +25,15 @@
 
   if (WEB_DEBUG && rawCard) {
     rawCard.style.display = "block";
+  }
+  if (rawToggle && rawBody) {
+    rawToggle.setAttribute('aria-controls', 'rawBody');
+    rawToggle.setAttribute('aria-expanded', 'true');
+    rawToggle.addEventListener('click', () => {
+      const collapsed = rawBody.classList.toggle('collapsed');
+      rawToggle.textContent = collapsed ? "Afficher" : "Masquer";
+      rawToggle.setAttribute('aria-expanded', (!collapsed).toString());
+    });
   }
 
   const el = (id) => document.getElementById(id);
