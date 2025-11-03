@@ -85,7 +85,11 @@ impl SystemSnapshot {
             None
         };
 
-        let updates = crate::infrastructure::updates::gather_updates();
+        let updates = if opts.with_updates {
+            crate::infrastructure::updates::gather_updates()
+        } else {
+            None
+        };
 
         let snapshot = SystemSnapshot {
             hostname: base.hostname,
