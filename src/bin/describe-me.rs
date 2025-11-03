@@ -730,6 +730,7 @@ mod tests {
             updates: Some(describe_me::UpdatesInfo {
                 pending: 5,
                 reboot_required: true,
+                packages: None,
             }),
         };
         let mut exposure = describe_me::Exposure::default();

@@ -288,7 +288,7 @@ impl SnapshotView {
             #[cfg(feature = "systemd")]
             services_summary,
             updates: if exposure.updates() {
-                snapshot.updates
+                snapshot.updates.clone()
             } else {
                 None
             },
@@ -447,6 +447,7 @@ mod tests {
                 updates: Some(UpdatesInfo {
                     pending: 3,
                     reboot_required: true,
+                    packages: None,
                 }),
             };
             let view = SnapshotView::new(&snapshot, exposure);
@@ -483,6 +484,7 @@ mod tests {
             updates: Some(UpdatesInfo {
                 pending: 2,
                 reboot_required: false,
+                packages: None,
             }),
         };
 

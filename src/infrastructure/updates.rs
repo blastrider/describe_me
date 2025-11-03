@@ -1,4 +1,5 @@
-use crate::domain::UpdatesInfo;
+use crate::domain::{UpdatePackage, UpdatesInfo};
+use crate::SharedSlice;
 use std::io;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -34,6 +35,31 @@ fn gather_freebsd_updates() -> Option<UpdatesInfo> {
 
 #[cfg(target_os = "linux")]
 fn gather_apt_updates() -> Option<UpdatesInfo> {
+    let reboot_required = Path::new("/var/run/reboot-required").exists()
+        || Path::new("/run/reboot-required").exists();
+
+    match apt_list_upgradable() {
+        Ok(packages) => {
+            let pending = packages.len() as u32;
+            let packages = if packages.is_empty() {
+                None
+            } else {
+                Some(SharedSlice::from_vec(packages))
+            };
+            return Some(UpdatesInfo {
+                pending,
+                reboot_required,
+                packages,
+            });
+        }
+        Err(AptListError::NotAvailable) => {
+            // fallback to apt-get simulation below
+        }
+        Err(AptListError::Failed) => {
+            // Command exists but failed — fallback to apt-get simulation.
+        }
+    }
+
     let mut cmd = Command::new("apt-get");
     cmd.args(["-s", "upgrade"])
         .env("DEBIAN_FRONTEND", "noninteractive")
@@ -55,11 +81,101 @@ fn gather_apt_updates() -> Option<UpdatesInfo> {
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     let pending = count_apt_lines(&stdout) as u32;
-    let reboot_required = Path::new("/var/run/reboot-required").exists()
-        || Path::new("/run/reboot-required").exists();
     Some(UpdatesInfo {
         pending,
         reboot_required,
+        packages: None,
+    })
+}
+
+#[cfg(target_os = "linux")]
+enum AptListError {
+    NotAvailable,
+    Failed,
+}
+
+#[cfg(target_os = "linux")]
+fn apt_list_upgradable() -> Result<Vec<UpdatePackage>, AptListError> {
+    let mut cmd = Command::new("apt");
+    cmd.args(["list", "--upgradable"])
+        .env("LC_ALL", "C")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let output = match cmd.output() {
+        Ok(out) => out,
+        Err(err) => {
+            if err.kind() == io::ErrorKind::NotFound {
+                return Err(AptListError::NotAvailable);
+            }
+            debug!(error = %err, "apt list --upgradable invocation failed");
+            return Err(AptListError::Failed);
+        }
+    };
+
+    if !output.status.success() {
+        debug!(status = ?output.status, stderr = %String::from_utf8_lossy(&output.stderr), "apt list --upgradable returned non-zero status");
+        return Err(AptListError::Failed);
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut packages = Vec::new();
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty()
+            || trimmed.starts_with("Listing...")
+            || trimmed.starts_with("WARNING:")
+        {
+            continue;
+        }
+        if let Some(pkg) = parse_apt_upgradable_line(trimmed) {
+            packages.push(pkg);
+        }
+    }
+
+    Ok(packages)
+}
+
+#[cfg(target_os = "linux")]
+fn parse_apt_upgradable_line(line: &str) -> Option<UpdatePackage> {
+    let (main, bracket) = if let Some(idx) = line.find('[') {
+        (line[..idx].trim(), Some(&line[idx + 1..]))
+    } else {
+        (line.trim(), None)
+    };
+
+    let mut tokens = main.split_whitespace();
+    let pkg_token = tokens.next()?;
+    let available_version = tokens.next().map(|s| s.to_string());
+    let arch_token = tokens.next();
+
+    let (name, mut repository): (String, Option<String>) = match pkg_token.split_once('/') {
+        Some((n, repo)) => (n.to_string(), Some(repo.to_string())),
+        None => (pkg_token.to_string(), None),
+    };
+
+    if let Some(arch) = arch_token {
+        if let Some(repo) = &mut repository {
+            if !arch.is_empty() {
+                repo.push(' ');
+                repo.push_str(arch);
+            }
+        } else if !arch.is_empty() {
+            repository = Some(arch.to_string());
+        }
+    }
+
+    let current_version = bracket
+        .and_then(|raw| raw.trim().strip_suffix(']'))
+        .and_then(|inner| inner.strip_prefix("upgradable from:"))
+        .map(|v| v.trim().to_string());
+
+    Some(UpdatePackage {
+        name,
+        current_version,
+        available_version,
+        repository,
     })
 }
 
@@ -90,6 +206,7 @@ fn gather_dnf_updates() -> Option<UpdatesInfo> {
             Some(UpdatesInfo {
                 pending: pending as u32,
                 reboot_required,
+                packages: None,
             })
         }
         Some(1) => {
@@ -136,6 +253,7 @@ fn gather_checkupdates() -> Option<UpdatesInfo> {
     Some(UpdatesInfo {
         pending,
         reboot_required,
+        packages: None,
     })
 }
 
@@ -168,11 +286,13 @@ fn gather_apk_updates() -> Option<UpdatesInfo> {
         return Some(UpdatesInfo {
             pending: 0,
             reboot_required: Path::new("/run/reboot-required").exists(),
+            packages: None,
         });
     }
     Some(UpdatesInfo {
         pending,
         reboot_required: Path::new("/run/reboot-required").exists(),
+        packages: None,
     })
 }
 
@@ -204,6 +324,7 @@ fn gather_freebsd_pkg_updates() -> Option<UpdatesInfo> {
     Some(UpdatesInfo {
         pending,
         reboot_required: false,
+        packages: None,
     })
 }
 
@@ -286,6 +407,24 @@ Building dependency tree
 Reading state information... Done
 Calculating upgrade... Done";
         assert_eq!(count_apt_lines(sample), 0);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn parse_apt_line_extracts_details() {
+        let line =
+            "openssl/focal-updates 1.1.1f-1ubuntu2.19 amd64 [upgradable from: 1.1.1f-1ubuntu2.18]";
+        let parsed = parse_apt_upgradable_line(line).expect("parsed");
+        assert_eq!(parsed.name, "openssl");
+        assert_eq!(
+            parsed.available_version.as_deref(),
+            Some("1.1.1f-1ubuntu2.19")
+        );
+        assert_eq!(
+            parsed.current_version.as_deref(),
+            Some("1.1.1f-1ubuntu2.18")
+        );
+        assert_eq!(parsed.repository.as_deref(), Some("focal-updates amd64"));
     }
 
     #[cfg(target_os = "linux")]

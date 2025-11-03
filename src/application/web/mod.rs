@@ -41,15 +41,17 @@ use axum::{
 use tokio::sync::Notify;
 use tracing::warn;
 
+use crate::application::capture_snapshot_with_view;
 use crate::application::exposure::Exposure;
 use crate::application::logging::LogEvent;
+use crate::domain::CaptureOptions;
 use crate::domain::DescribeError;
 #[cfg(feature = "config")]
 use crate::domain::{DescribeConfig, WebSecurityConfig};
 
 use security::{AuthGuard, WebSecurity};
 use sse::sse_stream;
-use template::render_index;
+use template::{render_index, render_updates_page};
 
 #[cfg(unix)]
 use std::future::pending;
@@ -253,6 +255,7 @@ pub async fn serve_http<A: Into<SocketAddr>>(
 
     let app = Router::new()
         .route("/", get(index))
+        .route("/updates", get(updates_page))
         .route("/sse", get(sse_stream))
         .layer(middleware::from_fn(http_security_layer))
         .with_state(app_state)
@@ -345,6 +348,46 @@ async fn index(
     Extension(csp_nonce): Extension<CspNonce>,
 ) -> impl IntoResponse {
     Html(render_index(state.web_debug, csp_nonce.as_str()))
+}
+
+async fn updates_page(
+    State(state): State<AppState>,
+    _guard: AuthGuard,
+    Extension(csp_nonce): Extension<CspNonce>,
+) -> impl IntoResponse {
+    if !state.exposure.updates() {
+        let message = "L'exposition des mises à jour est désactivée pour cette instance.";
+        let html = render_updates_page(None, Some(message), csp_nonce.as_str());
+        return Html(html).into_response();
+    }
+
+    let capture_opts = CaptureOptions {
+        with_services: false,
+        with_disk_usage: false,
+        with_listening_sockets: false,
+        with_network_traffic: false,
+    };
+
+    #[cfg(feature = "config")]
+    let config = state.config.as_ref();
+
+    match capture_snapshot_with_view(
+        capture_opts,
+        state.exposure,
+        #[cfg(feature = "config")]
+        config,
+    ) {
+        Ok((_snapshot, view)) => {
+            let updates = view.updates;
+            let html = render_updates_page(updates.as_ref(), None, csp_nonce.as_str());
+            Html(html).into_response()
+        }
+        Err(err) => {
+            let message = format!("Erreur lors de la collecte: {err}");
+            let html = render_updates_page(None, Some(&message), csp_nonce.as_str());
+            (StatusCode::INTERNAL_SERVER_ERROR, Html(html)).into_response()
+        }
+    }
 }
 
 fn map_io(e: impl std::error::Error + Send + Sync + 'static) -> DescribeError {
