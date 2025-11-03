@@ -28,6 +28,7 @@ use crate::application::logging::LogEvent;
 use crate::domain::CaptureOptions;
 
 use super::security::{AuthGuard, SsePermit, TokenKey};
+use super::set_token_cookie;
 use super::AppState;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -228,6 +229,7 @@ pub(super) async fn sse_stream(
     let with_services = false;
 
     let mut session = guard.into_session();
+    let cookie_token = session.provided_token().map(str::to_owned);
     let client_ip = session.ip();
     let token_key = session.token_key();
     let permit = session.take_sse_permit();
@@ -341,7 +343,12 @@ pub(super) async fn sse_stream(
 
     let stream = MetricsStream::new(stream, metrics, permit, shutdown_notify);
 
-    Sse::new(stream).keep_alive(KeepAlive::default())
+    let sse = Sse::new(stream).keep_alive(KeepAlive::default());
+    let mut response = sse.into_response();
+    if let Some(token) = cookie_token.as_deref() {
+        set_token_cookie(response.headers_mut(), token);
+    }
+    response
 }
 
 fn escape_json(s: &str) -> String {

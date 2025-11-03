@@ -1,12 +1,15 @@
 #![forbid(unsafe_code)]
 
-use anyhow::{bail, Result};
-use clap::{ArgAction, Parser};
+use anyhow::{anyhow, bail, Context, Result};
+use argon2::password_hash::{PasswordHasher, SaltString};
+use argon2::Argon2;
+use clap::{ArgAction, Parser, ValueEnum};
 #[cfg(feature = "net")]
 use describe_me::domain::{ListeningSocket, NetworkInterfaceTraffic};
 use describe_me::LogEvent;
 #[cfg(all(unix, feature = "cli"))]
 use nix::unistd::Uid;
+use rand_core::OsRng;
 #[cfg(feature = "cli")]
 use serde::Serialize;
 
@@ -68,13 +71,37 @@ struct Opts {
     #[arg(long = "web-debug", action = ArgAction::SetTrue)]
     web_debug: bool,
 
-    /// Jeton d'accès requis pour --web (Authorization: Bearer ou en-tête x-describe-me-token)
+    /// Hash du jeton requis pour --web (Authorization: Bearer ou en-tête x-describe-me-token)
     #[arg(long = "web-token", value_name = "TOKEN")]
     web_token: Option<String>,
 
     /// IP ou réseaux autorisés pour --web (peut être répété, ex: 127.0.0.1, 10.0.0.0/16)
     #[arg(long = "web-allow-ip", value_name = "IP[/PREFIX]", action = ArgAction::Append)]
     web_allow_ip: Vec<String>,
+
+    /// Génère un hash (Argon2id/bcrypt) pour configurer --web-token (helper)
+    #[arg(
+        long = "hash-web-token",
+        value_name = "TOKEN",
+        conflicts_with = "hash_web_token_stdin"
+    )]
+    hash_web_token: Option<String>,
+
+    /// Lit le token depuis stdin et génère un hash (helper)
+    #[arg(
+        long = "hash-web-token-stdin",
+        action = ArgAction::SetTrue,
+        conflicts_with = "hash_web_token"
+    )]
+    hash_web_token_stdin: bool,
+
+    /// Algorithme utilisé avec --hash-web-token (--hash-web-token-stdin)
+    #[arg(
+        long = "hash-web-token-alg",
+        value_enum,
+        default_value_t = TokenHashAlgorithm::Argon2id
+    )]
+    hash_web_token_alg: TokenHashAlgorithm,
 
     /// Expose le hostname exact dans le JSON (opt-in, sinon masqué)
     #[arg(long = "expose-hostname", action = ArgAction::SetTrue)]
@@ -152,6 +179,13 @@ struct Opts {
     checks: Vec<String>,
 }
 
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum TokenHashAlgorithm {
+    #[value(alias = "argon2")]
+    Argon2id,
+    Bcrypt,
+}
+
 #[cfg(feature = "cli")]
 #[derive(Serialize)]
 struct CombinedOutput<'a> {
@@ -180,6 +214,22 @@ fn summary_line(view: &describe_me::SnapshotView) -> String {
     format!("updates={pending} reboot={reboot}")
 }
 
+fn hash_web_token(token: &str, algorithm: TokenHashAlgorithm) -> Result<String> {
+    match algorithm {
+        TokenHashAlgorithm::Argon2id => {
+            let salt = SaltString::generate(&mut OsRng);
+            let hash = Argon2::default()
+                .hash_password(token.as_bytes(), &salt)
+                .map_err(|err| anyhow!("argon2id: {err}"))?;
+            Ok(hash.to_string())
+        }
+        TokenHashAlgorithm::Bcrypt => {
+            let hash = bcrypt::hash(token, bcrypt::DEFAULT_COST)?;
+            Ok(hash)
+        }
+    }
+}
+
 #[cfg(unix)]
 fn ensure_not_root() -> Result<()> {
     if Uid::current().is_root() {
@@ -197,6 +247,27 @@ fn ensure_not_root() -> Result<()> {
 
 fn main() -> Result<()> {
     let mut opts = Opts::parse();
+
+    if opts.hash_web_token.is_some() || opts.hash_web_token_stdin {
+        let token = if let Some(value) = opts.hash_web_token.take() {
+            value
+        } else {
+            use std::io::{self, Read};
+            let mut buffer = String::new();
+            io::stdin()
+                .read_to_string(&mut buffer)
+                .context("lecture du token depuis stdin")?;
+            buffer.trim_end_matches(&['\n', '\r'][..]).to_owned()
+        };
+
+        if token.is_empty() {
+            bail!("Le token ne peut pas être vide.");
+        }
+
+        let hash = hash_web_token(&token, opts.hash_web_token_alg)?;
+        println!("{hash}");
+        return Ok(());
+    }
 
     // Charge optionnellement la config (pour filtrages, web, ...)
     #[cfg(feature = "config")]
@@ -285,9 +356,9 @@ fn main() -> Result<()> {
     #[cfg(not(feature = "config"))]
     apply_cli_exposure_flags(&mut exposure, &opts);
 
-    #[cfg(feature = "config")]
+    #[cfg(all(feature = "web", feature = "config"))]
     let web_exposure = apply_web_exposure_flags(exposure, &opts, cfg.as_ref());
-    #[cfg(not(feature = "config"))]
+    #[cfg(all(feature = "web", not(feature = "config")))]
     let web_exposure = apply_web_exposure_flags(exposure, &opts);
 
     let exposure_all_effective = exposure.is_all();
@@ -620,7 +691,7 @@ fn apply_cli_flags(exposure: &mut describe_me::Exposure, opts: &Opts) {
     }
 }
 
-#[cfg(feature = "config")]
+#[cfg(all(feature = "web", feature = "config"))]
 fn apply_web_exposure_flags(
     exposure: describe_me::Exposure,
     opts: &Opts,
@@ -640,13 +711,14 @@ fn apply_web_exposure_flags(
     web_exposure
 }
 
-#[cfg(not(feature = "config"))]
+#[cfg(all(feature = "web", not(feature = "config")))]
 fn apply_web_exposure_flags(exposure: describe_me::Exposure, opts: &Opts) -> describe_me::Exposure {
     let mut web_exposure = exposure;
     apply_web_flags(&mut web_exposure, opts);
     web_exposure
 }
 
+#[cfg(feature = "web")]
 fn apply_web_flags(exposure: &mut describe_me::Exposure, opts: &Opts) {
     if opts.web_expose_all {
         *exposure = describe_me::Exposure::all();

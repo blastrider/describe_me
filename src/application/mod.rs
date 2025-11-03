@@ -153,13 +153,13 @@ pub fn disk_usage() -> Result<DiskUsage, DescribeError> {
 pub fn capture_snapshot_with_view(
     opts: CaptureOptions,
     exposure: Exposure,
-    #[cfg(feature = "config")] cfg: Option<&DescribeConfig>,
+    #[cfg(feature = "config")] _cfg: Option<&DescribeConfig>,
 ) -> Result<(SystemSnapshot, SnapshotView), DescribeError> {
     #[cfg_attr(not(all(feature = "systemd", feature = "config")), allow(unused_mut))]
     let mut snapshot = SystemSnapshot::capture_with(opts)?;
 
     #[cfg(all(feature = "systemd", feature = "config"))]
-    if let Some(cfg) = cfg {
+    if let Some(cfg) = _cfg {
         let services_mut = snapshot.services_running.make_mut();
         let filtered = filter_services(std::mem::take(services_mut), cfg);
         *services_mut = filtered;

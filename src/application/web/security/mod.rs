@@ -2,7 +2,8 @@ mod auth;
 mod limits;
 mod sse;
 
-use auth::{build_request, verify_token};
+use super::clear_token_cookie;
+use auth::{build_request, verify_token, TokenVerifier};
 use limits::{enforce_rate_limits, ensure_not_blocked, SecurityPolicy, SecurityState};
 use sse::acquire_permit;
 
@@ -34,6 +35,7 @@ pub(super) struct AuthSession {
     ip: IpAddr,
     token: TokenKey,
     sse_permit: Option<SsePermit>,
+    provided_token: Option<Arc<str>>,
 }
 
 impl AuthSession {
@@ -48,6 +50,10 @@ impl AuthSession {
 
     pub fn token_key(&self) -> TokenKey {
         self.token
+    }
+
+    pub fn provided_token(&self) -> Option<&str> {
+        self.provided_token.as_deref()
     }
 
     pub fn take_sse_permit(&mut self) -> Option<SsePermit> {
@@ -83,7 +89,7 @@ impl FromRequestParts<AppState> for AuthGuard {
 
 #[derive(Debug)]
 pub(super) struct WebSecurity {
-    token: Option<String>,
+    token: Option<TokenVerifier>,
     allow: Vec<IpMatcher>,
     policy: SecurityPolicy,
     state: Arc<SecurityState>,
@@ -94,17 +100,28 @@ impl WebSecurity {
         access: WebAccess,
         #[cfg(feature = "config")] override_cfg: Option<WebSecurityConfig>,
     ) -> Result<Self, DescribeError> {
-        let token = access.token.and_then(|t| {
-            let trimmed = t.trim().to_owned();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed)
+        let WebAccess {
+            token: raw_token,
+            allow_ips,
+        } = access;
+
+        let token = match raw_token {
+            Some(raw) => {
+                let trimmed = raw.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(
+                        TokenVerifier::parse(trimmed)
+                            .map_err(|err| DescribeError::Config(format!("web.token: {err}")))?,
+                    )
+                }
             }
-        });
+            None => None,
+        };
 
         let mut allow = Vec::new();
-        for raw in access.allow_ips {
+        for raw in allow_ips {
             let trimmed = raw.trim();
             if trimmed.is_empty() {
                 continue;
@@ -149,7 +166,7 @@ impl WebSecurity {
         verify_token(
             &self.state,
             &self.policy,
-            self.token.as_deref(),
+            self.token.as_ref(),
             &request,
             now,
         )
@@ -173,6 +190,10 @@ impl WebSecurity {
             ip: request.remote_ip,
             token: request.token_key,
             sse_permit,
+            provided_token: request
+                .provided_token
+                .as_ref()
+                .map(|value| Arc::<str>::from(value.as_str())),
         })
     }
 }
@@ -255,6 +276,9 @@ impl SecurityRejection {
             if let Ok(value) = HeaderValue::from_str(&secs.to_string()) {
                 response.headers_mut().insert("Retry-After", value);
             }
+        }
+        if self.status == StatusCode::UNAUTHORIZED {
+            clear_token_cookie(response.headers_mut());
         }
         response
     }
@@ -378,12 +402,22 @@ mod tests {
     use axum::extract::ConnectInfo;
     use axum::http::Request;
     use std::net::{IpAddr, Ipv4Addr};
+    use std::sync::OnceLock;
 
     fn make_access(token: Option<&str>) -> WebAccess {
         WebAccess {
             token: token.map(|t| t.to_string()),
             allow_ips: Vec::new(),
         }
+    }
+
+    fn bcrypt_hash(token: &str) -> String {
+        bcrypt::hash(token, bcrypt::DEFAULT_COST).expect("bcrypt hash")
+    }
+
+    fn cached_hash() -> &'static str {
+        static HASH: OnceLock<String> = OnceLock::new();
+        HASH.get_or_init(|| bcrypt_hash("secret"))
     }
 
     #[cfg(feature = "config")]
@@ -433,7 +467,7 @@ mod tests {
 
     #[tokio::test]
     async fn auth_backoff_after_failures() {
-        let security = build_security(Some("secret"));
+        let security = build_security(Some(cached_hash()));
         let parts = make_parts("/", IpAddr::V4(Ipv4Addr::LOCALHOST), Some("wrong"));
 
         for attempt in 0..6 {
@@ -450,7 +484,8 @@ mod tests {
 
     #[tokio::test]
     async fn sse_concurrency_limited() {
-        let security = build_security(Some("secret"));
+        let hash = cached_hash();
+        let security = build_security(Some(hash));
         let parts = make_parts("/sse", IpAddr::V4(Ipv4Addr::LOCALHOST), Some("secret"));
 
         let session1 = security
