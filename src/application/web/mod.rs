@@ -22,6 +22,7 @@ mod assets;
 mod security;
 mod sse;
 mod template;
+mod updates_cache;
 
 use std::{borrow::Cow, net::SocketAddr, sync::Arc, time::Duration};
 
@@ -41,10 +42,8 @@ use axum::{
 use tokio::sync::Notify;
 use tracing::warn;
 
-use crate::application::capture_snapshot_with_view;
 use crate::application::exposure::Exposure;
 use crate::application::logging::LogEvent;
-use crate::domain::CaptureOptions;
 use crate::domain::DescribeError;
 #[cfg(feature = "config")]
 use crate::domain::{DescribeConfig, WebSecurityConfig};
@@ -52,6 +51,7 @@ use crate::domain::{DescribeConfig, WebSecurityConfig};
 use security::{AuthGuard, WebSecurity};
 use sse::sse_stream;
 use template::{render_index, render_updates_page};
+use updates_cache::UpdatesCache;
 
 #[cfg(unix)]
 use std::future::pending;
@@ -60,6 +60,17 @@ use tokio::signal::unix::{signal as unix_signal, SignalKind};
 
 pub(crate) const TOKEN_COOKIE_NAME: &str = "describe_me_token";
 const TOKEN_COOKIE_MAX_AGE: u32 = 7 * 24 * 3600;
+const UPDATES_CACHE_SUCCESS_TTL: Duration = Duration::from_secs(300);
+const UPDATES_CACHE_FAILURE_RETRY: Duration = Duration::from_secs(60);
+
+#[cfg(feature = "config")]
+fn duration_from_secs_or_default(value: u64, default: Duration) -> Duration {
+    if value == 0 {
+        default
+    } else {
+        Duration::from_secs(value)
+    }
+}
 
 const HEADER_CONTENT_SECURITY_POLICY: HeaderName =
     HeaderName::from_static("content-security-policy");
@@ -88,6 +99,7 @@ struct AppState {
     security: Arc<WebSecurity>,
     exposure: Exposure,
     shutdown: Arc<Notify>,
+    updates_cache: UpdatesCache,
 }
 
 #[derive(Clone)]
@@ -245,6 +257,16 @@ pub async fn serve_http<A: Into<SocketAddr>>(
     let shutdown_notify = Arc::new(Notify::new());
     let shutdown_for_state = shutdown_notify.clone();
     let shutdown_for_task = shutdown_notify.clone();
+    #[cfg(feature = "config")]
+    let updates_refresh_ttl = config
+        .as_ref()
+        .and_then(|cfg| cfg.web.as_ref())
+        .and_then(|web| web.updates_refresh_seconds)
+        .map(|secs| duration_from_secs_or_default(secs, UPDATES_CACHE_SUCCESS_TTL))
+        .unwrap_or(UPDATES_CACHE_SUCCESS_TTL);
+    #[cfg(not(feature = "config"))]
+    let updates_refresh_ttl = UPDATES_CACHE_SUCCESS_TTL;
+    let updates_cache = UpdatesCache::new(updates_refresh_ttl, UPDATES_CACHE_FAILURE_RETRY);
 
     let app_state = AppState {
         interval,
@@ -254,6 +276,7 @@ pub async fn serve_http<A: Into<SocketAddr>>(
         security: security.clone(),
         exposure,
         shutdown: shutdown_for_state,
+        updates_cache,
     };
 
     let app = Router::new()
@@ -376,41 +399,18 @@ async fn updates_page(
         return response;
     }
 
-    let capture_opts = CaptureOptions {
-        with_services: false,
-        with_disk_usage: false,
-        with_listening_sockets: false,
-        with_network_traffic: false,
+    state.updates_cache.ensure_fresh().await;
+    let updates = match state.updates_cache.peek().await {
+        Some(info) => Some(info),
+        None => state.updates_cache.refresh_blocking().await,
     };
 
-    #[cfg(feature = "config")]
-    let config = state.config.as_ref();
-
-    match capture_snapshot_with_view(
-        capture_opts,
-        state.exposure,
-        #[cfg(feature = "config")]
-        config,
-    ) {
-        Ok((_snapshot, view)) => {
-            let updates = view.updates;
-            let html = render_updates_page(updates.as_ref(), None, csp_nonce.as_str());
-            let mut response = Html(html).into_response();
-            if let Some(token) = cookie_token.as_deref() {
-                set_token_cookie(response.headers_mut(), token);
-            }
-            response
-        }
-        Err(err) => {
-            let message = format!("Erreur lors de la collecte: {err}");
-            let html = render_updates_page(None, Some(&message), csp_nonce.as_str());
-            let mut response = (StatusCode::INTERNAL_SERVER_ERROR, Html(html)).into_response();
-            if let Some(token) = cookie_token.as_deref() {
-                set_token_cookie(response.headers_mut(), token);
-            }
-            response
-        }
+    let html = render_updates_page(updates.as_ref(), None, csp_nonce.as_str());
+    let mut response = Html(html).into_response();
+    if let Some(token) = cookie_token.as_deref() {
+        set_token_cookie(response.headers_mut(), token);
     }
+    response
 }
 
 fn map_io(e: impl std::error::Error + Send + Sync + 'static) -> DescribeError {

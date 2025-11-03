@@ -457,6 +457,7 @@ fn main() -> Result<()> {
         with_disk_usage: true, // on garde true pour un JSON complet
         with_listening_sockets: opts.net_listen || exposure.listening_sockets(),
         with_network_traffic: opts.net_traffic || exposure.network_traffic(),
+        with_updates: true,
     };
 
     let (snap, snapshot_view) = describe_me::capture_snapshot_with_view(
