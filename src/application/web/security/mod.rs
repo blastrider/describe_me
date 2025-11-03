@@ -2,7 +2,7 @@ mod auth;
 mod limits;
 mod sse;
 
-use auth::{build_request, verify_token};
+use auth::{build_request, verify_token, TokenVerifier};
 use limits::{enforce_rate_limits, ensure_not_blocked, SecurityPolicy, SecurityState};
 use sse::acquire_permit;
 
@@ -83,7 +83,7 @@ impl FromRequestParts<AppState> for AuthGuard {
 
 #[derive(Debug)]
 pub(super) struct WebSecurity {
-    token: Option<String>,
+    token: Option<TokenVerifier>,
     allow: Vec<IpMatcher>,
     policy: SecurityPolicy,
     state: Arc<SecurityState>,
@@ -94,17 +94,28 @@ impl WebSecurity {
         access: WebAccess,
         #[cfg(feature = "config")] override_cfg: Option<WebSecurityConfig>,
     ) -> Result<Self, DescribeError> {
-        let token = access.token.and_then(|t| {
-            let trimmed = t.trim().to_owned();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed)
+        let WebAccess {
+            token: raw_token,
+            allow_ips,
+        } = access;
+
+        let token = match raw_token {
+            Some(raw) => {
+                let trimmed = raw.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(
+                        TokenVerifier::parse(trimmed)
+                            .map_err(|err| DescribeError::Config(format!("web.token: {err}")))?,
+                    )
+                }
             }
-        });
+            None => None,
+        };
 
         let mut allow = Vec::new();
-        for raw in access.allow_ips {
+        for raw in allow_ips {
             let trimmed = raw.trim();
             if trimmed.is_empty() {
                 continue;
@@ -149,7 +160,7 @@ impl WebSecurity {
         verify_token(
             &self.state,
             &self.policy,
-            self.token.as_deref(),
+            self.token.as_ref(),
             &request,
             now,
         )
@@ -378,12 +389,22 @@ mod tests {
     use axum::extract::ConnectInfo;
     use axum::http::Request;
     use std::net::{IpAddr, Ipv4Addr};
+    use std::sync::OnceLock;
 
     fn make_access(token: Option<&str>) -> WebAccess {
         WebAccess {
             token: token.map(|t| t.to_string()),
             allow_ips: Vec::new(),
         }
+    }
+
+    fn bcrypt_hash(token: &str) -> String {
+        bcrypt::hash(token, bcrypt::DEFAULT_COST).expect("bcrypt hash")
+    }
+
+    fn cached_hash() -> &'static str {
+        static HASH: OnceLock<String> = OnceLock::new();
+        HASH.get_or_init(|| bcrypt_hash("secret"))
     }
 
     #[cfg(feature = "config")]
@@ -433,7 +454,7 @@ mod tests {
 
     #[tokio::test]
     async fn auth_backoff_after_failures() {
-        let security = build_security(Some("secret"));
+        let security = build_security(Some(cached_hash()));
         let parts = make_parts("/", IpAddr::V4(Ipv4Addr::LOCALHOST), Some("wrong"));
 
         for attempt in 0..6 {
@@ -450,7 +471,8 @@ mod tests {
 
     #[tokio::test]
     async fn sse_concurrency_limited() {
-        let security = build_security(Some("secret"));
+        let hash = cached_hash();
+        let security = build_security(Some(hash));
         let parts = make_parts("/sse", IpAddr::V4(Ipv4Addr::LOCALHOST), Some("secret"));
 
         let session1 = security

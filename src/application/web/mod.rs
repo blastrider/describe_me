@@ -12,7 +12,7 @@
 //!       None,
 //!       false,
 //!       describe_me::WebAccess {
-//!           token: Some("super-secret".into()),
+//!           token: Some("$argon2id$v=19$m=19456,t=2,p=1$MFDNn+4xkNMOFXaKzJLXmw$8cHenB/55bhNt1vZoGILR6F0yaEtKrnArXwdQhU8cBA".into()),
 //!           allow_ips: vec!["127.0.0.1".into()],
 //!       },
 //!       describe_me::Exposure::all(),
@@ -70,7 +70,7 @@ type AxumRequest = axum::extract::Request;
 
 #[derive(Debug, Clone, Default)]
 pub struct WebAccess {
-    /// Jeton d'accès (Authorization: Bearer ou en-tête `x-describe-me-token`).
+    /// Hash du jeton d'accès (Argon2id ou bcrypt).
     pub token: Option<String>,
     /// IP ou réseaux autorisés (ex: 192.0.2.10, 10.0.0.0/24, ::1).
     pub allow_ips: Vec<String>,
