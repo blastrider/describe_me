@@ -38,6 +38,8 @@ pub struct WebAccessConfig {
     pub exposure: Option<ExposureConfig>,
     /// Paramétrage des limites de sécurité (rate limiting, anti-bruteforce).
     pub security: Option<WebSecurityConfig>,
+    /// Intervalle de rafraîchissement (en secondes) pour le cache des mises à jour.
+    pub updates_refresh_seconds: Option<u64>,
 }
 
 /// Paramètres runtime supplémentaires (logging, CLI).
