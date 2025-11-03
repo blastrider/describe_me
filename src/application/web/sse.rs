@@ -265,6 +265,7 @@ pub(super) async fn sse_stream(
     #[cfg(feature = "config")]
     let config = state.config.clone();
     let exposure = state.exposure;
+    let updates_cache = state.updates_cache.clone();
 
     let stream = IntervalStream::new(ticker).then(move |_| {
         #[cfg(feature = "config")]
@@ -272,8 +273,13 @@ pub(super) async fn sse_stream(
         let exposure = exposure;
         let max_payload = max_payload;
         let metrics = metrics_for_stream.clone();
+        let updates_cache = updates_cache.clone();
 
         async move {
+            if exposure.updates() {
+                updates_cache.ensure_fresh().await;
+            }
+
             let (payload, services_count, partitions_count, close_after) =
                 match capture_snapshot_with_view(
                     CaptureOptions {
@@ -281,12 +287,18 @@ pub(super) async fn sse_stream(
                         with_disk_usage: true,
                         with_listening_sockets: exposure.listening_sockets(),
                         with_network_traffic: exposure.network_traffic(),
+                        with_updates: false,
                     },
                     exposure,
                     #[cfg(feature = "config")]
                     config.as_ref(),
                 ) {
-                    Ok((_snapshot, view)) => {
+                    Ok((_snapshot, mut view)) => {
+                        if exposure.updates() {
+                            if let Some(info) = updates_cache.peek().await {
+                                view.updates = Some(info);
+                            }
+                        }
                         #[cfg(feature = "systemd")]
                         let services_count = view
                             .services_running

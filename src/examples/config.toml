@@ -29,6 +29,8 @@ redacted = true
 # Contrôles d'accès pour le serveur HTTP (--web).
 token = "$argon2id$v=19$m=19456,t=2,p=1$eMz2iKxZJwc4trkPUrZsXA$DpMWN6+H0zkunWrX4ixiCTzOgbUNBKcGKnaO5ld0irA"
 allow_ips = ["127.0.0.1", "10.0.0.0/16", "::1"]
+# Intervalle (en secondes) pour rafraîchir le cache "Mises à jour".
+updates_refresh_seconds = 20
 
 [web.exposure]
 # Exposition fine des champs sensibles côté serveur web.

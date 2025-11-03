@@ -47,12 +47,25 @@ pub struct SystemSnapshot {
     pub updates: Option<UpdatesInfo>,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct CaptureOptions {
     pub with_services: bool,
     pub with_disk_usage: bool,
     pub with_listening_sockets: bool,
     pub with_network_traffic: bool,
+    pub with_updates: bool,
+}
+
+impl Default for CaptureOptions {
+    fn default() -> Self {
+        Self {
+            with_services: false,
+            with_disk_usage: false,
+            with_listening_sockets: false,
+            with_network_traffic: false,
+            with_updates: true,
+        }
+    }
 }
 
 /// Une partition/point de montage.

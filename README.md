@@ -241,7 +241,11 @@ Utilisation lib :
     use describe_me::{load_config_from_path, filter_services, SystemSnapshot, CaptureOptions};
 
     let cfg = load_config_from_path("config.toml")?;
-    let mut snap = SystemSnapshot::capture_with(CaptureOptions { with_services: true, with_disk_usage: true })?;
+    let mut snap = SystemSnapshot::capture_with(CaptureOptions {
+        with_services: true,
+        with_disk_usage: true,
+        ..CaptureOptions::default()
+    })?;
     snap.services_running = filter_services(std::mem::take(&mut snap.services_running), &cfg);
 }
 
