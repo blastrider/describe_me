@@ -2,6 +2,7 @@ mod auth;
 mod limits;
 mod sse;
 
+use super::clear_token_cookie;
 use auth::{build_request, verify_token, TokenVerifier};
 use limits::{enforce_rate_limits, ensure_not_blocked, SecurityPolicy, SecurityState};
 use sse::acquire_permit;
@@ -34,6 +35,7 @@ pub(super) struct AuthSession {
     ip: IpAddr,
     token: TokenKey,
     sse_permit: Option<SsePermit>,
+    provided_token: Option<Arc<str>>,
 }
 
 impl AuthSession {
@@ -48,6 +50,10 @@ impl AuthSession {
 
     pub fn token_key(&self) -> TokenKey {
         self.token
+    }
+
+    pub fn provided_token(&self) -> Option<&str> {
+        self.provided_token.as_deref()
     }
 
     pub fn take_sse_permit(&mut self) -> Option<SsePermit> {
@@ -184,6 +190,10 @@ impl WebSecurity {
             ip: request.remote_ip,
             token: request.token_key,
             sse_permit,
+            provided_token: request
+                .provided_token
+                .as_ref()
+                .map(|value| Arc::<str>::from(value.as_str())),
         })
     }
 }
@@ -266,6 +276,9 @@ impl SecurityRejection {
             if let Ok(value) = HeaderValue::from_str(&secs.to_string()) {
                 response.headers_mut().insert("Retry-After", value);
             }
+        }
+        if self.status == StatusCode::UNAUTHORIZED {
+            clear_token_cookie(response.headers_mut());
         }
         response
     }

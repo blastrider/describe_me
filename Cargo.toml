@@ -50,6 +50,7 @@ futures-util = "0.3"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }   # <— NEW
 tracing-journald = { version = "0.3", optional = true }    
 pin-project = "1.1"
+percent-encoding = "2.3"
 
 [dev-dependencies]
 proptest = "1.5"

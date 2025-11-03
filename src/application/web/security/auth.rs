@@ -2,6 +2,7 @@ use super::{
     limits::{SecurityPolicy, SecurityState},
     IpMatcher, SecurityRejection, TokenKey, WebRoute,
 };
+use crate::application::web::TOKEN_COOKIE_NAME;
 use argon2::{
     password_hash::{
         Error as PasswordHashError, PasswordHash, PasswordHashString, PasswordVerifier,
@@ -10,8 +11,12 @@ use argon2::{
 };
 use axum::{
     extract::ConnectInfo,
-    http::{header::AUTHORIZATION, request::Parts},
+    http::{
+        header::{AUTHORIZATION, COOKIE},
+        request::Parts,
+    },
 };
+use percent_encoding::percent_decode_str;
 use std::{net::SocketAddr, time::Instant};
 use tracing::{error, warn};
 
@@ -250,6 +255,31 @@ fn extract_token(parts: &Parts) -> Option<String> {
         }
     }
 
+    if let Some(cookie_header) = parts.headers.get(COOKIE) {
+        if let Ok(value) = cookie_header.to_str() {
+            for pair in value.split(';') {
+                let mut kv = pair.trim().splitn(2, '=');
+                let name = kv.next().map(str::trim);
+                if name != Some(TOKEN_COOKIE_NAME) {
+                    continue;
+                }
+                if let Some(raw_value) = kv.next() {
+                    let trimmed = raw_value.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    let decoded = percent_decode_str(trimmed)
+                        .decode_utf8()
+                        .map(|cow| cow.into_owned())
+                        .unwrap_or_else(|_| trimmed.to_owned());
+                    if !decoded.is_empty() {
+                        return Some(decoded);
+                    }
+                }
+            }
+        }
+    }
+
     None
 }
 fn err_string(err: &TokenVerifyError) -> &str {
@@ -265,7 +295,7 @@ mod tests {
         limits::{SecurityPolicy, SecurityState},
         WebRoute,
     };
-    use axum::http::{Request, StatusCode};
+    use axum::http::{header::COOKIE, Request, StatusCode};
     use std::net::{IpAddr, Ipv4Addr};
     use std::sync::OnceLock;
 
@@ -335,6 +365,36 @@ mod tests {
         verify_token(&state, &policy, Some(&verifier), &request, Instant::now())
             .await
             .expect("html route should allow missing token");
+    }
+
+    #[tokio::test]
+    async fn verify_token_accepts_cookie() {
+        let state = SecurityState::new();
+        let policy = SecurityPolicy::default();
+        let request = Request::builder().uri("/sse").body(()).unwrap();
+        let (mut parts, _) = request.into_parts();
+        parts.headers.insert(
+            COOKIE,
+            format!("{TOKEN_COOKIE_NAME}=secret").parse().unwrap(),
+        );
+        parts
+            .extensions
+            .insert(ConnectInfo(std::net::SocketAddr::from((
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                4242,
+            ))));
+
+        let auth_request = build_request(&[], &parts, WebRoute::Sse).unwrap();
+        let verifier = TokenVerifier::parse(cached_argon2()).expect("parse hash");
+        verify_token(
+            &state,
+            &policy,
+            Some(&verifier),
+            &auth_request,
+            Instant::now(),
+        )
+        .await
+        .expect("cookie token should be accepted");
     }
 
     #[test]
