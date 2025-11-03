@@ -13,6 +13,7 @@ pub use model::{
     CaptureOptions,
     DiskPartition,
     DiskUsage, // <-- NEW
+    NetworkInterfaceTraffic,
     ServiceInfo,
     SystemSnapshot,
     UpdatesInfo,

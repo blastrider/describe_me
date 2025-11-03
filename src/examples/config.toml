@@ -21,6 +21,7 @@ expose_kernel = true
 expose_services = true
 expose_disk_partitions = true
 expose_listening_sockets = true
+expose_network_traffic = true
 expose_updates = true
 redacted = true
 
@@ -37,6 +38,7 @@ expose_kernel = true
 expose_services = true
 expose_disk_partitions = true
 expose_listening_sockets = true
+expose_network_traffic = true
 expose_updates = true
 redacted = true
 

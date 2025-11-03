@@ -54,6 +54,13 @@ const INDEX_HTML: &str = r#"<!doctype html>
     }
     h1 { font-size: 18px; margin: 0; }
     h2 { font-size: 16px; margin: 0 0 10px; color: var(--muted); }
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .card-header h2 { margin: 0; }
     .k { color: var(--muted); }
     .v { font-family: var(--mono); }
     .status-ok { color: var(--ok); }
@@ -68,6 +75,8 @@ const INDEX_HTML: &str = r#"<!doctype html>
       text-decoration: underline; cursor: pointer; padding: 0;
     }
     .link-button:hover { text-decoration: none; }
+    .link-button.small { font-size: 13px; color: var(--muted); }
+    .link-button.small:hover { color: var(--text); }
     @media (prefers-color-scheme: light) {
       :root { --bg:#f6f7fb; --card:#ffffff; --text:#1d2330; --muted:#5b667a; }
       body { background: var(--bg); color: var(--text); }
@@ -77,14 +86,28 @@ const INDEX_HTML: &str = r#"<!doctype html>
      .bar > span { position:absolute; left:0; top:0; bottom:0; background:#3ad29f55; border-right:2px solid #3ad29f; }
      .mono .line { margin: 6px 0 10px; }
     .services-list { display: flex; flex-direction: column; gap: 10px; }
+    #networkCard { grid-column: 1 / -1; }
+    .network-grid {
+      display: grid;
+      gap: 12px;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    }
+    .network-grid .service-row { height: 100%; }
+    .network-grid .service-empty {
+      grid-column: 1 / -1;
+      text-align: center;
+    }
     .service-row {
       display: flex; align-items: flex-start; gap: 10px;
       padding: 8px 10px; border-radius: 8px; background: #1d2333; border: 1px solid #2a3147;
     }
+    .service-row > div { flex: 1 1 auto; min-width: 0; }
     .service-dot { margin-top: 4px; }
     .service-name { font-weight: 600; }
-    .service-meta { margin-top: 2px; font-size: 13px; color: var(--muted); }
+    .service-meta { margin-top: 2px; font-size: 13px; color: var(--muted); word-break: break-word; }
     .service-empty { color: var(--muted); font-style: italic; }
+    #rawBody { margin-top: 10px; }
+    #rawBody.collapsed { display: none; }
     @media (prefers-color-scheme: light) {
       .service-row { background: #f0f2fb; border-color: #d6dbeb; }
     }
@@ -166,6 +189,13 @@ const INDEX_HTML: &str = r#"<!doctype html>
         </div>
         <div class="mono" id="partitions">—</div>
       </section>
+
+      <section class="card" id="networkCard" style="display:none">
+        <h2>Trafic reseau</h2>
+        <div class="network-grid" id="networkList">
+          <div class="service-empty">—</div>
+        </div>
+      </section>
     </div>
 
     <section class="card" id="servicesCard" style="display:none">
@@ -191,9 +221,14 @@ const INDEX_HTML: &str = r#"<!doctype html>
     </div>
 
     <section class="card" id="rawCard" style="display:none">
-      <h2>JSON brut</h2>
-      <pre class="mono" id="raw">—</pre>
-      <div id="error" class="error mono"></div>
+      <div class="card-header">
+        <h2>JSON brut</h2>
+        <button type="button" id="rawToggle" class="link-button small">Masquer</button>
+      </div>
+      <div id="rawBody">
+        <pre class="mono" id="raw">—</pre>
+        <div id="error" class="error mono"></div>
+      </div>
     </section>
   </main>
   <div id="tokenOverlay" class="token-overlay">
