@@ -108,6 +108,8 @@ const INDEX_HTML: &str = r#"<!doctype html>
     .service-empty { color: var(--muted); font-style: italic; }
     #rawBody { margin-top: 10px; }
     #rawBody.collapsed { display: none; }
+    .updates-details { margin-top: 12px; }
+    .updates-details.collapsed { display: none; }
     @media (prefers-color-scheme: light) {
       .service-row { background: #f0f2fb; border-color: #d6dbeb; }
     }
@@ -168,10 +170,18 @@ const INDEX_HTML: &str = r#"<!doctype html>
       </section>
 
       <section class="card" id="updatesCard" style="display:none">
-        <h2>Mises à jour</h2>
+        <div class="card-header">
+          <h2>Mises à jour</h2>
+          <button type="button" id="updatesDetailsToggle" class="link-button small" style="display:none">Détails</button>
+        </div>
         <div class="row"><span class="k">En attente</span><span class="v" id="updatesPending">—</span></div>
         <div class="row"><span class="k">Redémarrage</span><span class="v" id="updatesReboot">—</span></div>
         <div class="row"><span class="k">Statut</span><span class="v" id="updatesStatus">—</span></div>
+        <div class="updates-details collapsed" id="updatesDetails">
+          <div class="services-list updates-list" id="updatesList">
+            <div class="service-empty">—</div>
+          </div>
+        </div>
       </section>
 
       <section class="card">

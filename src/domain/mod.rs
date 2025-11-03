@@ -16,6 +16,7 @@ pub use model::{
     NetworkInterfaceTraffic,
     ServiceInfo,
     SystemSnapshot,
+    UpdatePackage,
     UpdatesInfo,
 };
 
