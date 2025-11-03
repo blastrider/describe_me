@@ -58,6 +58,9 @@ use std::future::pending;
 #[cfg(unix)]
 use tokio::signal::unix::{signal as unix_signal, SignalKind};
 
+pub(crate) const TOKEN_COOKIE_NAME: &str = "describe_me_token";
+const TOKEN_COOKIE_MAX_AGE: u32 = 7 * 24 * 3600;
+
 const HEADER_CONTENT_SECURITY_POLICY: HeaderName =
     HeaderName::from_static("content-security-policy");
 const HEADER_REFERRER_POLICY: HeaderName = HeaderName::from_static("referrer-policy");
@@ -344,21 +347,33 @@ async fn wait_for_shutdown_signal() -> &'static str {
 
 async fn index(
     State(state): State<AppState>,
-    _guard: AuthGuard,
+    guard: AuthGuard,
     Extension(csp_nonce): Extension<CspNonce>,
 ) -> impl IntoResponse {
-    Html(render_index(state.web_debug, csp_nonce.as_str()))
+    let session = guard.into_session();
+    let mut response = Html(render_index(state.web_debug, csp_nonce.as_str())).into_response();
+    if let Some(token) = session.provided_token() {
+        set_token_cookie(response.headers_mut(), token);
+    }
+    response
 }
 
 async fn updates_page(
     State(state): State<AppState>,
-    _guard: AuthGuard,
+    guard: AuthGuard,
     Extension(csp_nonce): Extension<CspNonce>,
 ) -> impl IntoResponse {
+    let session = guard.into_session();
+    let cookie_token = session.provided_token().map(str::to_owned);
+
     if !state.exposure.updates() {
         let message = "L'exposition des mises à jour est désactivée pour cette instance.";
         let html = render_updates_page(None, Some(message), csp_nonce.as_str());
-        return Html(html).into_response();
+        let mut response = Html(html).into_response();
+        if let Some(token) = cookie_token.as_deref() {
+            set_token_cookie(response.headers_mut(), token);
+        }
+        return response;
     }
 
     let capture_opts = CaptureOptions {
@@ -380,16 +395,51 @@ async fn updates_page(
         Ok((_snapshot, view)) => {
             let updates = view.updates;
             let html = render_updates_page(updates.as_ref(), None, csp_nonce.as_str());
-            Html(html).into_response()
+            let mut response = Html(html).into_response();
+            if let Some(token) = cookie_token.as_deref() {
+                set_token_cookie(response.headers_mut(), token);
+            }
+            response
         }
         Err(err) => {
             let message = format!("Erreur lors de la collecte: {err}");
             let html = render_updates_page(None, Some(&message), csp_nonce.as_str());
-            (StatusCode::INTERNAL_SERVER_ERROR, Html(html)).into_response()
+            let mut response = (StatusCode::INTERNAL_SERVER_ERROR, Html(html)).into_response();
+            if let Some(token) = cookie_token.as_deref() {
+                set_token_cookie(response.headers_mut(), token);
+            }
+            response
         }
     }
 }
 
 fn map_io(e: impl std::error::Error + Send + Sync + 'static) -> DescribeError {
     DescribeError::System(format!("I/O/Serve error: {e}"))
+}
+
+pub(super) fn set_token_cookie(headers: &mut HeaderMap, token: &str) {
+    if token.is_empty() {
+        return;
+    }
+    use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+    let encoded = utf8_percent_encode(token, NON_ALPHANUMERIC).to_string();
+    let cookie = format!(
+        "{name}={value}; Path=/; Max-Age={max_age}; SameSite=Strict",
+        name = TOKEN_COOKIE_NAME,
+        value = encoded,
+        max_age = TOKEN_COOKIE_MAX_AGE
+    );
+    if let Ok(value) = HeaderValue::from_str(&cookie) {
+        headers.append(header::SET_COOKIE, value);
+    }
+}
+
+pub(crate) fn clear_token_cookie(headers: &mut HeaderMap) {
+    let cookie = format!(
+        "{name}=deleted; Path=/; Max-Age=0; SameSite=Strict",
+        name = TOKEN_COOKIE_NAME
+    );
+    if let Ok(value) = HeaderValue::from_str(&cookie) {
+        headers.append(header::SET_COOKIE, value);
+    }
 }

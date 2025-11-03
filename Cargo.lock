@@ -461,6 +461,7 @@ dependencies = [
  "fastrand",
  "futures-util",
  "nix",
+ "percent-encoding",
  "pin-project",
  "proptest",
  "rand_core 0.6.4",
