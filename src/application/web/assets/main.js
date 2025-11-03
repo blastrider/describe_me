@@ -5,6 +5,8 @@
   const last = document.getElementById('lastUpdate');
   const rawCard = document.getElementById('rawCard');
   const updatesCard = document.getElementById('updatesCard');
+  const networkCard = document.getElementById('networkCard');
+  const networkList = document.getElementById('networkList');
 
   const tokenOverlay = document.getElementById('tokenOverlay');
   const tokenForm = document.getElementById('tokenForm');
@@ -349,6 +351,41 @@
     }).join("\n");
 
     el('partitions').innerHTML = partsHtml || "—";
+
+    if (networkCard && networkList) {
+      const entries = Array.isArray(data.network_traffic) ? data.network_traffic : [];
+      if (entries.length > 0) {
+        networkCard.style.display = "block";
+        networkList.innerHTML = entries.map((entry) => {
+          const name = esc(entry?.name || "interface");
+          const rxBytes = fmtBytes(entry?.rx_bytes || 0);
+          const txBytes = fmtBytes(entry?.tx_bytes || 0);
+          const rxPackets = Math.trunc(num(entry?.rx_packets)).toLocaleString('fr-FR');
+          const txPackets = Math.trunc(num(entry?.tx_packets)).toLocaleString('fr-FR');
+          const rxErr = Math.trunc(num(entry?.rx_errors)).toLocaleString('fr-FR');
+          const txErr = Math.trunc(num(entry?.tx_errors)).toLocaleString('fr-FR');
+          const rxDrop = Math.trunc(num(entry?.rx_dropped)).toLocaleString('fr-FR');
+          const txDrop = Math.trunc(num(entry?.tx_dropped)).toLocaleString('fr-FR');
+          const rxMeta = `Rx ${rxBytes} (${rxPackets} paquets, err ${rxErr}, drop ${rxDrop})`;
+          const txMeta = `Tx ${txBytes} (${txPackets} paquets, err ${txErr}, drop ${txDrop})`;
+          return `
+            <div class="service-row">
+              <span class="dot service-dot ok"></span>
+              <div>
+                <div class="service-name">${name}</div>
+                <div class="service-meta">${rxMeta} • ${txMeta}</div>
+              </div>
+            </div>
+          `;
+        }).join("");
+      } else if (Object.prototype.hasOwnProperty.call(data, 'network_traffic')) {
+        networkCard.style.display = "block";
+        networkList.innerHTML = `<div class="service-empty">Aucune interface réseau observée</div>`;
+      } else {
+        networkCard.style.display = "none";
+        networkList.innerHTML = `<div class="service-empty">—</div>`;
+      }
+    }
 
     const servicesCard = document.getElementById('servicesCard');
     const servicesList = document.getElementById('servicesList');

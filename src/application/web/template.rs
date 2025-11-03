@@ -166,6 +166,13 @@ const INDEX_HTML: &str = r#"<!doctype html>
         </div>
         <div class="mono" id="partitions">—</div>
       </section>
+
+      <section class="card" id="networkCard" style="display:none">
+        <h2>Trafic reseau</h2>
+        <div class="services-list" id="networkList">
+          <div class="service-empty">—</div>
+        </div>
+      </section>
     </div>
 
     <section class="card" id="servicesCard" style="display:none">

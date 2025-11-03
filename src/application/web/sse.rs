@@ -278,6 +278,7 @@ pub(super) async fn sse_stream(
                         with_services,
                         with_disk_usage: true,
                         with_listening_sockets: exposure.listening_sockets(),
+                        with_network_traffic: exposure.network_traffic(),
                     },
                     exposure,
                     #[cfg(feature = "config")]

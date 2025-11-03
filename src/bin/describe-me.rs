@@ -3,7 +3,7 @@
 use anyhow::{bail, Result};
 use clap::{ArgAction, Parser};
 #[cfg(feature = "net")]
-use describe_me::domain::ListeningSocket;
+use describe_me::domain::{ListeningSocket, NetworkInterfaceTraffic};
 use describe_me::LogEvent;
 #[cfg(all(unix, feature = "cli"))]
 use nix::unistd::Uid;
@@ -29,6 +29,10 @@ struct Opts {
     /// Affiche les sockets d’écoute (TCP/UDP) — nécessite la feature `net`
     #[arg(long = "net-listen", action = ArgAction::SetTrue)]
     net_listen: bool,
+
+    /// Affiche le trafic réseau agrégé par interface — nécessite la feature `net`
+    #[arg(long = "net-traffic", action = ArgAction::SetTrue)]
+    net_traffic: bool,
 
     /// Affiche aussi le PID propriétaire (si résolu) — nécessite `--net-listen`
     #[arg(long = "process", requires = "net_listen", action = ArgAction::SetTrue)]
@@ -92,6 +96,10 @@ struct Opts {
     #[arg(long = "expose-disk-partitions", action = ArgAction::SetTrue)]
     expose_disk_partitions: bool,
 
+    /// Expose le trafic réseau par interface dans le JSON
+    #[arg(long = "expose-network-traffic", action = ArgAction::SetTrue)]
+    expose_network_traffic: bool,
+
     /// Expose le statut des mises à jour (nombre, reboot requis)
     #[arg(long = "expose-updates", action = ArgAction::SetTrue)]
     expose_updates: bool,
@@ -124,6 +132,10 @@ struct Opts {
     #[arg(long = "web-expose-disk-partitions", action = ArgAction::SetTrue)]
     web_expose_disk_partitions: bool,
 
+    /// Expose le trafic réseau par interface côté --web
+    #[arg(long = "web-expose-network-traffic", action = ArgAction::SetTrue)]
+    web_expose_network_traffic: bool,
+
     /// Expose le statut des mises à jour côté --web
     #[arg(long = "web-expose-updates", action = ArgAction::SetTrue)]
     web_expose_updates: bool,
@@ -144,6 +156,10 @@ struct Opts {
 #[derive(Serialize)]
 struct CombinedOutput<'a> {
     snapshot: &'a describe_me::SnapshotView,
+    #[cfg(feature = "net")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    net_traffic: Option<&'a [NetworkInterfaceTraffic]>,
+    #[cfg(feature = "net")]
     #[serde(skip_serializing_if = "Option::is_none")]
     net_listen: Option<&'a [ListeningSocket]>,
 }
@@ -295,6 +311,7 @@ fn main() -> Result<()> {
         mode: mode.into(),
         with_services: opts.with_services,
         net_listen: opts.net_listen,
+        net_traffic: opts.net_traffic,
         expose_all: exposure_all_effective,
         web_expose_all: web_expose_all_effective,
         checks: &opts.checks,
@@ -358,11 +375,17 @@ fn main() -> Result<()> {
         bail!("--net-listen nécessite la feature `net` (cargo run --features \"cli net\").");
     }
 
+    #[cfg(not(feature = "net"))]
+    if opts.net_traffic {
+        bail!("--net-traffic nécessite la feature `net` (cargo run --features \"cli net\").");
+    }
+
     // Capture le snapshot complet
     let capture_opts = describe_me::CaptureOptions {
         with_services: opts.with_services,
         with_disk_usage: true, // on garde true pour un JSON complet
         with_listening_sockets: opts.net_listen || exposure.listening_sockets(),
+        with_network_traffic: opts.net_traffic || exposure.network_traffic(),
     };
 
     let (snap, snapshot_view) = describe_me::capture_snapshot_with_view(
@@ -382,12 +405,12 @@ fn main() -> Result<()> {
             let combined = CombinedOutput {
                 snapshot: &snapshot_view,
                 #[cfg(feature = "net")]
+                net_traffic: snapshot_view.network_traffic.as_ref().map(|s| s.as_slice()),
+                #[cfg(feature = "net")]
                 net_listen: snapshot_view
                     .listening_sockets
                     .as_ref()
                     .map(|s| s.as_slice()),
-                #[cfg(not(feature = "net"))]
-                net_listen: None,
             };
 
             if opts.pretty {
@@ -447,7 +470,42 @@ fn main() -> Result<()> {
         println!();
     }
 
-    // 2) DISKS — affichage humain (optionnel)
+    #[cfg(feature = "net")]
+    if opts.net_traffic {
+        println!(
+            "{:<10} {:>14} {:>14} {:>12} {:>12} {:>13} {:>13}",
+            "IFACE",
+            "RX(bytes)",
+            "TX(bytes)",
+            "RX(pkts)",
+            "TX(pkts)",
+            "RX(err/drop)",
+            "TX(err/drop)"
+        );
+        if let Some(traffic) = &snap.network_traffic {
+            if traffic.is_empty() {
+                println!("(aucune interface réseau observée)");
+            } else {
+                for entry in traffic.as_slice() {
+                    println!(
+                        "{:<10} {:>14} {:>14} {:>12} {:>12} {:>13} {:>13}",
+                        entry.name,
+                        entry.rx_bytes,
+                        entry.tx_bytes,
+                        entry.rx_packets,
+                        entry.tx_packets,
+                        format!("{}/{}", entry.rx_errors, entry.rx_dropped),
+                        format!("{}/{}", entry.tx_errors, entry.tx_dropped),
+                    );
+                }
+            }
+        } else {
+            println!("(trafic reseau non capture)");
+        }
+        println!();
+    }
+
+    // 3) DISKS — affichage humain (optionnel)
     if opts.disks {
         if let Some(du) = &snap.disk_usage {
             println!("Disque total: {} Gio", du.total_bytes as f64 / 1e9);
@@ -542,6 +600,9 @@ fn apply_cli_flags(exposure: &mut describe_me::Exposure, opts: &Opts) {
         if opts.expose_disk_partitions {
             exposure.set_disk_partitions(true);
         }
+        if opts.expose_network_traffic {
+            exposure.set_network_traffic(true);
+        }
         if opts.expose_updates {
             exposure.set_updates(true);
         }
@@ -553,6 +614,9 @@ fn apply_cli_flags(exposure: &mut describe_me::Exposure, opts: &Opts) {
 
     if opts.net_listen {
         exposure.set_listening_sockets(true);
+    }
+    if opts.net_traffic {
+        exposure.set_network_traffic(true);
     }
 }
 
@@ -602,6 +666,9 @@ fn apply_web_flags(exposure: &mut describe_me::Exposure, opts: &Opts) {
         if opts.web_expose_disk_partitions {
             exposure.set_disk_partitions(true);
         }
+        if opts.web_expose_network_traffic {
+            exposure.set_network_traffic(true);
+        }
         if opts.web_expose_updates {
             exposure.set_updates(true);
         }
@@ -628,6 +695,17 @@ mod tests {
         assert!(opts.web_expose_updates);
     }
 
+    #[test]
+    fn parses_expose_network_traffic_flags() {
+        let opts = Opts::try_parse_from(["describe-me", "--expose-network-traffic"]).unwrap();
+        assert!(opts.expose_network_traffic);
+        assert!(!opts.web_expose_network_traffic);
+
+        let opts = Opts::try_parse_from(["describe-me", "--web-expose-network-traffic"]).unwrap();
+        assert!(!opts.expose_network_traffic);
+        assert!(opts.web_expose_network_traffic);
+    }
+
     #[cfg(feature = "serde")]
     #[test]
     fn summary_line_uses_updates_info() {
@@ -647,6 +725,8 @@ mod tests {
             services_running: describe_me::SharedSlice::from_vec(Vec::new()),
             #[cfg(feature = "net")]
             listening_sockets: None,
+            #[cfg(feature = "net")]
+            network_traffic: None,
             updates: Some(describe_me::UpdatesInfo {
                 pending: 5,
                 reboot_required: true,
@@ -677,6 +757,8 @@ mod tests {
             services_running: describe_me::SharedSlice::from_vec(Vec::new()),
             #[cfg(feature = "net")]
             listening_sockets: None,
+            #[cfg(feature = "net")]
+            network_traffic: None,
             updates: None,
         };
         let mut exposure = describe_me::Exposure::default();
