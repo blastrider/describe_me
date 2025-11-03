@@ -232,9 +232,9 @@ pub fn eval_check(s: &SystemSnapshot, c: &Check) -> Result<CheckResult, Describe
             #[cfg(not(feature = "systemd"))]
             {
                 let _ = (name, expect, sev);
-                return Err(DescribeError::System(
+                Err(DescribeError::System(
                     "service check: nécessite la feature `systemd`".into(),
-                ));
+                ))
             }
             #[cfg(feature = "systemd")]
             {

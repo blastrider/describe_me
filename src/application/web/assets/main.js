@@ -19,6 +19,15 @@
   const tokenErrorEl = document.getElementById('tokenError');
   const tokenForget = document.getElementById('tokenForget');
   const tokenOpen = document.getElementById('tokenOpen');
+  const TOKEN_COOKIE_NAME = 'describe_me_token';
+
+  const setTokenCookie = (value) => {
+    document.cookie = `${TOKEN_COOKIE_NAME}=${encodeURIComponent(value)}; path=/; SameSite=Strict`;
+  };
+
+  const clearTokenCookie = () => {
+    document.cookie = `${TOKEN_COOKIE_NAME}=; Max-Age=0; path=/; SameSite=Strict`;
+  };
 
   const pct = (used, total) => total > 0 ? Math.max(0, Math.min(100, (used/total)*100)) : 0;
   const num = (value) => {
@@ -110,6 +119,23 @@
   };
 
   let currentToken = sessionStorage.getItem('describe_me_token') || "";
+  if (!currentToken && document.cookie) {
+    const cookie = document.cookie
+      .split(';')
+      .map(part => part.trim())
+      .find(part => part.startsWith(`${TOKEN_COOKIE_NAME}=`));
+    if (cookie) {
+      const value = cookie.split('=').slice(1).join('=');
+      try {
+        currentToken = decodeURIComponent(value);
+      } catch (_) {
+        currentToken = value;
+      }
+      if (currentToken) {
+        sessionStorage.setItem('describe_me_token', currentToken);
+      }
+    }
+  }
   if (currentToken) {
     tokenInput.value = currentToken;
   }
@@ -126,6 +152,7 @@
     }
     currentToken = value;
     sessionStorage.setItem('describe_me_token', currentToken);
+    setTokenCookie(currentToken);
     hideTokenPrompt();
     restartStream();
   });
@@ -135,6 +162,7 @@
     currentToken = "";
     tokenInput.value = "";
     tokenErrorEl.textContent = "";
+    clearTokenCookie();
     showTokenPrompt("");
   });
 
@@ -199,6 +227,7 @@
         method: 'GET',
         headers,
         signal: abortController.signal,
+        credentials: 'same-origin',
       });
 
       if (response.status === 401) {
@@ -206,6 +235,7 @@
         sessionStorage.removeItem('describe_me_token');
         currentToken = "";
         tokenInput.value = "";
+        clearTokenCookie();
         showError(message || "Jeton requis pour accéder aux métriques.");
         showTokenPrompt(message || "Jeton requis pour accéder aux métriques.");
         return;

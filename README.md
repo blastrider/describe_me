@@ -166,19 +166,27 @@ Intégration simple Nagios/Icinga (stderr contient les messages) :
 
 Nécessite --features web (et cli côté binaire).
 
-Lancer un mini-serveur SSE avec UI intégrée (HTML/CSS/JS) :
+Générer d’abord une empreinte Argon2id du jeton à accepter :
 
+```
+TOKEN_HASH="$(./target/debug/describe-me --hash-web-token 'super-secret')"
+```
+
+Puis lancer le serveur SSE avec UI intégrée (HTML/CSS/JS) :
+
+```
 ./target/debug/describe-me \
   --web \
-  --web-token super-secret \
+  --web-token "$TOKEN_HASH" \
   --web-interval 2 \
   --web-debug \
   --with-services
+```
 
-Ensuite, ouvrez l'interface sur `http://127.0.0.1:8080/`. L'UI vous demandera le jeton et l'enverra via l'en-tête `Authorization: Bearer` (ou `x-describe-me-token`) pour le flux `/sse`.
+Ensuite, ouvrez l'interface sur `http://127.0.0.1:8080/`. L'UI vous demandera le jeton en clair (celui dont vous avez généré l'empreinte) et l'enverra via l'en-tête `Authorization: Bearer` (ou `x-describe-me-token`) pour le flux `/sse`.
 Le jeton est mémorisé uniquement dans la session du navigateur et peut être réinitialisé via « Modifier le jeton ».
 
-Pour exposer publiquement, fournissez explicitement l'adresse (ex :`--web 0.0.0.0:8080`) **et** un contrôle d'accès adapté (`--web-token …` et/ou `--web-allow-ip 203.0.113.0/24`).
+Pour exposer publiquement, fournissez explicitement l'adresse (ex :`--web 0.0.0.0:8080`) **et** un contrôle d'accès adapté (`--web-token "$TOKEN_HASH"` et/ou `--web-allow-ip 203.0.113.0/24`).
 
 Les champs sensibles (hostname, version d'OS/noyau, services détaillés, partitions disque) sont masqués par défaut dans le JSON/SSE. Utilisez les flags `--expose-*` / `--web-expose-*` ou la configuration TOML pour les rendre visibles de façon volontaire.
 
@@ -206,7 +214,7 @@ include = ["nginx.service", "postgresql.service"]
 
 # Contrôles d'accès web par défaut (optionnels)
 [web]
-token = "super-secret"
+token = "$argon2id$v=19$m=19456,t=2,p=1$MFDNn+4xkNMOFXaKzJLXmw$8cHenB/55bhNt1vZoGILR6F0yaEtKrnArXwdQhU8cBA"
 allow_ips = ["127.0.0.1", "10.0.0.0/16"]
 
 [web.exposure]
@@ -276,7 +284,7 @@ async fn main() -> anyhow::Result<()> {
         #[cfg(feature = "config")] None,
         /* web_debug = */ false,
         describe_me::WebAccess {
-            token: Some("super-secret".into()),
+            token: Some("$argon2id$v=19$m=19456,t=2,p=1$MFDNn+4xkNMOFXaKzJLXmw$8cHenB/55bhNt1vZoGILR6F0yaEtKrnArXwdQhU8cBA".into()),
             allow_ips: vec!["127.0.0.1".into()],
         },
         describe_me::Exposure::all(),
@@ -288,11 +296,11 @@ Pour obtenir les détails masqués dans la sortie JSON du CLI, utilisez par exem
 
 7) Matrice des features
 Feature	Ce que ça ajoute	Dépendances activées
-cli	Binaire describe-me + options ligne de commande	anyhow, clap, serde
+cli	Binaire describe-me + options ligne de commande	anyhow, clap, serde, nix, argon2, bcrypt, rand_core
 systemd	Listing des services systemd	— (Linux/systemd requis)
 config	Chargement TOML + filtrage (services.include)	serde, toml
 net	Sockets d’écoute (TCP/UDP)	—
-web	UI + SSE HTTP (Axum)	axum, tokio, tokio-stream, serde, subtle
+web	UI + SSE HTTP (Axum)	axum, tokio, tokio-stream, serde, argon2, bcrypt, rand_core
 
 Par défaut, aucune feature n’est activée. Active celles dont tu as besoin.
 

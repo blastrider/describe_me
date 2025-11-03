@@ -16,7 +16,8 @@ inventaire réseau et serveur web SSE.
 | `--summary`                 | Ajoute une ligne de résumé (`updates=<N> reboot=<yes|no|unknown>`) |
 | `--check <expr>`            | Health checks (`mem`, `disk`, `service`)                    |
 | `--web[=ADDR:PORT]`         | Lance le serveur SSE intégré (feature `web`)                |
-| `--web-token`, `--web-allow-ip` | Sécurisation du mode web (voir `docs/web-security.md`) |
+| `--web-token`, `--web-allow-ip` | Sécurisation du mode web (hash Argon2id/bcrypt + allowlist IP, voir `docs/web-security.md`) |
+| `--hash-web-token`, `--hash-web-token-stdin` | Helper pour générer une empreinte (Argon2id par défaut) |
 | `--expose-*`, `--no-redacted`, `--expose-all` | Contrôle fin des champs sensibles (hostname, services, partitions, sockets, updates) |
 | `--web-expose-*`, `--web-expose-all` | Variante pour l’interface SSE                      |
 
@@ -31,6 +32,9 @@ un fichier TOML (`DescribeConfig`). Il peut définir :
 - Filtrage des services (`services.include`).
 - Paramètres SSE (`web.security`, `web.allow_ips`, `web.exposure`).
 - Exposition JSON (`exposure`, y compris `expose_updates` pour la tuile des mises à jour).
+
+> **Note :** `web.token` attend désormais une empreinte Argon2id/bcrypt. Utilisez
+> `describe-me --hash-web-token 'secret'` pour produire une valeur compatible.
 
 Les erreurs de lecture/parsing sont remontées par `DescribeError::Config`
 et journalisées (`LogEvent::ConfigError`).
