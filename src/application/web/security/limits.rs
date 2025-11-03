@@ -235,10 +235,8 @@ impl BruteForcePolicy {
 
 #[derive(Debug)]
 pub(super) struct SecurityState {
-    html_ip: RateLimiter<IpAddr>,
-    sse_ip: RateLimiter<IpAddr>,
-    html_token: RateLimiter<TokenKey>,
-    sse_token: RateLimiter<TokenKey>,
+    ip_counters: SlidingWindowCounters<IpAddr>,
+    token_counters: SlidingWindowCounters<TokenKey>,
     failures_ip: FailureTracker<IpAddr>,
     failures_token: FailureTracker<TokenKey>,
     token_spread: TokenSpreadTracker,
@@ -248,10 +246,8 @@ pub(super) struct SecurityState {
 impl SecurityState {
     pub(crate) fn new() -> Self {
         Self {
-            html_ip: RateLimiter::new(),
-            sse_ip: RateLimiter::new(),
-            html_token: RateLimiter::new(),
-            sse_token: RateLimiter::new(),
+            ip_counters: SlidingWindowCounters::new(),
+            token_counters: SlidingWindowCounters::new(),
             failures_ip: FailureTracker::new(),
             failures_token: FailureTracker::new(),
             token_spread: TokenSpreadTracker::new(),
@@ -273,10 +269,7 @@ impl SecurityState {
             return None;
         }
         let window = limits.window;
-        match route {
-            WebRoute::Html => self.html_ip.register(ip, now, window, cap).await,
-            WebRoute::Sse => self.sse_ip.register(ip, now, window, cap).await,
-        }
+        self.ip_counters.register(route, ip, now, window, cap).await
     }
 
     pub(super) async fn register_token_hit(
@@ -292,10 +285,9 @@ impl SecurityState {
             return None;
         }
         let window = limits.window;
-        match route {
-            WebRoute::Html => self.html_token.register(token, now, window, cap).await,
-            WebRoute::Sse => self.sse_token.register(token, now, window, cap).await,
-        }
+        self.token_counters
+            .register(route, token, now, window, cap)
+            .await
     }
 
     pub(super) async fn check_existing_block(
@@ -440,12 +432,27 @@ pub(super) struct FailureOutcome {
     pub(super) retry_after: Option<Duration>,
 }
 
-#[derive(Debug, Default)]
-struct RateLimiter<K> {
-    inner: Mutex<HashMap<K, RateCounter>>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum RouteKey {
+    Html,
+    Sse,
 }
 
-impl<K> RateLimiter<K>
+impl From<WebRoute> for RouteKey {
+    fn from(route: WebRoute) -> Self {
+        match route {
+            WebRoute::Html => RouteKey::Html,
+            WebRoute::Sse => RouteKey::Sse,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct SlidingWindowCounters<K> {
+    inner: Mutex<HashMap<(RouteKey, K), RateCounter>>,
+}
+
+impl<K> SlidingWindowCounters<K>
 where
     K: Eq + Hash + Copy + Send + 'static,
 {
@@ -457,16 +464,18 @@ where
 
     async fn register(
         &self,
+        route: WebRoute,
         key: K,
         now: Instant,
         window: Duration,
         limit: u32,
     ) -> Option<Duration> {
+        let route_key: RouteKey = route.into();
         let mut guard = self.inner.lock().await;
-        let counter = guard.entry(key).or_default();
+        let counter = guard.entry((route_key, key)).or_default();
         let wait = counter.register(now, window, limit);
         if counter.is_empty() {
-            guard.remove(&key);
+            guard.remove(&(route_key, key));
         }
         wait
     }

@@ -265,87 +265,14 @@ fn main() -> Result<()> {
     }
 
     #[cfg(feature = "config")]
-    if let Some(cfg) = &cfg {
-        if let Some(cfg_exp) = cfg.exposure.as_ref() {
-            exposure.merge(describe_me::Exposure::from(cfg_exp));
-        }
-    }
+    apply_cli_exposure_flags(&mut exposure, &opts, cfg.as_ref());
+    #[cfg(not(feature = "config"))]
+    apply_cli_exposure_flags(&mut exposure, &opts);
 
-    if opts.expose_all {
-        exposure = describe_me::Exposure::all();
-    } else {
-        if opts.expose_hostname {
-            exposure.hostname = true;
-        }
-        if opts.expose_os {
-            exposure.os = true;
-        }
-        if opts.expose_kernel {
-            exposure.kernel = true;
-        }
-        if opts.expose_services {
-            exposure.services = true;
-        }
-        if opts.expose_disk_partitions {
-            exposure.disk_partitions = true;
-        }
-        if opts.expose_updates {
-            exposure.updates = true;
-        }
-    }
-
-    if opts.no_redacted {
-        exposure.redacted = false;
-    }
-
-    exposure.listening_sockets |= opts.net_listen;
-
-    #[cfg(feature = "web")]
-    let mut web_exposure = exposure;
-
-    #[cfg(all(feature = "web", feature = "config"))]
-    if let Some(cfg) = &cfg {
-        if let Some(web_cfg) = &cfg.web {
-            if let Some(web_exp) = web_cfg.exposure.as_ref() {
-                web_exposure.merge(describe_me::Exposure::from(web_exp));
-            }
-        }
-    }
-
-    #[cfg(feature = "web")]
-    if opts.web_expose_all {
-        web_exposure = describe_me::Exposure::all();
-    } else {
-        if opts.web_expose_hostname {
-            web_exposure.hostname = true;
-        }
-        if opts.web_expose_os {
-            web_exposure.os = true;
-        }
-        if opts.web_expose_kernel {
-            web_exposure.kernel = true;
-        }
-        if opts.web_expose_services {
-            web_exposure.services = true;
-        }
-        if opts.web_expose_disk_partitions {
-            web_exposure.disk_partitions = true;
-        }
-        if opts.web_expose_updates {
-            web_exposure.updates = true;
-        }
-    }
-
-    #[cfg(feature = "web")]
-    if opts.no_redacted {
-        web_exposure.redacted = false;
-    }
-
-    #[cfg(feature = "web")]
-    {
-        web_exposure.listening_sockets |= exposure.listening_sockets;
-        web_exposure.updates |= exposure.updates;
-    }
+    #[cfg(feature = "config")]
+    let web_exposure = apply_web_exposure_flags(exposure, &opts, cfg.as_ref());
+    #[cfg(not(feature = "config"))]
+    let web_exposure = apply_web_exposure_flags(exposure, &opts);
 
     let exposure_all_effective = exposure.is_all();
 
@@ -432,26 +359,23 @@ fn main() -> Result<()> {
     }
 
     // Capture le snapshot complet
-    #[allow(unused_mut)]
-    let mut snap = describe_me::SystemSnapshot::capture_with(describe_me::CaptureOptions {
+    let capture_opts = describe_me::CaptureOptions {
         with_services: opts.with_services,
         with_disk_usage: true, // on garde true pour un JSON complet
-        with_listening_sockets: opts.net_listen || exposure.listening_sockets,
-    })?;
+        with_listening_sockets: opts.net_listen || exposure.listening_sockets(),
+    };
 
-    // Filtre les services si demandé (systemd + config)
-    #[cfg(all(feature = "systemd", feature = "config"))]
-    if let Some(cfg) = &cfg {
-        let services_mut = snap.services_running.make_mut();
-        let filtered = describe_me::filter_services(std::mem::take(services_mut), cfg);
-        *services_mut = filtered;
-    }
+    let (snap, snapshot_view) = describe_me::capture_snapshot_with_view(
+        capture_opts,
+        exposure,
+        #[cfg(feature = "config")]
+        cfg.as_ref(),
+    )?;
 
     // Si JSON demandé: on ne sort qu'un seul document JSON combiné
     if opts.json || opts.pretty {
         #[cfg(feature = "cli")]
         {
-            let snapshot_view = describe_me::SnapshotView::new(&snap, exposure);
             if opts.summary {
                 print_summary_line(&snapshot_view);
             }
@@ -475,13 +399,10 @@ fn main() -> Result<()> {
         }
         #[cfg(not(feature = "cli"))]
         {
-            let snapshot_view = describe_me::SnapshotView::new(&snap, exposure);
             println!("{}", serde_json::to_string_pretty(&snapshot_view)?);
             return Ok(());
         }
     }
-
-    let snapshot_view = describe_me::SnapshotView::new(&snap, exposure);
 
     if opts.summary {
         print_summary_line(&snapshot_view);
@@ -583,6 +504,114 @@ fn main() -> Result<()> {
     // ------------------------------------------------------------------------
 }
 
+#[cfg(feature = "config")]
+fn apply_cli_exposure_flags(
+    exposure: &mut describe_me::Exposure,
+    opts: &Opts,
+    cfg: Option<&describe_me::DescribeConfig>,
+) {
+    if let Some(cfg) = cfg {
+        if let Some(cfg_exp) = cfg.exposure.as_ref() {
+            exposure.merge(describe_me::Exposure::from(cfg_exp));
+        }
+    }
+    apply_cli_flags(exposure, opts);
+}
+
+#[cfg(not(feature = "config"))]
+fn apply_cli_exposure_flags(exposure: &mut describe_me::Exposure, opts: &Opts) {
+    apply_cli_flags(exposure, opts);
+}
+
+fn apply_cli_flags(exposure: &mut describe_me::Exposure, opts: &Opts) {
+    if opts.expose_all {
+        *exposure = describe_me::Exposure::all();
+    } else {
+        if opts.expose_hostname {
+            exposure.set_hostname(true);
+        }
+        if opts.expose_os {
+            exposure.set_os(true);
+        }
+        if opts.expose_kernel {
+            exposure.set_kernel(true);
+        }
+        if opts.expose_services {
+            exposure.set_services(true);
+        }
+        if opts.expose_disk_partitions {
+            exposure.set_disk_partitions(true);
+        }
+        if opts.expose_updates {
+            exposure.set_updates(true);
+        }
+    }
+
+    if opts.no_redacted {
+        exposure.redacted = false;
+    }
+
+    if opts.net_listen {
+        exposure.set_listening_sockets(true);
+    }
+}
+
+#[cfg(feature = "config")]
+fn apply_web_exposure_flags(
+    exposure: describe_me::Exposure,
+    opts: &Opts,
+    cfg: Option<&describe_me::DescribeConfig>,
+) -> describe_me::Exposure {
+    let mut web_exposure = exposure;
+
+    if let Some(cfg) = cfg {
+        if let Some(web_cfg) = cfg.web.as_ref() {
+            if let Some(web_exp) = web_cfg.exposure.as_ref() {
+                web_exposure.merge(describe_me::Exposure::from(web_exp));
+            }
+        }
+    }
+
+    apply_web_flags(&mut web_exposure, opts);
+    web_exposure
+}
+
+#[cfg(not(feature = "config"))]
+fn apply_web_exposure_flags(exposure: describe_me::Exposure, opts: &Opts) -> describe_me::Exposure {
+    let mut web_exposure = exposure;
+    apply_web_flags(&mut web_exposure, opts);
+    web_exposure
+}
+
+fn apply_web_flags(exposure: &mut describe_me::Exposure, opts: &Opts) {
+    if opts.web_expose_all {
+        *exposure = describe_me::Exposure::all();
+    } else {
+        if opts.web_expose_hostname {
+            exposure.set_hostname(true);
+        }
+        if opts.web_expose_os {
+            exposure.set_os(true);
+        }
+        if opts.web_expose_kernel {
+            exposure.set_kernel(true);
+        }
+        if opts.web_expose_services {
+            exposure.set_services(true);
+        }
+        if opts.web_expose_disk_partitions {
+            exposure.set_disk_partitions(true);
+        }
+        if opts.web_expose_updates {
+            exposure.set_updates(true);
+        }
+    }
+
+    if opts.no_redacted {
+        exposure.redacted = false;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -623,10 +652,8 @@ mod tests {
                 reboot_required: true,
             }),
         };
-        let exposure = describe_me::Exposure {
-            updates: true,
-            ..describe_me::Exposure::default()
-        };
+        let mut exposure = describe_me::Exposure::default();
+        exposure.set_updates(true);
         let view = describe_me::SnapshotView::new(&snapshot, exposure);
         assert_eq!(super::summary_line(&view), "updates=5 reboot=yes");
     }
@@ -652,10 +679,8 @@ mod tests {
             listening_sockets: None,
             updates: None,
         };
-        let exposure = describe_me::Exposure {
-            updates: true,
-            ..describe_me::Exposure::default()
-        };
+        let mut exposure = describe_me::Exposure::default();
+        exposure.set_updates(true);
         let view = describe_me::SnapshotView::new(&snapshot, exposure);
         assert_eq!(super::summary_line(&view), "updates=? reboot=unknown");
     }
