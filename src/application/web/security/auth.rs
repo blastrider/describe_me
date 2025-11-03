@@ -2,13 +2,18 @@ use super::{
     limits::{SecurityPolicy, SecurityState},
     IpMatcher, SecurityRejection, TokenKey, WebRoute,
 };
+use argon2::{
+    password_hash::{
+        Error as PasswordHashError, PasswordHash, PasswordHashString, PasswordVerifier,
+    },
+    Algorithm, Argon2,
+};
 use axum::{
     extract::ConnectInfo,
     http::{header::AUTHORIZATION, request::Parts},
 };
 use std::{net::SocketAddr, time::Instant};
-use subtle::ConstantTimeEq;
-use tracing::warn;
+use tracing::{error, warn};
 
 #[derive(Debug, Clone)]
 pub(super) struct AuthRequest {
@@ -18,6 +23,94 @@ pub(super) struct AuthRequest {
     pub(super) token_key: TokenKey,
     pub(super) require_token: bool,
     pub(super) trusted_ip: bool,
+}
+
+#[derive(Clone)]
+pub(super) struct TokenVerifier {
+    inner: TokenVerifierInner,
+}
+
+#[derive(Clone)]
+enum TokenVerifierInner {
+    Argon2id { hash: PasswordHashString },
+    Bcrypt { hash: String },
+}
+
+impl TokenVerifier {
+    pub(super) fn parse(encoded: &str) -> Result<Self, String> {
+        let trimmed = encoded.trim();
+        if trimmed.is_empty() {
+            return Err("hash de jeton vide".into());
+        }
+
+        if trimmed.starts_with("$argon2id$") {
+            let hash = PasswordHashString::new(trimmed)
+                .map_err(|err| format!("hash Argon2id invalide: {err}"))?;
+            let algo = hash.password_hash().algorithm;
+            if algo != Algorithm::Argon2id.into() {
+                return Err(format!(
+                    "algorithme Argon2 non supporté: {algo:?} (attendu Argon2id)"
+                ));
+            }
+            return Ok(TokenVerifier {
+                inner: TokenVerifierInner::Argon2id { hash },
+            });
+        }
+
+        if trimmed.starts_with("$2") {
+            match bcrypt::verify("", trimmed) {
+                Ok(_) => {
+                    return Ok(TokenVerifier {
+                        inner: TokenVerifierInner::Bcrypt {
+                            hash: trimmed.to_owned(),
+                        },
+                    });
+                }
+                Err(err) => {
+                    return Err(format!("hash bcrypt invalide: {err}"));
+                }
+            }
+        }
+
+        Err("format de hash non supporté (attendu Argon2id ou bcrypt)".into())
+    }
+
+    pub(super) fn verify(&self, candidate: &str) -> Result<bool, TokenVerifyError> {
+        match &self.inner {
+            TokenVerifierInner::Argon2id { hash } => {
+                let parsed: PasswordHash<'_> = hash.password_hash();
+                match Argon2::default().verify_password(candidate.as_bytes(), &parsed) {
+                    Ok(()) => Ok(true),
+                    Err(PasswordHashError::Password) => Ok(false),
+                    Err(err) => Err(TokenVerifyError::InvalidHash(err.to_string())),
+                }
+            }
+            TokenVerifierInner::Bcrypt { hash } => match bcrypt::verify(candidate, hash) {
+                Ok(result) => Ok(result),
+                Err(err) => Err(TokenVerifyError::InvalidHash(err.to_string())),
+            },
+        }
+    }
+
+    pub(super) fn algorithm(&self) -> &'static str {
+        match self.inner {
+            TokenVerifierInner::Argon2id { .. } => "argon2id",
+            TokenVerifierInner::Bcrypt { .. } => "bcrypt",
+        }
+    }
+}
+
+impl std::fmt::Debug for TokenVerifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenVerifier")
+            .field("algorithm", &self.algorithm())
+            .finish()
+    }
+}
+
+#[derive(Debug)]
+pub(super) enum TokenVerifyError {
+    InvalidHash(String),
 }
 
 pub(super) fn build_request(
@@ -71,7 +164,7 @@ pub(super) fn build_request(
 pub(super) async fn verify_token(
     state: &SecurityState,
     policy: &SecurityPolicy,
-    expected_token: Option<&str>,
+    expected_token: Option<&TokenVerifier>,
     request: &AuthRequest,
     now: Instant,
 ) -> Result<(), SecurityRejection> {
@@ -82,7 +175,19 @@ pub(super) async fn verify_token(
     let auth_ok = request
         .provided_token
         .as_deref()
-        .map(|provided| tokens_match(expected, provided))
+        .map(|provided| match expected.verify(provided) {
+            Ok(true) => true,
+            Ok(false) => false,
+            Err(err) => {
+                error!(
+                    route = request.route.as_str(),
+                    algorithm = expected.algorithm(),
+                    error = %err_string(&err),
+                    "Echec verification hash token"
+                );
+                false
+            }
+        })
         .unwrap_or(false);
 
     let missing = request.provided_token.is_none();
@@ -147,11 +252,10 @@ fn extract_token(parts: &Parts) -> Option<String> {
 
     None
 }
-
-fn tokens_match(expected: &str, provided: &str) -> bool {
-    let expected_bytes = expected.as_bytes();
-    let provided_bytes = provided.as_bytes();
-    expected_bytes.len() == provided_bytes.len() && expected_bytes.ct_eq(provided_bytes).into()
+fn err_string(err: &TokenVerifyError) -> &str {
+    match err {
+        TokenVerifyError::InvalidHash(msg) => msg.as_str(),
+    }
 }
 
 #[cfg(test)]
@@ -163,6 +267,7 @@ mod tests {
     };
     use axum::http::{Request, StatusCode};
     use std::net::{IpAddr, Ipv4Addr};
+    use std::sync::OnceLock;
 
     fn make_parts(path: &str, ip: IpAddr, token: Option<&str>) -> Parts {
         let request = Request::builder().uri(path).body(()).unwrap();
@@ -178,6 +283,20 @@ mod tests {
         parts
     }
 
+    fn argon2_hash(secret: &str) -> String {
+        use argon2::password_hash::{PasswordHasher, SaltString};
+        let salt = SaltString::generate(&mut rand_core::OsRng);
+        Argon2::default()
+            .hash_password(secret.as_bytes(), &salt)
+            .expect("hash password")
+            .to_string()
+    }
+
+    fn cached_argon2() -> &'static str {
+        static HASH: OnceLock<String> = OnceLock::new();
+        HASH.get_or_init(|| argon2_hash("secret"))
+    }
+
     #[tokio::test]
     async fn verify_token_accepts_valid_bearer() {
         let state = SecurityState::new();
@@ -185,7 +304,8 @@ mod tests {
         let parts = make_parts("/", IpAddr::V4(Ipv4Addr::LOCALHOST), Some("secret"));
         let request = build_request(&[], &parts, WebRoute::Html).unwrap();
 
-        verify_token(&state, &policy, Some("secret"), &request, Instant::now())
+        let verifier = TokenVerifier::parse(cached_argon2()).expect("parse hash");
+        verify_token(&state, &policy, Some(&verifier), &request, Instant::now())
             .await
             .expect("token should be accepted");
     }
@@ -197,7 +317,8 @@ mod tests {
         let parts = make_parts("/sse", IpAddr::V4(Ipv4Addr::LOCALHOST), None);
         let request = build_request(&[], &parts, WebRoute::Sse).unwrap();
 
-        let err = verify_token(&state, &policy, Some("secret"), &request, Instant::now())
+        let verifier = TokenVerifier::parse(cached_argon2()).expect("parse hash");
+        let err = verify_token(&state, &policy, Some(&verifier), &request, Instant::now())
             .await
             .expect_err("missing token should be rejected");
         assert_eq!(err.status, StatusCode::UNAUTHORIZED);
@@ -210,8 +331,15 @@ mod tests {
         let parts = make_parts("/", IpAddr::V4(Ipv4Addr::LOCALHOST), None);
         let request = build_request(&[], &parts, WebRoute::Html).unwrap();
 
-        verify_token(&state, &policy, Some("secret"), &request, Instant::now())
+        let verifier = TokenVerifier::parse(cached_argon2()).expect("parse hash");
+        verify_token(&state, &policy, Some(&verifier), &request, Instant::now())
             .await
             .expect("html route should allow missing token");
+    }
+
+    #[test]
+    fn parse_rejects_plaintext() {
+        let err = TokenVerifier::parse("not-a-hash").expect_err("plaintext should be rejected");
+        assert!(err.contains("non supporté"));
     }
 }

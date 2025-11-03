@@ -22,6 +22,23 @@ Ce découpage permet d’écrire des tests ciblés (par exemple sur `authorize`,
 `verify_token`, `enforce_rate_limits` ou `acquire_permit`) sans dépendre d’un
 gros bloc monolithique.
 
+### Stockage des jetons
+
+Depuis l’introduction de `TokenVerifier`, les jetons web ne sont plus stockés en
+clair. Le fichier de configuration et l’API `WebAccess` attendent une empreinte
+Argon2id (préfixe `$argon2id$`) ou bcrypt (`$2b$…`). Lors de l’autorisation, le
+hash est validé puis comparé en temps constant via l’algorithme correspondant.
+
+La CLI expose deux helpers pour générer les empreintes :
+
+```
+describe-me --hash-web-token 'mon-super-token'
+describe-me --hash-web-token-stdin --hash-web-token-alg bcrypt < plain.txt
+```
+
+Les exceptions de parsing sont remontées comme `DescribeError::Config`, ce qui
+permet de refuser une configuration contenant un hash invalide.
+
 ## Trackers réutilisables
 
 `limits.rs` fournit trois structures génériques pour encapsuler les anciens
