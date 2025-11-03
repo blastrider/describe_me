@@ -10,11 +10,13 @@ pub struct ServiceInfo {
     pub summary: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct UpdatesInfo {
     pub pending: u32,
     pub reboot_required: bool,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub packages: Option<SharedSlice<UpdatePackage>>,
 }
 
 #[derive(Debug, Clone)]
@@ -101,4 +103,17 @@ pub struct NetworkInterfaceTraffic {
     pub tx_errors: u64,
     /// Paquets émis abandonnés.
     pub tx_dropped: u64,
+}
+
+/// Détail d’une mise à jour disponible.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct UpdatePackage {
+    pub name: String,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub current_version: Option<String>,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub available_version: Option<String>,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub repository: Option<String>,
 }

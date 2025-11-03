@@ -120,6 +120,10 @@ impl SystemSnapshot {
         let net_interfaces: Option<usize> = None;
         let updates_pending = snapshot.updates.as_ref().map(|u| u.pending);
         let updates_reboot = snapshot.updates.as_ref().map(|u| u.reboot_required);
+        let updates_packages = snapshot
+            .updates
+            .as_ref()
+            .and_then(|u| u.packages.as_ref().map(|p| p.len()));
         debug!(
             duration_ms = duration.as_millis(),
             cpu = snapshot.cpu_count,
@@ -132,6 +136,7 @@ impl SystemSnapshot {
             net_interfaces,
             updates_pending,
             updates_reboot,
+            updates_packages,
             "snapshot_captured"
         );
 

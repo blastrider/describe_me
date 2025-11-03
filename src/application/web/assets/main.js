@@ -7,6 +7,9 @@
   const rawBody = document.getElementById('rawBody');
   const rawToggle = document.getElementById('rawToggle');
   const updatesCard = document.getElementById('updatesCard');
+  const updatesDetails = document.getElementById('updatesDetails');
+  const updatesList = document.getElementById('updatesList');
+  const updatesToggle = document.getElementById('updatesDetailsToggle');
   const networkCard = document.getElementById('networkCard');
   const networkList = document.getElementById('networkList');
 
@@ -33,6 +36,15 @@
       const collapsed = rawBody.classList.toggle('collapsed');
       rawToggle.textContent = collapsed ? "Afficher" : "Masquer";
       rawToggle.setAttribute('aria-expanded', (!collapsed).toString());
+    });
+  }
+  if (updatesToggle && updatesDetails) {
+    updatesToggle.setAttribute('aria-controls', 'updatesDetails');
+    updatesToggle.setAttribute('aria-expanded', 'false');
+    updatesToggle.addEventListener('click', () => {
+      const collapsed = updatesDetails.classList.toggle('collapsed');
+      updatesToggle.textContent = collapsed ? "Détails" : "Masquer";
+      updatesToggle.setAttribute('aria-expanded', (!collapsed).toString());
     });
   }
 
@@ -65,6 +77,36 @@
     if (!val) return "err";
     const okTokens = ["running", "listening", "online", "active"];
     return okTokens.some((token) => val.includes(token)) ? "ok" : "err";
+  };
+
+  const formatUpdatePackage = (pkg) => {
+    const name = esc(pkg?.name || "Paquet");
+    const available = pkg?.available_version ? esc(pkg.available_version) : "";
+    const current = pkg?.current_version ? esc(pkg.current_version) : "";
+    const repo = pkg?.repository ? esc(pkg.repository) : "";
+    let versions = "";
+    if (available && current) {
+      versions = `${current} → ${available}`;
+    } else if (available) {
+      versions = `Version: ${available}`;
+    } else if (current) {
+      versions = `Installée: ${current}`;
+    }
+    const metaParts = [];
+    if (versions) metaParts.push(versions);
+    if (repo) metaParts.push(repo);
+    const metaHtml = metaParts.length
+      ? `<div class="service-meta">${metaParts.join(" • ")}</div>`
+      : "";
+    return `
+            <div class="service-row">
+              <span class="dot service-dot"></span>
+              <div>
+                <div class="service-name">${name}</div>
+                ${metaHtml}
+              </div>
+            </div>
+          `;
   };
 
   let currentToken = sessionStorage.getItem('describe_me_token') || "";
@@ -315,6 +357,23 @@
           updatesRebootEl.textContent = "—";
           updatesStatusEl.textContent = "Collecte indisponible";
         }
+        if (updatesToggle && updatesDetails && updatesList) {
+          const packages = Array.isArray(info.packages) ? info.packages : [];
+          if (packages.length > 0) {
+            updatesToggle.style.display = "inline-flex";
+            const collapsed = updatesDetails.classList.contains('collapsed');
+            updatesToggle.textContent = collapsed ? "Détails" : "Masquer";
+            updatesToggle.setAttribute('aria-expanded', (!collapsed).toString());
+            const listHtml = packages.map(formatUpdatePackage).join("\n");
+            updatesList.innerHTML = listHtml || `<div class="service-empty">—</div>`;
+          } else {
+            updatesToggle.style.display = "none";
+            updatesDetails.classList.add('collapsed');
+            updatesToggle.textContent = "Détails";
+            updatesToggle.setAttribute('aria-expanded', 'false');
+            updatesList.innerHTML = `<div class="service-empty">—</div>`;
+          }
+        }
       } else if (Object.prototype.hasOwnProperty.call(data, 'updates')) {
         if (updatesCard) {
           updatesCard.style.display = "block";
@@ -322,6 +381,13 @@
         updatesPendingEl.textContent = "—";
         updatesRebootEl.textContent = "—";
         updatesStatusEl.textContent = "Collecte indisponible";
+        if (updatesToggle && updatesDetails && updatesList) {
+          updatesToggle.style.display = "none";
+          updatesDetails.classList.add('collapsed');
+          updatesToggle.textContent = "Détails";
+          updatesToggle.setAttribute('aria-expanded', 'false');
+          updatesList.innerHTML = `<div class="service-empty">—</div>`;
+        }
       } else {
         if (updatesCard) {
           updatesCard.style.display = "none";
@@ -329,6 +395,13 @@
         updatesPendingEl.textContent = "—";
         updatesRebootEl.textContent = "—";
         updatesStatusEl.textContent = "—";
+        if (updatesToggle && updatesDetails && updatesList) {
+          updatesToggle.style.display = "none";
+          updatesDetails.classList.add('collapsed');
+          updatesToggle.textContent = "Détails";
+          updatesToggle.setAttribute('aria-expanded', 'false');
+          updatesList.innerHTML = `<div class="service-empty">—</div>`;
+        }
       }
     }
 
