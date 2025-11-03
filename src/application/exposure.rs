@@ -10,15 +10,75 @@ use crate::domain::{DiskPartition, SystemSnapshot, UpdatesInfo};
 #[cfg(feature = "serde")]
 use crate::SharedSlice;
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+struct ExposureFlags(u16);
+
+impl ExposureFlags {
+    const HOSTNAME: Self = Self(1 << 0);
+    const OS: Self = Self(1 << 1);
+    const KERNEL: Self = Self(1 << 2);
+    const SERVICES: Self = Self(1 << 3);
+    const DISK: Self = Self(1 << 4);
+    const SOCKETS: Self = Self(1 << 5);
+    const UPDATES: Self = Self(1 << 6);
+    const ALL: Self = Self(
+        Self::HOSTNAME.0
+            | Self::OS.0
+            | Self::KERNEL.0
+            | Self::SERVICES.0
+            | Self::DISK.0
+            | Self::SOCKETS.0
+            | Self::UPDATES.0,
+    );
+
+    const fn empty() -> Self {
+        Self(0)
+    }
+
+    fn contains(self, other: Self) -> bool {
+        (self.0 & other.0) == other.0
+    }
+
+    fn insert(&mut self, flag: Self) {
+        self.0 |= flag.0;
+    }
+
+    fn remove(&mut self, flag: Self) {
+        self.0 &= !flag.0;
+    }
+
+    fn set(&mut self, flag: Self, value: bool) {
+        if value {
+            self.insert(flag);
+        } else {
+            self.remove(flag);
+        }
+    }
+}
+
+impl Default for ExposureFlags {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
+impl std::ops::BitOr for ExposureFlags {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        Self(self.0 | rhs.0)
+    }
+}
+
+impl std::ops::BitOrAssign for ExposureFlags {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
+}
+
 #[derive(Debug, Copy, Clone)]
 pub struct Exposure {
-    pub hostname: bool,
-    pub os: bool,
-    pub kernel: bool,
-    pub services: bool,
-    pub disk_partitions: bool,
-    pub listening_sockets: bool,
-    pub updates: bool,
+    flags: ExposureFlags,
     /// Affiche des valeurs masquées (ex: versions tronquées) lorsque les détails complets sont interdits.
     pub redacted: bool,
 }
@@ -26,13 +86,7 @@ pub struct Exposure {
 impl Default for Exposure {
     fn default() -> Self {
         Self {
-            hostname: false,
-            os: false,
-            kernel: false,
-            services: false,
-            disk_partitions: false,
-            listening_sockets: false,
-            updates: false,
+            flags: ExposureFlags::empty(),
             redacted: true,
         }
     }
@@ -41,52 +95,90 @@ impl Default for Exposure {
 impl Exposure {
     pub fn all() -> Self {
         Self {
-            hostname: true,
-            os: true,
-            kernel: true,
-            services: true,
-            disk_partitions: true,
-            listening_sockets: true,
-            updates: true,
+            flags: ExposureFlags::ALL,
             redacted: false,
         }
     }
 
     pub fn merge(&mut self, other: Self) {
-        self.hostname |= other.hostname;
-        self.os |= other.os;
-        self.kernel |= other.kernel;
-        self.services |= other.services;
-        self.disk_partitions |= other.disk_partitions;
-        self.listening_sockets |= other.listening_sockets;
-        self.updates |= other.updates;
+        self.flags |= other.flags;
         self.redacted |= other.redacted;
     }
 
     pub fn is_all(&self) -> bool {
-        self.hostname
-            && self.os
-            && self.kernel
-            && self.services
-            && self.disk_partitions
-            && self.listening_sockets
-            && self.updates
+        self.flags.contains(ExposureFlags::ALL)
+    }
+
+    pub fn hostname(&self) -> bool {
+        self.flags.contains(ExposureFlags::HOSTNAME)
+    }
+
+    pub fn set_hostname(&mut self, value: bool) {
+        self.flags.set(ExposureFlags::HOSTNAME, value);
+    }
+
+    pub fn os(&self) -> bool {
+        self.flags.contains(ExposureFlags::OS)
+    }
+
+    pub fn set_os(&mut self, value: bool) {
+        self.flags.set(ExposureFlags::OS, value);
+    }
+
+    pub fn kernel(&self) -> bool {
+        self.flags.contains(ExposureFlags::KERNEL)
+    }
+
+    pub fn set_kernel(&mut self, value: bool) {
+        self.flags.set(ExposureFlags::KERNEL, value);
+    }
+
+    pub fn services(&self) -> bool {
+        self.flags.contains(ExposureFlags::SERVICES)
+    }
+
+    pub fn set_services(&mut self, value: bool) {
+        self.flags.set(ExposureFlags::SERVICES, value);
+    }
+
+    pub fn disk_partitions(&self) -> bool {
+        self.flags.contains(ExposureFlags::DISK)
+    }
+
+    pub fn set_disk_partitions(&mut self, value: bool) {
+        self.flags.set(ExposureFlags::DISK, value);
+    }
+
+    pub fn listening_sockets(&self) -> bool {
+        self.flags.contains(ExposureFlags::SOCKETS)
+    }
+
+    pub fn set_listening_sockets(&mut self, value: bool) {
+        self.flags.set(ExposureFlags::SOCKETS, value);
+    }
+
+    pub fn updates(&self) -> bool {
+        self.flags.contains(ExposureFlags::UPDATES)
+    }
+
+    pub fn set_updates(&mut self, value: bool) {
+        self.flags.set(ExposureFlags::UPDATES, value);
     }
 }
 
 #[cfg(feature = "config")]
 impl From<&crate::domain::ExposureConfig> for Exposure {
     fn from(cfg: &crate::domain::ExposureConfig) -> Self {
-        Self {
-            hostname: cfg.expose_hostname,
-            os: cfg.expose_os,
-            kernel: cfg.expose_kernel,
-            services: cfg.expose_services,
-            disk_partitions: cfg.expose_disk_partitions,
-            listening_sockets: cfg.expose_listening_sockets,
-            updates: cfg.expose_updates,
-            redacted: cfg.redacted,
-        }
+        let mut exposure = Exposure::default();
+        exposure.set_hostname(cfg.expose_hostname);
+        exposure.set_os(cfg.expose_os);
+        exposure.set_kernel(cfg.expose_kernel);
+        exposure.set_services(cfg.expose_services);
+        exposure.set_disk_partitions(cfg.expose_disk_partitions);
+        exposure.set_listening_sockets(cfg.expose_listening_sockets);
+        exposure.set_updates(cfg.expose_updates);
+        exposure.redacted = cfg.redacted;
+        exposure
     }
 }
 
@@ -140,14 +232,14 @@ impl SnapshotView {
 
         let (os, os_name, os_redacted) = build_sensitive_field(
             &snapshot.os,
-            exposure.os,
+            exposure.os(),
             exposure.redacted,
             sanitize_os_hint,
         );
 
         let (kernel, kernel_release, kernel_redacted) = build_sensitive_field(
             &snapshot.kernel,
-            exposure.kernel,
+            exposure.kernel(),
             exposure.redacted,
             sanitize_kernel_hint,
         );
@@ -156,7 +248,7 @@ impl SnapshotView {
 
         Self {
             redacted,
-            hostname: exposure.hostname.then(|| snapshot.hostname.clone()),
+            hostname: exposure.hostname().then(|| snapshot.hostname.clone()),
             os,
             kernel,
             uptime_seconds: snapshot.uptime_seconds,
@@ -170,16 +262,18 @@ impl SnapshotView {
             os_name,
             kernel_release,
             #[cfg(feature = "net")]
-            listening_sockets: if exposure.listening_sockets {
+            listening_sockets: if exposure.listening_sockets() {
                 snapshot.listening_sockets.clone()
             } else {
                 None
             },
             #[cfg(feature = "systemd")]
-            services_running: exposure.services.then(|| snapshot.services_running.clone()),
+            services_running: exposure
+                .services()
+                .then(|| snapshot.services_running.clone()),
             #[cfg(feature = "systemd")]
             services_summary,
-            updates: if exposure.updates {
+            updates: if exposure.updates() {
                 snapshot.updates
             } else {
                 None
@@ -308,10 +402,7 @@ mod tests {
 
     #[test]
     fn updates_hidden_when_not_exposed() {
-        let exposure = Exposure {
-            updates: false,
-            ..Exposure::default()
-        };
+        let exposure = Exposure::default();
 
         #[cfg(feature = "serde")]
         {
@@ -342,7 +433,7 @@ mod tests {
         #[cfg(not(feature = "serde"))]
         {
             // When serde is disabled SnapshotView is unavailable; ensure the flag stays false.
-            assert!(!exposure.updates);
+            assert!(!exposure.updates());
         }
     }
 
@@ -371,10 +462,8 @@ mod tests {
             }),
         };
 
-        let exposure = Exposure {
-            updates: true,
-            ..Exposure::default()
-        };
+        let mut exposure = Exposure::default();
+        exposure.set_updates(true);
         let view = SnapshotView::new(&snapshot, exposure);
         let info = view.updates.expect("updates should be present");
         assert_eq!(info.pending, 2);
@@ -396,7 +485,7 @@ pub struct DiskUsageView {
 impl DiskUsageView {
     fn from_snapshot(snapshot: &SystemSnapshot, exposure: &Exposure) -> Option<Self> {
         let du = snapshot.disk_usage.as_ref()?;
-        let partitions = exposure.disk_partitions.then(|| du.partitions.clone());
+        let partitions = exposure.disk_partitions().then(|| du.partitions.clone());
         Some(Self {
             total_bytes: du.total_bytes,
             available_bytes: du.available_bytes,
