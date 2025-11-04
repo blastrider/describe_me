@@ -145,6 +145,8 @@ pub struct WebSecurityConfig {
     pub sse: SseLimitConfig,
     /// Multiplicateur des plafonds pour les IP explicitement autorisées.
     pub allowlist_multiplier: u32,
+    /// Nombre maximal d'IP distinctes autorisées par token dans la fenêtre.
+    pub token_ip_affinity_limit: u32,
     /// Politique anti-bruteforce (authentification, tokens).
     pub brute_force: BruteForceConfig,
 }
@@ -154,7 +156,8 @@ impl Default for WebSecurityConfig {
         Self {
             html: RouteLimitConfig::html_default(),
             sse: SseLimitConfig::sse_default(),
-            allowlist_multiplier: 4,
+            allowlist_multiplier: 2,
+            token_ip_affinity_limit: 2,
             brute_force: BruteForceConfig::default(),
         }
     }
@@ -177,8 +180,8 @@ impl RouteLimitConfig {
     const fn html_default() -> Self {
         Self {
             window_seconds: 60,
-            per_ip: 60,
-            per_token: 15,
+            per_ip: 30,
+            per_token: 10,
         }
     }
 }
@@ -216,11 +219,11 @@ impl SseLimitConfig {
     const fn sse_default() -> Self {
         Self {
             window_seconds: 60,
-            per_ip: 20,
-            per_token: 12,
-            max_active_per_ip: 2,
-            max_active_per_token: 2,
-            max_stream_seconds: 20 * 60,
+            per_ip: 10,
+            per_token: 6,
+            max_active_per_ip: 1,
+            max_active_per_token: 1,
+            max_stream_seconds: 10 * 60,
             min_event_interval_ms: 1000,
             max_payload_bytes: 48 * 1024,
         }
@@ -262,14 +265,35 @@ impl Default for BruteForceConfig {
     fn default() -> Self {
         Self {
             window_seconds: 300,
-            threshold: 5,
-            initial_backoff_seconds: 5,
-            backoff_multiplier: 2.0,
-            backoff_ceiling_seconds: 60,
-            quarantine_seconds: 20 * 60,
-            token_failure_threshold: 12,
-            token_ip_spread: 3,
+            threshold: 3,
+            initial_backoff_seconds: 15,
+            backoff_multiplier: 3.0,
+            backoff_ceiling_seconds: 5 * 60,
+            quarantine_seconds: 45 * 60,
+            token_failure_threshold: 6,
+            token_ip_spread: 2,
             sse_min_retry_seconds: 2,
         }
+    }
+}
+
+#[cfg(all(test, feature = "config"))]
+mod security_tests {
+    use super::*;
+
+    #[test]
+    fn hardened_web_security_defaults() {
+        let cfg = WebSecurityConfig::default();
+        assert_eq!(cfg.allowlist_multiplier, 2);
+        assert_eq!(cfg.token_ip_affinity_limit, 2);
+
+        assert_eq!(cfg.html.per_ip, 30);
+        assert_eq!(cfg.html.per_token, 10);
+
+        assert_eq!(cfg.sse.per_ip, 10);
+        assert_eq!(cfg.sse.per_token, 6);
+        assert_eq!(cfg.sse.max_active_per_ip, 1);
+        assert_eq!(cfg.sse.max_active_per_token, 1);
+        assert_eq!(cfg.sse.max_stream_seconds, 10 * 60);
     }
 }
