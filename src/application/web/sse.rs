@@ -286,6 +286,7 @@ pub(super) async fn sse_stream(
                         with_services,
                         with_disk_usage: true,
                         with_listening_sockets: exposure.listening_sockets(),
+                        resolve_socket_processes: false,
                         with_network_traffic: exposure.network_traffic(),
                         with_updates: false,
                     },
