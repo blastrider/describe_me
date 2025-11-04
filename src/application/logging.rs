@@ -111,6 +111,13 @@ pub enum LogEvent<'a> {
         route: Cow<'a, str>,
         token: Cow<'a, str>,
     },
+    SecurityIncident {
+        category: Cow<'a, str>,
+        route: Cow<'a, str>,
+        ip: Option<Cow<'a, str>>,
+        token: Option<Cow<'a, str>>,
+        detail: Option<Cow<'a, str>>,
+    },
 }
 
 impl<'a> LogEvent<'a> {
@@ -255,6 +262,27 @@ impl<'a> LogEvent<'a> {
                     ip,
                     route,
                     token
+                );
+            }
+            LogEvent::SecurityIncident {
+                category,
+                route,
+                ip,
+                token,
+                detail,
+            } => {
+                warn!(
+                    category = category.as_ref(),
+                    route = route.as_ref(),
+                    ip = ip.as_ref().map(|s| s.as_ref()),
+                    token = token.as_ref().map(|s| s.as_ref()),
+                    detail = detail.as_ref().map(|s| s.as_ref()),
+                    "security_incident category={} route={} ip={:?} token={:?} detail={:?}",
+                    category,
+                    route,
+                    ip,
+                    token,
+                    detail
                 );
             }
         }
