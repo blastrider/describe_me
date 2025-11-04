@@ -26,6 +26,10 @@ header {
 .ok { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
 .dot.err { background: var(--err); box-shadow: 0 0 8px var(--err); }
 main { padding: 20px; display: grid; gap: 16px; max-width: 1200px; margin: 0 auto; }
+.blurred {
+  filter: blur(6px);
+  transition: filter 0.25s ease;
+}
 .grid {
   display: grid; gap: 16px;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));

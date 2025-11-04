@@ -182,17 +182,30 @@
     });
   }
 
+  const sensitiveNodes = Array.from(document.querySelectorAll('[data-sensitive]'));
+  let overlayTimeout = null;
+
   function showTokenPrompt(message) {
     if (typeof message === "string" && message) {
       tokenErrorEl.textContent = message;
     }
     tokenOverlay.classList.add('visible');
     setTimeout(() => tokenInput.focus(), 0);
+    if (!overlayTimeout) {
+      overlayTimeout = setTimeout(() => {
+        sensitiveNodes.forEach((node) => node.classList.add('blurred')); 
+      }, 1500);
+    }
   }
 
   function hideTokenPrompt() {
     tokenOverlay.classList.remove('visible');
     tokenErrorEl.textContent = "";
+    if (overlayTimeout) {
+      clearTimeout(overlayTimeout);
+      overlayTimeout = null;
+    }
+    sensitiveNodes.forEach((node) => node.classList.remove('blurred'));
   }
 
   function restartStream() {
@@ -255,6 +268,7 @@
       }
 
       hideTokenPrompt();
+      sensitiveNodes.forEach((node) => node.classList.remove('blurred'));
       await consumeSse(response.body);
       abortController = null;
       scheduleReconnect();
@@ -263,6 +277,7 @@
         return;
       }
       showError("Flux SSE interrompu (nouvelle tentative dans quelques secondes).");
+      sensitiveNodes.forEach((node) => node.classList.add('blurred'));
       scheduleReconnect();
     }
   }

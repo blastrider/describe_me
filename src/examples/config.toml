@@ -27,8 +27,8 @@ redacted = true
 
 [web]
 # Contrôles d'accès pour le serveur HTTP (--web).
-token = "$argon2id$v=19$m=19456,t=2,p=1$eMz2iKxZJwc4trkPUrZsXA$DpMWN6+H0zkunWrX4ixiCTzOgbUNBKcGKnaO5ld0irA"
-allow_ips = ["127.0.0.1", "10.0.0.0/16", "::1"]
+token = ""
+allow_ips = ["127.0.0.1", "::1"]
 # Intervalle (en secondes) pour rafraîchir le cache "Mises à jour".
 updates_refresh_seconds = 20
 
@@ -46,22 +46,23 @@ redacted = true
 
 [web.security]
 # Paramétrage des limites de sécurité pour les routes web.
-allowlist_multiplier = 4
+allowlist_multiplier = 2
+token_ip_affinity_limit = 2
 
 [web.security.html]
 # Rate limiting pour la route HTML ("/").
 window_seconds = 60
-per_ip = 120
-per_token = 0
+per_ip = 40
+per_token = 12
 
 [web.security.sse]
 # Rate limiting spécifique au flux SSE ("/sse").
 window_seconds = 60
-per_ip = 40
-per_token = 24
-max_active_per_ip = 4
-max_active_per_token = 4
-max_stream_seconds = 1800
+per_ip = 15
+per_token = 10
+max_active_per_ip = 2
+max_active_per_token = 2
+max_stream_seconds = 600
 min_event_interval_ms = 500
 max_payload_bytes = 98304
 
@@ -74,5 +75,5 @@ backoff_multiplier = 2.0
 backoff_ceiling_seconds = 120
 quarantine_seconds = 3600
 token_failure_threshold = 12
-token_ip_spread = 3
+token_ip_spread = 2
 sse_min_retry_seconds = 2

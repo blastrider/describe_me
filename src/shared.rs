@@ -43,6 +43,14 @@ impl<T> SharedSlice<T> {
     }
 }
 
+impl<T: PartialEq> PartialEq for SharedSlice<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+
+impl<T: Eq> Eq for SharedSlice<T> {}
+
 impl<T> Deref for SharedSlice<T> {
     type Target = [T];
 
