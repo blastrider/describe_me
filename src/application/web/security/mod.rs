@@ -3,7 +3,7 @@ mod limits;
 mod sse;
 
 use super::clear_token_cookie;
-use auth::{build_request, verify_token, TokenVerifier};
+use auth::{build_request, verify_token, AuthRequest, TokenVerifier};
 use limits::{enforce_rate_limits, ensure_not_blocked, SecurityPolicy, SecurityState};
 use sse::acquire_permit;
 
@@ -27,6 +27,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+use tokio::time::sleep;
 
 #[derive(Debug)]
 pub(super) struct AuthSession {
@@ -155,24 +156,105 @@ impl WebSecurity {
         &self.policy
     }
 
+    fn log_incident(&self, category: &'static str, request: &AuthRequest, detail: Option<String>) {
+        LogEvent::SecurityIncident {
+            category: Cow::Borrowed(category),
+            route: Cow::Owned(request.route.as_str().to_string()),
+            ip: Some(Cow::Owned(request.remote_ip.to_string())),
+            token: Some(Cow::Owned(request.token_key.to_string())),
+            detail: detail.map(Cow::Owned),
+        }
+        .emit();
+    }
+
+    fn log_rejection(
+        &self,
+        category: &'static str,
+        request: &AuthRequest,
+        rejection: &SecurityRejection,
+    ) {
+        let mut parts = vec![format!("status={}", rejection.status)];
+        if let Some(delay) = rejection.retry_after {
+            parts.push(format!("retry_after_s={:.3}", delay.as_secs_f32()));
+        }
+        self.log_incident(category, request, Some(parts.join(" ")));
+    }
+
     pub async fn authorize(
         &self,
         parts: &Parts,
         route: WebRoute,
     ) -> Result<AuthSession, SecurityRejection> {
         let now = std::time::Instant::now();
-        let request = build_request(&self.allow, parts, route)?;
-        ensure_not_blocked(&self.state, &self.policy, &request, now).await?;
-        verify_token(
+        let request = match build_request(&self.allow, parts, route) {
+            Ok(req) => req,
+            Err(rejection) => {
+                if rejection.is_auth_failure() {
+                    uniform_auth_delay().await;
+                }
+                return Err(rejection);
+            }
+        };
+        if let Err(rejection) = ensure_not_blocked(&self.state, &self.policy, &request, now).await {
+            self.log_rejection("cooldown_active", &request, &rejection);
+            if rejection.is_auth_failure() {
+                uniform_auth_delay().await;
+            }
+            return Err(rejection);
+        }
+        if let Err(rejection) = verify_token(
             &self.state,
             &self.policy,
             self.token.as_ref(),
             &request,
             now,
         )
-        .await?;
-        enforce_rate_limits(&self.state, &self.policy, &request, now).await?;
-        let sse_permit = acquire_permit(&self.state, &self.policy, &request)?;
+        .await
+        {
+            self.log_rejection("token_verification_failed", &request, &rejection);
+            if rejection.is_auth_failure() {
+                uniform_auth_delay().await;
+            }
+            return Err(rejection);
+        }
+        if !self
+            .state
+            .ensure_token_affinity(
+                request.route,
+                request.token_key,
+                request.remote_ip,
+                &self.policy,
+                request.trusted_ip,
+                now,
+            )
+            .await
+        {
+            self.log_incident(
+                "token_affinity_violation",
+                &request,
+                Some(format!(
+                    "limit={}",
+                    self.policy.token_affinity_limit(request.trusted_ip)
+                )),
+            );
+            uniform_auth_delay().await;
+            return Err(SecurityRejection::unauthorized(None));
+        }
+        if let Err(rejection) = enforce_rate_limits(&self.state, &self.policy, &request, now).await
+        {
+            self.log_rejection("rate_limit", &request, &rejection);
+            return Err(rejection);
+        }
+        let sse_permit = match acquire_permit(&self.state, &self.policy, &request) {
+            Ok(permit) => permit,
+            Err(rejection) => {
+                self.log_rejection("sse_permit_denied", &request, &rejection);
+                if rejection.is_auth_failure() {
+                    uniform_auth_delay().await;
+                }
+                return Err(rejection);
+            }
+        };
 
         self.state
             .note_success(request.remote_ip, request.token_key)
@@ -234,7 +316,7 @@ pub(super) struct SecurityRejection {
 impl SecurityRejection {
     pub(super) fn missing_ip() -> Self {
         Self {
-            status: StatusCode::FORBIDDEN,
+            status: StatusCode::UNAUTHORIZED,
             body: GENERIC_AUTH_MESSAGE,
             retry_after: None,
         }
@@ -242,7 +324,7 @@ impl SecurityRejection {
 
     pub(super) fn forbidden_ip() -> Self {
         Self {
-            status: StatusCode::FORBIDDEN,
+            status: StatusCode::UNAUTHORIZED,
             body: GENERIC_AUTH_MESSAGE,
             retry_after: None,
         }
@@ -282,6 +364,10 @@ impl SecurityRejection {
         }
         response
     }
+
+    pub(super) fn is_auth_failure(&self) -> bool {
+        self.status == StatusCode::UNAUTHORIZED
+    }
 }
 
 fn jitter(delay: Duration) -> Duration {
@@ -302,6 +388,12 @@ fn retry_after_seconds(delay: Duration) -> u64 {
         total = 1;
     }
     total
+}
+
+async fn uniform_auth_delay() {
+    let base = 120;
+    let jitter = fastrand::u64(0..=120);
+    sleep(Duration::from_millis(base + jitter)).await;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -462,7 +554,7 @@ mod tests {
             }
         }
 
-        assert_eq!(ok, 15);
+        assert_eq!(ok, 10);
     }
 
     #[tokio::test]
@@ -492,30 +584,150 @@ mod tests {
             .authorize(&parts, WebRoute::Sse)
             .await
             .expect("first SSE");
-        let session2 = security
-            .authorize(&parts, WebRoute::Sse)
-            .await
-            .expect("second SSE");
-
-        assert_eq!(session1.route(), WebRoute::Sse);
-        assert_eq!(session2.route(), WebRoute::Sse);
-        assert_eq!(session1.ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
-        assert_eq!(session2.ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
-        assert_eq!(session1.token_key(), TokenKey::from_value("secret"));
-
         let err = security
             .authorize(&parts, WebRoute::Sse)
             .await
-            .expect_err("should block third");
+            .expect_err("second SSE should be blocked");
         assert_eq!(err.status, StatusCode::TOO_MANY_REQUESTS);
         assert!(err.retry_after.is_some());
 
         drop(session1);
-        drop(session2);
 
-        security
+        let session2 = security
             .authorize(&parts, WebRoute::Sse)
             .await
             .expect("slot released");
+        assert_eq!(session2.route(), WebRoute::Sse);
+        assert_eq!(session2.ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
+        assert_eq!(session2.token_key(), TokenKey::from_value("secret"));
+    }
+
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+    use tracing::{field::Visit, Event};
+    use tracing_subscriber::{layer::Context, prelude::*, registry::LookupSpan, Layer, Registry};
+
+    #[derive(Clone, Default)]
+    struct RecordingLayer {
+        events: Arc<Mutex<Vec<HashMap<String, String>>>>,
+    }
+
+    impl RecordingLayer {
+        fn new() -> Self {
+            Self::default()
+        }
+
+        fn records(&self) -> Vec<HashMap<String, String>> {
+            self.events.lock().unwrap().clone()
+        }
+
+        fn clear(&self) {
+            self.events.lock().unwrap().clear();
+        }
+    }
+
+    impl<S> Layer<S> for RecordingLayer
+    where
+        S: tracing::Subscriber + for<'a> LookupSpan<'a>,
+    {
+        fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+            let mut visitor = FieldRecorder::default();
+            event.record(&mut visitor);
+            let mut record = visitor.finish();
+            record.insert(
+                "level".into(),
+                event.metadata().level().as_str().to_string(),
+            );
+            record.insert("target".into(), event.metadata().target().to_string());
+            self.events.lock().unwrap().push(record);
+        }
+    }
+
+    #[derive(Default)]
+    struct FieldRecorder {
+        fields: HashMap<String, String>,
+    }
+
+    impl FieldRecorder {
+        fn finish(self) -> HashMap<String, String> {
+            self.fields
+        }
+    }
+
+    impl Visit for FieldRecorder {
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            self.fields
+                .insert(field.name().to_string(), value.to_string());
+        }
+
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            self.fields
+                .insert(field.name().to_string(), format!("{:?}", value));
+        }
+    }
+
+    #[tokio::test]
+    async fn logs_token_affinity_violation() {
+        let layer = RecordingLayer::new();
+        let subscriber = Registry::default().with(layer.clone());
+        let guard = tracing::subscriber::set_default(subscriber);
+
+        LogEvent::SecurityIncident {
+            category: Cow::Borrowed("test"),
+            route: Cow::Borrowed("/"),
+            ip: None,
+            token: None,
+            detail: None,
+        }
+        .emit();
+        assert!(
+            !layer.records().is_empty(),
+            "recording layer inactive before test"
+        );
+        layer.clear();
+
+        let hash = cached_hash();
+        let security = build_security(Some(hash));
+        let token = "secret";
+
+        let ip1 = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10));
+        let ip2 = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 11));
+        let ip3 = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 12));
+
+        let parts1 = make_parts("/", ip1, Some(token));
+        let parts2 = make_parts("/", ip2, Some(token));
+        let parts3 = make_parts("/", ip3, Some(token));
+
+        let session1 = security
+            .authorize(&parts1, WebRoute::Html)
+            .await
+            .expect("first request should succeed");
+        let session2 = security
+            .authorize(&parts2, WebRoute::Html)
+            .await
+            .expect("second request should succeed");
+
+        let err = security
+            .authorize(&parts3, WebRoute::Html)
+            .await
+            .expect_err("third request should be rejected");
+        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
+
+        drop(session1);
+        drop(session2);
+
+        tokio::task::yield_now().await;
+        let records = layer.records();
+        drop(guard);
+        let found = records.iter().any(|record| {
+            record
+                .get("category")
+                .map(|value| value == "token_affinity_violation")
+                .unwrap_or(false)
+        });
+        assert!(
+            found,
+            "expected token_affinity_violation log, got {records:?}"
+        );
     }
 }
