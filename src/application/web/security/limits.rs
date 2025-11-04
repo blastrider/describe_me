@@ -3,7 +3,9 @@ use super::{
     sse::{ActiveSseState, SsePermit},
     SecurityRejection, TokenKey, WebRoute,
 };
+use crate::application::logging::LogEvent;
 use std::{
+    borrow::Cow,
     collections::{HashMap, HashSet, VecDeque},
     hash::Hash,
     net::IpAddr,
@@ -11,7 +13,8 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::Mutex;
-use tracing::warn;
+
+const DEFAULT_TOKEN_AFFINITY_LIMIT: u32 = 2;
 
 #[derive(Debug)]
 pub(crate) struct SecurityPolicy {
@@ -19,15 +22,17 @@ pub(crate) struct SecurityPolicy {
     sse: SsePolicy,
     allow_multiplier: u32,
     brute_force: BruteForcePolicy,
+    token_affinity_limit: u32,
 }
 
 impl SecurityPolicy {
     pub(crate) fn default() -> Self {
         Self {
-            html: RoutePolicy::new(Duration::from_secs(60), 60, 15),
+            html: RoutePolicy::new(Duration::from_secs(60), 30, 10),
             sse: SsePolicy::default(),
-            allow_multiplier: 4,
+            allow_multiplier: 2,
             brute_force: BruteForcePolicy::default(),
+            token_affinity_limit: DEFAULT_TOKEN_AFFINITY_LIMIT,
         }
     }
 
@@ -40,12 +45,18 @@ impl SecurityPolicy {
         );
         let sse = SsePolicy::from_config(&cfg.sse);
         let brute_force = BruteForcePolicy::from_config(&cfg.brute_force);
+        let affinity_limit = if cfg.token_ip_affinity_limit == 0 {
+            DEFAULT_TOKEN_AFFINITY_LIMIT
+        } else {
+            cfg.token_ip_affinity_limit
+        };
 
         Self {
             html,
             sse,
             allow_multiplier: cfg.allowlist_multiplier.max(1),
             brute_force,
+            token_affinity_limit: affinity_limit,
         }
     }
 
@@ -62,6 +73,20 @@ impl SecurityPolicy {
 
     pub(super) fn allow_multiplier(&self) -> u32 {
         self.allow_multiplier.max(1)
+    }
+
+    pub(super) fn token_affinity_limit(&self, trusted: bool) -> u32 {
+        if self.token_affinity_limit == 0 {
+            return 0;
+        }
+        if trusted {
+            let multiplier = self.allow_multiplier().max(1);
+            self.token_affinity_limit
+                .saturating_mul(multiplier)
+                .max(self.token_affinity_limit)
+        } else {
+            self.token_affinity_limit
+        }
     }
 
     pub(super) fn adjust_retry(&self, route: WebRoute, mut delay: Duration) -> Duration {
@@ -88,6 +113,23 @@ impl SecurityPolicy {
     pub(crate) fn sse_max_stream_duration(&self) -> Duration {
         self.sse.max_stream()
     }
+}
+
+fn emit_security_incident(
+    category: &'static str,
+    route: WebRoute,
+    ip: Option<IpAddr>,
+    token: Option<TokenKey>,
+    detail: Option<String>,
+) {
+    LogEvent::SecurityIncident {
+        category: Cow::Borrowed(category),
+        route: Cow::Owned(route.as_str().to_string()),
+        ip: ip.map(|addr| Cow::Owned(addr.to_string())),
+        token: token.map(|key| Cow::Owned(key.to_string())),
+        detail: detail.map(Cow::Owned),
+    }
+    .emit();
 }
 
 #[derive(Debug, Clone)]
@@ -139,9 +181,9 @@ pub(super) struct SsePolicy {
 impl SsePolicy {
     fn default() -> Self {
         Self {
-            route: RoutePolicy::new(Duration::from_secs(60), 20, 12),
-            max_active_per_ip: 2,
-            max_active_per_token: 2,
+            route: RoutePolicy::new(Duration::from_secs(60), 10, 6),
+            max_active_per_ip: 1,
+            max_active_per_token: 1,
             max_stream: Duration::from_secs(20 * 60),
             min_event_interval: Duration::from_secs(1),
             max_payload_bytes: 48 * 1024,
@@ -202,12 +244,12 @@ impl BruteForcePolicy {
     fn default() -> Self {
         Self {
             window: Duration::from_secs(300),
-            threshold: 5,
-            initial_backoff: Duration::from_secs(5),
-            multiplier: 2.0,
-            ceiling: Duration::from_secs(60),
-            quarantine: Duration::from_secs(20 * 60),
-            token_failure_threshold: 12,
+            threshold: 3,
+            initial_backoff: Duration::from_secs(15),
+            multiplier: 3.0,
+            ceiling: Duration::from_secs(5 * 60),
+            quarantine: Duration::from_secs(45 * 60),
+            token_failure_threshold: 6,
             token_ip_spread: 3,
             sse_min_retry: Duration::from_secs(2),
         }
@@ -218,14 +260,14 @@ impl BruteForcePolicy {
         Self {
             window: duration_from_secs(cfg.window_seconds, 300),
             threshold: cfg.threshold,
-            initial_backoff: duration_from_secs(cfg.initial_backoff_seconds, 5),
+            initial_backoff: duration_from_secs(cfg.initial_backoff_seconds, 15),
             multiplier: if cfg.backoff_multiplier <= 1.0 {
-                2.0
+                3.0
             } else {
                 cfg.backoff_multiplier
             },
-            ceiling: duration_from_secs(cfg.backoff_ceiling_seconds, 60),
-            quarantine: duration_from_secs(cfg.quarantine_seconds, 20 * 60),
+            ceiling: duration_from_secs(cfg.backoff_ceiling_seconds, 5 * 60),
+            quarantine: duration_from_secs(cfg.quarantine_seconds, 45 * 60),
             token_failure_threshold: cfg.token_failure_threshold,
             token_ip_spread: cfg.token_ip_spread,
             sse_min_retry: duration_from_secs(cfg.sse_min_retry_seconds, 2),
@@ -240,6 +282,7 @@ pub(super) struct SecurityState {
     failures_ip: FailureTracker<IpAddr>,
     failures_token: FailureTracker<TokenKey>,
     token_spread: TokenSpreadTracker,
+    token_affinity: TokenAffinityTracker,
     sse_active: Arc<ActiveSseState>,
 }
 
@@ -251,6 +294,7 @@ impl SecurityState {
             failures_ip: FailureTracker::new(),
             failures_token: FailureTracker::new(),
             token_spread: TokenSpreadTracker::new(),
+            token_affinity: TokenAffinityTracker::new(),
             sse_active: ActiveSseState::new(),
         }
     }
@@ -287,6 +331,28 @@ impl SecurityState {
         let window = limits.window;
         self.token_counters
             .register(route, token, now, window, cap)
+            .await
+    }
+
+    pub(super) async fn ensure_token_affinity(
+        &self,
+        route: WebRoute,
+        token: TokenKey,
+        ip: IpAddr,
+        policy: &SecurityPolicy,
+        trusted: bool,
+        now: Instant,
+    ) -> bool {
+        if token == TokenKey::Anonymous {
+            return true;
+        }
+        let limit = policy.token_affinity_limit(trusted);
+        if limit == 0 {
+            return true;
+        }
+        let window = policy.route_policy(route).window;
+        self.token_affinity
+            .register(route.into(), token, ip, now, window, limit)
             .await
     }
 
@@ -331,12 +397,20 @@ impl SecurityState {
                     .await,
             );
 
-            delay = combine_delay(
-                delay,
-                self.token_spread
-                    .register(token, ip, now, policy.brute_force())
-                    .await,
-            );
+            let spread = self
+                .token_spread
+                .register(token, ip, now, policy.brute_force())
+                .await;
+            if let TokenSpreadOutcome::Locked(_, fails, ips) = spread {
+                emit_security_incident(
+                    "token_spread_locked",
+                    route,
+                    Some(ip),
+                    Some(token),
+                    Some(format!("failures={} distinct_ips={}", fails, ips)),
+                );
+            }
+            delay = combine_delay(delay, spread.as_delay(now));
         }
 
         FailureOutcome {
@@ -373,11 +447,12 @@ pub(super) async fn ensure_not_blocked(
         .await
     {
         let delay = policy.adjust_retry(request.route, delay);
-        warn!(
-            ip = %request.remote_ip,
-            route = request.route.as_str(),
-            retry_after = %delay.as_secs_f32(),
-            "Refus (cooldown en cours)"
+        emit_security_incident(
+            "cooldown_active",
+            request.route,
+            Some(request.remote_ip),
+            Some(request.token_key),
+            Some(format!("retry_after_s={:.3}", delay.as_secs_f32())),
         );
         return Err(SecurityRejection::cooldown(delay));
     }
@@ -401,11 +476,12 @@ pub(super) async fn enforce_rate_limits(
         .await
     {
         let delay = policy.adjust_retry(request.route, delay);
-        warn!(
-            ip = %request.remote_ip,
-            route = request.route.as_str(),
-            retry_after = %delay.as_secs_f32(),
-            "Rate limit IP dépassé"
+        emit_security_incident(
+            "rate_limit_ip",
+            request.route,
+            Some(request.remote_ip),
+            Some(request.token_key),
+            Some(format!("retry_after_s={:.3}", delay.as_secs_f32())),
         );
         return Err(SecurityRejection::rate_limited(delay));
     }
@@ -415,12 +491,12 @@ pub(super) async fn enforce_rate_limits(
         .await
     {
         let delay = policy.adjust_retry(request.route, delay);
-        warn!(
-            ip = %request.remote_ip,
-            route = request.route.as_str(),
-            token = %request.token_key,
-            retry_after = %delay.as_secs_f32(),
-            "Rate limit token dépassé"
+        emit_security_incident(
+            "rate_limit_token",
+            request.route,
+            Some(request.remote_ip),
+            Some(request.token_key),
+            Some(format!("retry_after_s={:.3}", delay.as_secs_f32())),
         );
         return Err(SecurityRejection::rate_limited(delay));
     }
@@ -537,16 +613,10 @@ impl TokenSpreadTracker {
         ip: IpAddr,
         now: Instant,
         policy: &BruteForcePolicy,
-    ) -> Option<Duration> {
+    ) -> TokenSpreadOutcome {
         let mut guard = self.inner.lock().await;
         let spread = guard.entry(token).or_default();
-        let delay = spread
-            .register(ip, now, policy)
-            .map(|until| until.saturating_duration_since(now));
-        if spread.is_clear() {
-            guard.remove(&token);
-        }
-        delay
+        spread.register(ip, now, policy)
     }
 
     async fn existing_block(&self, token: TokenKey, now: Instant) -> Option<Duration> {
@@ -559,6 +629,63 @@ impl TokenSpreadTracker {
     async fn clear(&self, token: TokenKey) {
         let mut guard = self.inner.lock().await;
         guard.remove(&token);
+    }
+}
+
+#[derive(Debug, Default)]
+struct TokenAffinityTracker {
+    inner: Mutex<HashMap<(RouteKey, TokenKey), TokenAffinityRecord>>,
+}
+
+impl TokenAffinityTracker {
+    fn new() -> Self {
+        Self {
+            inner: Mutex::new(HashMap::new()),
+        }
+    }
+
+    async fn register(
+        &self,
+        route: RouteKey,
+        token: TokenKey,
+        ip: IpAddr,
+        now: Instant,
+        window: Duration,
+        limit: u32,
+    ) -> bool {
+        let mut guard = self.inner.lock().await;
+        let record = guard
+            .entry((route, token))
+            .or_insert_with(TokenAffinityRecord::new);
+        record.purge(now, window);
+        record.register(ip, now);
+        (record.len() as u32) <= limit
+    }
+}
+
+#[derive(Debug, Default)]
+struct TokenAffinityRecord {
+    ips: HashMap<IpAddr, Instant>,
+}
+
+impl TokenAffinityRecord {
+    fn new() -> Self {
+        Self {
+            ips: HashMap::new(),
+        }
+    }
+
+    fn purge(&mut self, now: Instant, window: Duration) {
+        self.ips
+            .retain(|_, ts| now.saturating_duration_since(*ts) <= window);
+    }
+
+    fn register(&mut self, ip: IpAddr, now: Instant) {
+        self.ips.insert(ip, now);
+    }
+
+    fn len(&self) -> usize {
+        self.ips.len()
     }
 }
 
@@ -683,10 +810,15 @@ struct TokenSpread {
 }
 
 impl TokenSpread {
-    fn register(&mut self, ip: IpAddr, now: Instant, policy: &BruteForcePolicy) -> Option<Instant> {
+    fn register(
+        &mut self,
+        ip: IpAddr,
+        now: Instant,
+        policy: &BruteForcePolicy,
+    ) -> TokenSpreadOutcome {
         if let Some(until) = self.locked_until {
             if until > now {
-                return Some(until);
+                return TokenSpreadOutcome::AlreadyLocked(until);
             } else {
                 self.locked_until = None;
                 self.failure_count = 0;
@@ -707,19 +839,34 @@ impl TokenSpread {
         {
             let until = now + policy.quarantine;
             self.locked_until = Some(until);
-            return Some(until);
+            TokenSpreadOutcome::Locked(until, self.failure_count, self.ips.len() as u32)
+        } else {
+            TokenSpreadOutcome::Tracking(self.failure_count, self.ips.len() as u32)
         }
-        None
-    }
-
-    fn is_clear(&self) -> bool {
-        self.failure_count == 0 && self.locked_until.is_none()
     }
 
     fn locked_delay(&self, now: Instant) -> Option<Duration> {
         self.locked_until
             .filter(|until| *until > now)
             .map(|until| until.saturating_duration_since(now))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TokenSpreadOutcome {
+    Tracking(u32, u32),
+    Locked(Instant, u32, u32),
+    AlreadyLocked(Instant),
+}
+
+impl TokenSpreadOutcome {
+    fn as_delay(self, now: Instant) -> Option<Duration> {
+        match self {
+            TokenSpreadOutcome::Locked(until, _, _) | TokenSpreadOutcome::AlreadyLocked(until) => {
+                Some(until.saturating_duration_since(now))
+            }
+            TokenSpreadOutcome::Tracking(_, _) => None,
+        }
     }
 }
 
