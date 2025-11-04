@@ -456,6 +456,7 @@ fn main() -> Result<()> {
         with_services: opts.with_services,
         with_disk_usage: true, // on garde true pour un JSON complet
         with_listening_sockets: opts.net_listen || exposure.listening_sockets(),
+        resolve_socket_processes: opts.net_listen || exposure.listening_sockets(),
         with_network_traffic: opts.net_traffic || exposure.network_traffic(),
         with_updates: true,
     };
