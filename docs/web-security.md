@@ -60,3 +60,27 @@ Les tests unitaires couvrent désormais les helpers extraits (`auth.rs`,
 `limits.rs`, `sse.rs`). Selon les besoins, on peut compléter par des tests
 directs sur les trackers pour verrouiller les comportements de fenêtre glissante
 ou de backoff.
+
+## Journalisation des incidents
+
+Toutes les anomalies de sécurité (IP refusée, dépassement de quotas, verrouillage
+pour dispersion de token, etc.) sont remontées via l’évènement structuré
+`LogEvent::SecurityIncident`. Cela permet de brancher facilement une supervision
+ou un système d’alerte :
+
+- Le module `auth` émet des incidents lorsqu’une IP ne figure pas dans l’allowlist
+  ou lorsqu’un hash de jeton ne peut être vérifié.
+- `limits.rs` loggue les dépassements de rate‐limit, les verrouillages de jeton
+  (quarantaine) et les violations d’affinité IP/token.
+- `mod.rs` capture également les refus de permit SSE et les rejets liés au cooldown.
+
+Un test dédié (`logs_token_affinity_violation`) vérifie qu’une violation d’affinité
+génère bien une entrée exploitable.
+
+## Durcissement côté client
+
+L’interface web masque tous les blocs sensibles tant qu’aucun token valide n’est
+présent. Le gabarit `index.html` applique la classe `blurred` au `header` et au
+`main`, et le script `main.js` ne retire ce flou qu’après authentification ou
+reconnexion réussie. Un test de style (`tests/ui_blur.rs`) garantit que HTML,
+CSS et JS restent alignés sur ce comportement.
