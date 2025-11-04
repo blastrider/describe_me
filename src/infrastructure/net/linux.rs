@@ -5,9 +5,15 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub fn collect_listening_sockets() -> Result<Vec<ListeningSocket>, DescribeError> {
+pub fn collect_listening_sockets(
+    resolve_processes: bool,
+) -> Result<Vec<ListeningSocket>, DescribeError> {
     // Map inode -> pid (meilleur-effort)
-    let inode_to_pid = build_inode_pid_map().unwrap_or_default();
+    let inode_to_pid = if resolve_processes {
+        build_inode_pid_map().unwrap_or_default()
+    } else {
+        HashMap::new()
+    };
     let mut pid_cache: HashMap<u32, Option<String>> = HashMap::new();
 
     let mut out = Vec::new();
@@ -19,6 +25,7 @@ pub fn collect_listening_sockets() -> Result<Vec<ListeningSocket>, DescribeError
         Some("0A"),
         &inode_to_pid,
         &mut pid_cache,
+        resolve_processes,
     ) {
         out.append(&mut v);
     }
@@ -29,6 +36,7 @@ pub fn collect_listening_sockets() -> Result<Vec<ListeningSocket>, DescribeError
         Some("07"),
         &inode_to_pid,
         &mut pid_cache,
+        resolve_processes,
     ) {
         out.append(&mut v);
     }
@@ -43,6 +51,7 @@ fn parse_table(
     required_state_hex: Option<&str>,
     inode_to_pid: &HashMap<u64, u32>,
     pid_cache: &mut HashMap<u32, Option<String>>,
+    resolve_processes: bool,
 ) -> io::Result<Vec<ListeningSocket>> {
     let content = fs::read_to_string(path)?;
     let mut sockets = Vec::new();
@@ -72,11 +81,19 @@ fn parse_table(
         };
 
         // Inode -> PID
-        let pid = inode_str
-            .parse::<u64>()
-            .ok()
-            .and_then(|ino| inode_to_pid.get(&ino).copied());
-        let process_name = pid.and_then(|p| resolve_process_name(p, pid_cache));
+        let pid = if resolve_processes {
+            inode_str
+                .parse::<u64>()
+                .ok()
+                .and_then(|ino| inode_to_pid.get(&ino).copied())
+        } else {
+            None
+        };
+        let process_name = if resolve_processes {
+            pid.and_then(|p| resolve_process_name(p, pid_cache))
+        } else {
+            None
+        };
 
         sockets.push(ListeningSocket {
             proto: proto.to_string(),
@@ -221,4 +238,63 @@ pub fn collect_network_traffic() -> Result<Vec<NetworkInterfaceTraffic>, Describ
     }
 
     Ok(interfaces)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    fn write_sample_table() -> (NamedTempFile, String) {
+        let mut file = NamedTempFile::new().expect("create temp file");
+        writeln!(
+            file,
+            "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode"
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "  0: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00:00000000 00000000 00000000 00000000 00000000 12345"
+        )
+        .unwrap();
+        file.flush().unwrap();
+        let path = file.path().to_str().expect("path utf8").to_string();
+        (file, path)
+    }
+
+    #[test]
+    fn parse_table_returns_socket_without_process_when_disabled() {
+        let (_file, path) = write_sample_table();
+        let sockets = parse_table(
+            &path,
+            "tcp",
+            Some("0A"),
+            &HashMap::new(),
+            &mut HashMap::new(),
+            false,
+        )
+        .expect("parse table");
+        assert_eq!(sockets.len(), 1);
+        let sock = &sockets[0];
+        assert_eq!(sock.addr, "127.0.0.1");
+        assert_eq!(sock.port, 8080);
+        assert!(sock.process.is_none());
+        assert!(sock.process_name.is_none());
+    }
+
+    #[test]
+    fn parse_table_sets_process_when_enabled() {
+        let (_file, path) = write_sample_table();
+        let mut inode_to_pid = HashMap::new();
+        inode_to_pid.insert(12345, 4242);
+        let mut cache = HashMap::new();
+
+        let sockets = parse_table(&path, "tcp", Some("0A"), &inode_to_pid, &mut cache, true)
+            .expect("parse table");
+        assert_eq!(sockets.len(), 1);
+        let sock = &sockets[0];
+        assert_eq!(sock.process, Some(4242));
+    }
 }
