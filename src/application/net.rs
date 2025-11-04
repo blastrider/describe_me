@@ -3,9 +3,16 @@ use crate::domain::{DescribeError, ListeningSocket, NetworkInterfaceTraffic};
 
 #[cfg(feature = "net")]
 pub fn net_listen() -> Result<Vec<ListeningSocket>, DescribeError> {
+    net_listen_with_processes(true)
+}
+
+#[cfg(feature = "net")]
+pub fn net_listen_with_processes(
+    resolve_processes: bool,
+) -> Result<Vec<ListeningSocket>, DescribeError> {
     #[cfg(target_os = "linux")]
     {
-        crate::infrastructure::net::linux::collect_listening_sockets()
+        crate::infrastructure::net::linux::collect_listening_sockets(resolve_processes)
     }
     #[cfg(not(target_os = "linux"))]
     {

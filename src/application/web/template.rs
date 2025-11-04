@@ -6,13 +6,51 @@ const INDEX_CSS: &str = include_str!("templates/index.css");
 const UPDATES_HTML_TEMPLATE: &str = include_str!("templates/updates.html");
 const UPDATES_CSS: &str = include_str!("templates/updates.css");
 
+fn fill_template<'a, F>(template: &str, extra_capacity: usize, mut resolver: F) -> String
+where
+    F: FnMut(&str) -> Option<&'a str>,
+{
+    let mut out = String::with_capacity(template.len() + extra_capacity);
+    let mut remaining = template;
+
+    while let Some(start) = remaining.find("__") {
+        out.push_str(&remaining[..start]);
+        remaining = &remaining[start + 2..];
+
+        if let Some(end) = remaining.find("__") {
+            let key = &remaining[..end];
+            remaining = &remaining[end + 2..];
+            if let Some(value) = resolver(key) {
+                out.push_str(value);
+            } else {
+                out.push_str("__");
+                out.push_str(key);
+                out.push_str("__");
+            }
+        } else {
+            out.push_str("__");
+            out.push_str(remaining);
+            remaining = "";
+            break;
+        }
+    }
+
+    out.push_str(remaining);
+    out
+}
+
 pub(super) fn render_index(web_debug: bool, csp_nonce: &str) -> String {
     let debug_flag = if web_debug { "true" } else { "false" };
-    INDEX_HTML_TEMPLATE
-        .replace("__INLINE_CSS__", INDEX_CSS)
-        .replace("__MAIN_JS__", MAIN_JS)
-        .replace("__WEB_DEBUG__", debug_flag)
-        .replace("__CSP_NONCE__", csp_nonce)
+    let main_js = MAIN_JS.replace("__WEB_DEBUG__", debug_flag);
+    let extra_capacity = INDEX_CSS.len() + main_js.len() + csp_nonce.len() * 2;
+
+    fill_template(INDEX_HTML_TEMPLATE, extra_capacity, |key| match key {
+        "INLINE_CSS" => Some(INDEX_CSS),
+        "MAIN_JS" => Some(main_js.as_str()),
+        "WEB_DEBUG" => Some(debug_flag),
+        "CSP_NONCE" => Some(csp_nonce),
+        _ => None,
+    })
 }
 
 pub(super) fn render_updates_page(
@@ -26,12 +64,20 @@ pub(super) fn render_updates_page(
         .map(|msg| format!("<div class=\"notice\">{}</div>", escape_html(msg)))
         .unwrap_or_default();
 
-    UPDATES_HTML_TEMPLATE
-        .replace("__INLINE_CSS__", UPDATES_CSS)
-        .replace("__CSP_NONCE__", csp_nonce)
-        .replace("__SUMMARY__", &summary_html)
-        .replace("__DETAILS__", &details_html)
-        .replace("__MESSAGE__", &message_html)
+    let extra_capacity = UPDATES_CSS.len()
+        + summary_html.len()
+        + details_html.len()
+        + message_html.len()
+        + csp_nonce.len();
+
+    fill_template(UPDATES_HTML_TEMPLATE, extra_capacity, |key| match key {
+        "INLINE_CSS" => Some(UPDATES_CSS),
+        "CSP_NONCE" => Some(csp_nonce),
+        "SUMMARY" => Some(summary_html.as_str()),
+        "DETAILS" => Some(details_html.as_str()),
+        "MESSAGE" => Some(message_html.as_str()),
+        _ => None,
+    })
 }
 
 fn render_updates_summary(updates: Option<&UpdatesInfo>) -> String {
@@ -128,4 +174,49 @@ fn escape_html(input: &str) -> String {
         }
     }
     escaped
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fill_template_replaces_known_and_preserves_unknown() {
+        let template = "Hello __NAME__! __UNKNOWN__";
+        let result = fill_template(template, 4, |key| match key {
+            "NAME" => Some("World"),
+            _ => None,
+        });
+        assert_eq!(result, "Hello World! __UNKNOWN__");
+    }
+
+    #[test]
+    fn fill_template_handles_unterminated_placeholder() {
+        let template = "Start __OPEN";
+        let result = fill_template(template, 0, |_| None);
+        assert_eq!(result, "Start __OPEN");
+    }
+
+    #[test]
+    fn render_index_injects_dynamic_values() {
+        let html = render_index(true, "nonce-value");
+        assert!(html.contains("nonce=\"nonce-value\""));
+        assert!(html.contains("const WEB_DEBUG = true;") || html.contains(">true<"));
+        assert!(!html.contains("__CSP_NONCE__"));
+        assert!(!html.contains("__INLINE_CSS__"));
+    }
+
+    #[test]
+    fn render_updates_page_renders_sections() {
+        let info = UpdatesInfo {
+            pending: 2,
+            reboot_required: false,
+            packages: None,
+        };
+        let html = render_updates_page(Some(&info), Some("Attention"), "nonce");
+        assert!(html.contains("stat-value\">2</div>"));
+        assert!(html.contains("Attention"));
+        assert!(!html.contains("__SUMMARY__"));
+        assert!(!html.contains("__INLINE_CSS__"));
+    }
 }

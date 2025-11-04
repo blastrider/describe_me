@@ -2,7 +2,7 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use argon2::password_hash::{PasswordHasher, SaltString};
-use argon2::Argon2;
+use argon2::{Algorithm, Argon2, Params, Version};
 use clap::{ArgAction, Parser, ValueEnum};
 #[cfg(feature = "net")]
 use describe_me::domain::{ListeningSocket, NetworkInterfaceTraffic};
@@ -218,7 +218,10 @@ fn hash_web_token(token: &str, algorithm: TokenHashAlgorithm) -> Result<String> 
     match algorithm {
         TokenHashAlgorithm::Argon2id => {
             let salt = SaltString::generate(&mut OsRng);
-            let hash = Argon2::default()
+            let params = Params::new(128 * 1024, 4, 1, None)
+                .map_err(|err| anyhow!("argon2 params: {err}"))?;
+            let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+            let hash = argon2
                 .hash_password(token.as_bytes(), &salt)
                 .map_err(|err| anyhow!("argon2id: {err}"))?;
             Ok(hash.to_string())
@@ -456,6 +459,7 @@ fn main() -> Result<()> {
         with_services: opts.with_services,
         with_disk_usage: true, // on garde true pour un JSON complet
         with_listening_sockets: opts.net_listen || exposure.listening_sockets(),
+        resolve_socket_processes: opts.net_listen || exposure.listening_sockets(),
         with_network_traffic: opts.net_traffic || exposure.network_traffic(),
         with_updates: true,
     };
@@ -839,5 +843,19 @@ mod tests {
         exposure.set_updates(true);
         let view = describe_me::SnapshotView::new(&snapshot, exposure);
         assert_eq!(super::summary_line(&view), "updates=? reboot=unknown");
+    }
+
+    #[test]
+    fn argon2_hash_uses_hardened_params() {
+        let hash =
+            super::hash_web_token("secret", super::TokenHashAlgorithm::Argon2id).expect("hash");
+        assert!(
+            hash.contains("m=131072"),
+            "expected Argon2 memory cost 131072, got {hash}"
+        );
+        assert!(
+            hash.contains("t=4"),
+            "expected Argon2 iteration count 4, got {hash}"
+        );
     }
 }

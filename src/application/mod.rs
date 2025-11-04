@@ -58,7 +58,8 @@ impl SystemSnapshot {
         #[cfg(feature = "net")]
         let listening_sockets = if opts.with_listening_sockets {
             Some(SharedSlice::from_vec(
-                crate::application::net::net_listen().inspect_err(|err| {
+                crate::application::net::net_listen_with_processes(opts.resolve_socket_processes)
+                    .inspect_err(|err| {
                     LogEvent::SystemError {
                         location: Cow::Borrowed("net_listen"),
                         error: Cow::Owned(err.to_string()),
