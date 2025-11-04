@@ -70,28 +70,7 @@ impl UpdatesCache {
 
         let inner = self.inner.clone();
         tokio::spawn(async move {
-            let result =
-                tokio::task::spawn_blocking(crate::infrastructure::updates::gather_updates).await;
-            let now = Instant::now();
-            let mut state = inner.state.lock().await;
-            state.refreshing = false;
-            match result {
-                Ok(updates) => {
-                    if let Some(ref info) = updates {
-                        debug!(pending = info.pending, "updates_cache_refresh_success");
-                        state.last_success = Some(now);
-                    } else {
-                        debug!("updates_cache_refresh_empty");
-                    }
-                    state.data = updates;
-                }
-                Err(err) => {
-                    warn!(error = ?err, "updates_cache_refresh_failed");
-                }
-            }
-            state.last_refresh = Some(now);
-            drop(state);
-            inner.notify.notify_waiters();
+            Self::run_refresh(inner).await;
         });
     }
 
@@ -115,31 +94,114 @@ impl UpdatesCache {
                 continue;
             }
 
-            let result =
-                tokio::task::spawn_blocking(crate::infrastructure::updates::gather_updates).await;
-            let now = Instant::now();
-            let mut state = self.inner.state.lock().await;
-            state.refreshing = false;
-            let mut return_data = state.data.clone();
-            match result {
-                Ok(updates) => {
-                    if let Some(ref info) = updates {
-                        debug!(pending = info.pending, "updates_cache_refresh_success");
-                        state.last_success = Some(now);
-                    } else {
-                        debug!("updates_cache_refresh_empty");
-                    }
-                    state.data = updates;
-                    return_data = state.data.clone();
-                }
-                Err(err) => {
-                    warn!(error = ?err, "updates_cache_refresh_failed");
-                }
-            }
-            state.last_refresh = Some(now);
-            drop(state);
-            self.inner.notify.notify_waiters();
-            return return_data;
+            return Self::run_refresh(self.inner.clone()).await;
         }
+    }
+
+    async fn run_refresh(inner: Arc<Inner>) -> Option<UpdatesInfo> {
+        let result =
+            tokio::task::spawn_blocking(crate::infrastructure::updates::gather_updates).await;
+        Self::apply_refresh_result(&inner, result).await
+    }
+
+    async fn apply_refresh_result(
+        inner: &Arc<Inner>,
+        result: Result<Option<UpdatesInfo>, tokio::task::JoinError>,
+    ) -> Option<UpdatesInfo> {
+        let now = Instant::now();
+        let mut state = inner.state.lock().await;
+        state.refreshing = false;
+        match result {
+            Ok(updates) => {
+                if let Some(ref info) = updates {
+                    debug!(pending = info.pending, "updates_cache_refresh_success");
+                    state.last_success = Some(now);
+                } else {
+                    debug!("updates_cache_refresh_empty");
+                }
+                state.data = updates;
+            }
+            Err(err) => {
+                warn!(error = ?err, "updates_cache_refresh_failed");
+            }
+        }
+        state.last_refresh = Some(now);
+        let data = state.data.clone();
+        drop(state);
+        inner.notify.notify_waiters();
+        data
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::UpdatesInfo;
+    use std::time::Instant;
+    use tokio::time::{timeout, Duration};
+
+    fn new_inner_with_state(state: State) -> Arc<Inner> {
+        Arc::new(Inner {
+            state: Mutex::new(state),
+            notify: Notify::new(),
+        })
+    }
+
+    fn sample_updates(pending: u32) -> UpdatesInfo {
+        UpdatesInfo {
+            pending,
+            reboot_required: false,
+            packages: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_refresh_result_updates_state_on_success() {
+        let inner = new_inner_with_state(State {
+            refreshing: true,
+            ..State::default()
+        });
+        let pending = sample_updates(3);
+        let notify_future = inner.notify.notified();
+
+        let result = UpdatesCache::apply_refresh_result(&inner, Ok(Some(pending.clone()))).await;
+        assert_eq!(result, Some(pending.clone()));
+
+        timeout(Duration::from_millis(50), notify_future)
+            .await
+            .expect("should notify waiters");
+
+        let state = inner.state.lock().await;
+        assert_eq!(state.data, Some(pending));
+        assert!(state.last_success.is_some());
+        assert!(state.last_refresh.is_some());
+        assert!(!state.refreshing);
+    }
+
+    #[tokio::test]
+    async fn apply_refresh_result_preserves_data_on_error() {
+        let existing = sample_updates(1);
+        let inner = new_inner_with_state(State {
+            data: Some(existing.clone()),
+            last_success: Some(Instant::now()),
+            refreshing: true,
+            ..State::default()
+        });
+
+        let notify_future = inner.notify.notified();
+        let join_err = tokio::spawn(async { panic!("fail") }).await.unwrap_err();
+
+        let result = UpdatesCache::apply_refresh_result(&inner, Err(join_err)).await;
+        assert_eq!(result, Some(existing.clone()));
+
+        timeout(Duration::from_millis(50), notify_future)
+            .await
+            .expect("should notify waiters after failure");
+
+        let state = inner.state.lock().await;
+        assert_eq!(state.data, Some(existing));
+        assert!(state.last_refresh.is_some());
+        assert!(state.last_success.is_some());
+        assert!(!state.refreshing);
     }
 }
