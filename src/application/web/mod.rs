@@ -58,6 +58,10 @@ use std::future::pending;
 #[cfg(unix)]
 use tokio::signal::unix::{signal as unix_signal, SignalKind};
 
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
+use rand_core::{OsRng, RngCore};
+
 pub(crate) const TOKEN_COOKIE_NAME: &str = "describe_me_token";
 const TOKEN_COOKIE_MAX_AGE: u32 = 7 * 24 * 3600;
 const UPDATES_CACHE_SUCCESS_TTL: Duration = Duration::from_secs(300);
@@ -79,6 +83,10 @@ const HEADER_X_FRAME_OPTIONS: HeaderName = HeaderName::from_static("x-frame-opti
 const HEADER_X_CONTENT_TYPE_OPTIONS: HeaderName = HeaderName::from_static("x-content-type-options");
 const HEADER_CROSS_ORIGIN_RESOURCE_POLICY: HeaderName =
     HeaderName::from_static("cross-origin-resource-policy");
+const HEADER_PERMISSIONS_POLICY: HeaderName = HeaderName::from_static("permissions-policy");
+#[cfg(feature = "https_always")]
+const HEADER_STRICT_TRANSPORT_SECURITY: HeaderName =
+    HeaderName::from_static("strict-transport-security");
 
 type AxumRequest = axum::extract::Request;
 
@@ -137,20 +145,16 @@ async fn http_security_layer(mut req: AxumRequest, next: Next) -> Response {
 }
 
 fn generate_csp_nonce() -> String {
-    const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-    let mut nonce = String::with_capacity(32);
-    for _ in 0..32 {
-        let idx = fastrand::usize(..CHARSET.len());
-        nonce.push(CHARSET[idx] as char);
-    }
-    nonce
+    let mut bytes = [0u8; 32];
+    OsRng.fill_bytes(&mut bytes);
+    URL_SAFE_NO_PAD.encode(bytes)
 }
 
 fn apply_security_headers(headers: &mut HeaderMap, nonce: &CspNonce) {
     let csp_value = format!(
         "default-src 'none'; connect-src 'self'; img-src 'self'; font-src 'self'; \
-         style-src 'nonce-{nonce}'; script-src 'nonce-{nonce}'; base-uri 'none'; form-action 'none'; \
-         frame-ancestors 'none'; object-src 'none'",
+         style-src 'nonce-{nonce}'; script-src 'nonce-{nonce}'; script-src-attr 'none'; base-uri 'none'; form-action 'none'; \
+         frame-ancestors 'none'; object-src 'none'; block-all-mixed-content; upgrade-insecure-requests",
         nonce = nonce.as_str()
     );
 
@@ -170,6 +174,19 @@ fn apply_security_headers(headers: &mut HeaderMap, nonce: &CspNonce) {
         HEADER_CROSS_ORIGIN_RESOURCE_POLICY,
         HeaderValue::from_static("same-origin"),
     );
+    headers.insert(
+        HEADER_PERMISSIONS_POLICY,
+        HeaderValue::from_static("geolocation=(), camera=(), microphone=()"),
+    );
+    #[cfg(feature = "https_always")]
+    headers.insert(
+        HEADER_STRICT_TRANSPORT_SECURITY,
+        HeaderValue::from_static("max-age=31536000; includeSubDomains"),
+    );
+}
+
+fn mark_response_no_store(headers: &mut HeaderMap) {
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
 }
 
 fn is_origin_allowed(req: &AxumRequest) -> bool {
@@ -378,6 +395,7 @@ async fn index(
     if let Some(token) = session.provided_token() {
         set_token_cookie(response.headers_mut(), token);
     }
+    mark_response_no_store(response.headers_mut());
     response
 }
 
@@ -423,11 +441,17 @@ pub(super) fn set_token_cookie(headers: &mut HeaderMap, token: &str) {
     }
     use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
     let encoded = utf8_percent_encode(token, NON_ALPHANUMERIC).to_string();
+    let suffix = if cfg!(feature = "https_always") {
+        "; HttpOnly; Secure"
+    } else {
+        "; HttpOnly"
+    };
     let cookie = format!(
-        "{name}={value}; Path=/; Max-Age={max_age}; SameSite=Strict",
+        "{name}={value}; Path=/; Max-Age={max_age}; SameSite=Strict{suffix}",
         name = TOKEN_COOKIE_NAME,
         value = encoded,
-        max_age = TOKEN_COOKIE_MAX_AGE
+        max_age = TOKEN_COOKIE_MAX_AGE,
+        suffix = suffix
     );
     if let Ok(value) = HeaderValue::from_str(&cookie) {
         headers.append(header::SET_COOKIE, value);
@@ -435,11 +459,116 @@ pub(super) fn set_token_cookie(headers: &mut HeaderMap, token: &str) {
 }
 
 pub(crate) fn clear_token_cookie(headers: &mut HeaderMap) {
+    let suffix = if cfg!(feature = "https_always") {
+        "; HttpOnly; Secure"
+    } else {
+        "; HttpOnly"
+    };
     let cookie = format!(
-        "{name}=deleted; Path=/; Max-Age=0; SameSite=Strict",
-        name = TOKEN_COOKIE_NAME
+        "{name}=deleted; Path=/; Max-Age=0; SameSite=Strict{suffix}",
+        name = TOKEN_COOKIE_NAME,
+        suffix = suffix
     );
     if let Ok(value) = HeaderValue::from_str(&cookie) {
         headers.append(header::SET_COOKIE, value);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::header::SET_COOKIE;
+
+    #[test]
+    fn nonce_is_inserted_in_csp_header() {
+        let mut headers = HeaderMap::new();
+        let nonce = CspNonce::new("abcd1234".into());
+        apply_security_headers(&mut headers, &nonce);
+        let value = headers
+            .get(HEADER_CONTENT_SECURITY_POLICY)
+            .and_then(|val| val.to_str().ok())
+            .unwrap();
+        assert!(value.contains("style-src 'nonce-abcd1234'"));
+        assert!(value.contains("script-src 'nonce-abcd1234'"));
+        let permissions = headers
+            .get(HEADER_PERMISSIONS_POLICY)
+            .and_then(|val| val.to_str().ok())
+            .unwrap();
+        assert_eq!(permissions, "geolocation=(), camera=(), microphone=()");
+    }
+
+    #[test]
+    fn set_token_cookie_includes_http_only() {
+        let mut headers = HeaderMap::new();
+        set_token_cookie(&mut headers, "secret");
+        let value = headers.get(SET_COOKIE).expect("set-cookie");
+        let text = value.to_str().expect("utf8");
+        assert!(
+            text.contains("; HttpOnly"),
+            "cookie missing HttpOnly: {text}"
+        );
+        assert!(
+            text.contains("SameSite=Strict"),
+            "cookie missing SameSite=Strict: {text}"
+        );
+    }
+
+    #[test]
+    fn clear_token_cookie_includes_http_only() {
+        let mut headers = HeaderMap::new();
+        clear_token_cookie(&mut headers);
+        let value = headers.get(SET_COOKIE).expect("set-cookie");
+        let text = value.to_str().expect("utf8");
+        assert!(
+            text.contains("; HttpOnly"),
+            "clear cookie missing HttpOnly: {text}"
+        );
+    }
+
+    #[cfg(feature = "https_always")]
+    #[test]
+    fn token_cookies_include_secure_when_https_always() {
+        let mut headers = HeaderMap::new();
+        set_token_cookie(&mut headers, "secret");
+        let value = headers.get(SET_COOKIE).expect("set-cookie");
+        let text = value.to_str().expect("utf8");
+        assert!(
+            text.contains("; Secure"),
+            "cookie missing Secure attribute: {text}"
+        );
+
+        let mut headers = HeaderMap::new();
+        clear_token_cookie(&mut headers);
+        let value = headers.get(SET_COOKIE).expect("set-cookie");
+        let text = value.to_str().expect("utf8");
+        assert!(
+            text.contains("; Secure"),
+            "clear cookie missing Secure attribute: {text}"
+        );
+    }
+
+    #[test]
+    fn response_marked_no_store_sets_cache_header() {
+        let mut headers = HeaderMap::new();
+        mark_response_no_store(&mut headers);
+        let value = headers
+            .get(header::CACHE_CONTROL)
+            .expect("Cache-Control header");
+        assert_eq!(value, HeaderValue::from_static("no-store"));
+    }
+
+    #[cfg(feature = "https_always")]
+    #[test]
+    fn hsts_header_is_added_when_https_always() {
+        let mut headers = HeaderMap::new();
+        let nonce = CspNonce::new("abc".into());
+        apply_security_headers(&mut headers, &nonce);
+        let value = headers
+            .get(HEADER_STRICT_TRANSPORT_SECURITY)
+            .expect("Strict-Transport-Security header");
+        assert_eq!(
+            value.to_str().unwrap(),
+            "max-age=31536000; includeSubDomains"
+        );
     }
 }

@@ -84,3 +84,18 @@ présent. Le gabarit `index.html` applique la classe `blurred` au `header` et au
 `main`, et le script `main.js` ne retire ce flou qu’après authentification ou
 reconnexion réussie. Un test de style (`tests/ui_blur.rs`) garantit que HTML,
 CSS et JS restent alignés sur ce comportement.
+
+## CORS et reverse-proxy
+
+Le middleware `http_security_layer` applique une validation stricte de l’en-tête
+`Origin`: l’hôte et le port doivent correspondre exactement à ceux observés dans
+`Host`. Cette vérification empêche un site tiers d’appeler l’API depuis un
+navigateur avec une origine forgée, mais elle suppose que la valeur de `Host`
+correspond bien au nom public du service.
+
+Si l’instance est publiée derrière un reverse-proxy qui réécrit `Host`
+(load-balancer, ingress Kubernetes, CloudFront, etc.), il faut veiller à
+retransmettre l’en-tête original (`proxy_set_header Host $host;` sous Nginx,
+`RequestHeader set Host` pour Apache, configuration `passHostHeader: true`
+sur Traefik…). À défaut, les requêtes légitimes arrivant du navigateur pourraient
+être bloquées par la validation CORS.

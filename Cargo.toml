@@ -28,6 +28,7 @@ config = ["serde", "dep:toml"]
 net = []
 web = ["dep:tokio", "dep:axum", "dep:tokio-stream", "serde", "dep:argon2", "dep:bcrypt", "dep:rand_core"]
 journald = ["dep:tracing-journald"]  
+https_always = []
 
 [dependencies]
 thiserror = "1.0"
@@ -51,6 +52,7 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }   # <
 tracing-journald = { version = "0.3", optional = true }    
 pin-project = "1.1"
 percent-encoding = "2.3"
+base64 = "0.22"
 
 [dev-dependencies]
 proptest = "1.5"

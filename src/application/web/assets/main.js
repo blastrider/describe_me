@@ -19,15 +19,25 @@
   const tokenErrorEl = document.getElementById('tokenError');
   const tokenForget = document.getElementById('tokenForget');
   const tokenOpen = document.getElementById('tokenOpen');
-  const TOKEN_COOKIE_NAME = 'describe_me_token';
 
-  const setTokenCookie = (value) => {
-    document.cookie = `${TOKEN_COOKIE_NAME}=${encodeURIComponent(value)}; path=/; SameSite=Strict`;
+  const createEl = (tag, className, text) => {
+    const element = document.createElement(tag);
+    if (className) {
+      element.className = className;
+    }
+    if (typeof text === "string") {
+      element.textContent = text;
+    }
+    return element;
   };
 
-  const clearTokenCookie = () => {
-    document.cookie = `${TOKEN_COOKIE_NAME}=; Max-Age=0; path=/; SameSite=Strict`;
+  const clearChildren = (node) => {
+    while (node.firstChild) {
+      node.removeChild(node.firstChild);
+    }
   };
+
+  const createServiceEmpty = (message = "—") => createEl('div', 'service-empty', message);
 
   const pct = (used, total) => total > 0 ? Math.max(0, Math.min(100, (used/total)*100)) : 0;
   const num = (value) => {
@@ -72,15 +82,6 @@
     if (d) parts.push(d+"j"); if (h) parts.push(h+"h"); if (m) parts.push(m+"m"); if (s) parts.push(s+"s");
     return parts.join(" ") || "0s";
   };
-  const esc = (value) => {
-    const s = value ?? "";
-    return String(s)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#39;");
-  };
   const serviceStateClass = (state) => {
     const val = (state || "").toLowerCase();
     if (!val) return "err";
@@ -89,10 +90,17 @@
   };
 
   const formatUpdatePackage = (pkg) => {
-    const name = esc(pkg?.name || "Paquet");
-    const available = pkg?.available_version ? esc(pkg.available_version) : "";
-    const current = pkg?.current_version ? esc(pkg.current_version) : "";
-    const repo = pkg?.repository ? esc(pkg.repository) : "";
+    const row = createEl('div', 'service-row');
+    row.appendChild(createEl('span', 'dot service-dot'));
+
+    const details = document.createElement('div');
+    const name = pkg?.name ? String(pkg.name) : "Paquet";
+    details.appendChild(createEl('div', 'service-name', name));
+
+    const available = pkg?.available_version ? String(pkg.available_version) : "";
+    const current = pkg?.current_version ? String(pkg.current_version) : "";
+    const repo = pkg?.repository ? String(pkg.repository) : "";
+
     let versions = "";
     if (available && current) {
       versions = `${current} → ${available}`;
@@ -101,41 +109,23 @@
     } else if (current) {
       versions = `Installée: ${current}`;
     }
+
     const metaParts = [];
-    if (versions) metaParts.push(versions);
-    if (repo) metaParts.push(repo);
-    const metaHtml = metaParts.length
-      ? `<div class="service-meta">${metaParts.join(" • ")}</div>`
-      : "";
-    return `
-            <div class="service-row">
-              <span class="dot service-dot"></span>
-              <div>
-                <div class="service-name">${name}</div>
-                ${metaHtml}
-              </div>
-            </div>
-          `;
+    if (versions) {
+      metaParts.push(versions);
+    }
+    if (repo) {
+      metaParts.push(repo);
+    }
+    if (metaParts.length) {
+      details.appendChild(createEl('div', 'service-meta', metaParts.join(" • ")));
+    }
+
+    row.appendChild(details);
+    return row;
   };
 
   let currentToken = sessionStorage.getItem('describe_me_token') || "";
-  if (!currentToken && document.cookie) {
-    const cookie = document.cookie
-      .split(';')
-      .map(part => part.trim())
-      .find(part => part.startsWith(`${TOKEN_COOKIE_NAME}=`));
-    if (cookie) {
-      const value = cookie.split('=').slice(1).join('=');
-      try {
-        currentToken = decodeURIComponent(value);
-      } catch (_) {
-        currentToken = value;
-      }
-      if (currentToken) {
-        sessionStorage.setItem('describe_me_token', currentToken);
-      }
-    }
-  }
   if (currentToken) {
     tokenInput.value = currentToken;
   }
@@ -152,7 +142,6 @@
     }
     currentToken = value;
     sessionStorage.setItem('describe_me_token', currentToken);
-    setTokenCookie(currentToken);
     hideTokenPrompt();
     restartStream();
   });
@@ -162,7 +151,6 @@
     currentToken = "";
     tokenInput.value = "";
     tokenErrorEl.textContent = "";
-    clearTokenCookie();
     showTokenPrompt("");
   });
 
@@ -404,19 +392,21 @@
         }
         if (updatesToggle && updatesDetails && updatesList) {
           const packages = Array.isArray(info.packages) ? info.packages : [];
+          clearChildren(updatesList);
           if (packages.length > 0) {
             updatesToggle.style.display = "inline-flex";
             const collapsed = updatesDetails.classList.contains('collapsed');
             updatesToggle.textContent = collapsed ? "Détails" : "Masquer";
             updatesToggle.setAttribute('aria-expanded', (!collapsed).toString());
-            const listHtml = packages.map(formatUpdatePackage).join("\n");
-            updatesList.innerHTML = listHtml || `<div class="service-empty">—</div>`;
+            const fragment = document.createDocumentFragment();
+            packages.forEach((pkg) => fragment.appendChild(formatUpdatePackage(pkg)));
+            updatesList.appendChild(fragment);
           } else {
             updatesToggle.style.display = "none";
             updatesDetails.classList.add('collapsed');
             updatesToggle.textContent = "Détails";
             updatesToggle.setAttribute('aria-expanded', 'false');
-            updatesList.innerHTML = `<div class="service-empty">—</div>`;
+            updatesList.appendChild(createServiceEmpty());
           }
         }
       } else if (Object.prototype.hasOwnProperty.call(data, 'updates')) {
@@ -431,7 +421,8 @@
           updatesDetails.classList.add('collapsed');
           updatesToggle.textContent = "Détails";
           updatesToggle.setAttribute('aria-expanded', 'false');
-          updatesList.innerHTML = `<div class="service-empty">—</div>`;
+          clearChildren(updatesList);
+          updatesList.appendChild(createServiceEmpty());
         }
       } else {
         if (updatesCard) {
@@ -445,7 +436,8 @@
           updatesDetails.classList.add('collapsed');
           updatesToggle.textContent = "Détails";
           updatesToggle.setAttribute('aria-expanded', 'false');
-          updatesList.innerHTML = `<div class="service-empty">—</div>`;
+          clearChildren(updatesList);
+          updatesList.appendChild(createServiceEmpty());
         }
       }
     }
@@ -466,27 +458,43 @@
     el('diskBar').style.width = pct(used, total).toFixed(1) + "%";
 
     const partitions = Array.isArray(du.partitions) ? du.partitions : [];
-    const partsHtml = partitions.map(p => {
-      const pt = num(p.total_bytes);
-      const pa = num(p.available_bytes);
-      const usedPart = Math.max(0, Math.min(pt, pt - pa));
-      const w = pct(usedPart, pt).toFixed(1) + "%";
-      const mp = esc(p.mount_point || "?");
-      const fs = esc(p.fs_type || "—");
-      return [
-        `${mp}  (fs: ${fs}) — total: ${fmtBytes(pt)}, libre: ${fmtBytes(pa)}`,
-        `<div class="bar"><span style="width:${w}"></span></div>`
-      ].join("\n");
-    }).join("\n");
+    const partitionsEl = el('partitions');
+    if (partitionsEl) {
+      clearChildren(partitionsEl);
+      if (partitions.length > 0) {
+        partitions.forEach((p) => {
+          const pt = num(p.total_bytes);
+          const pa = num(p.available_bytes);
+          const usedPart = Math.max(0, Math.min(pt, pt - pa));
+          const mountPoint = p.mount_point ? String(p.mount_point) : "?";
+          const fsType = p.fs_type ? String(p.fs_type) : "—";
 
-    el('partitions').innerHTML = partsHtml || "—";
+          const infoLine = createEl(
+            'div',
+            '',
+            `${mountPoint}  (fs: ${fsType}) — total: ${fmtBytes(pt)}, libre: ${fmtBytes(pa)}`
+          );
+          partitionsEl.appendChild(infoLine);
+
+          const bar = createEl('div', 'bar');
+          const span = document.createElement('span');
+          span.style.width = pct(usedPart, pt).toFixed(1) + "%";
+          bar.appendChild(span);
+          partitionsEl.appendChild(bar);
+        });
+      } else {
+        partitionsEl.textContent = "—";
+      }
+    }
 
     if (networkCard && networkList) {
       const entries = Array.isArray(data.network_traffic) ? data.network_traffic : [];
+      clearChildren(networkList);
       if (entries.length > 0) {
         networkCard.style.display = "block";
-        networkList.innerHTML = entries.map((entry) => {
-          const name = esc(entry?.name || "interface");
+        const fragment = document.createDocumentFragment();
+        entries.forEach((entry) => {
+          const name = entry?.name ? String(entry.name) : "interface";
           const rxBytes = fmtBytes(entry?.rx_bytes || 0);
           const txBytes = fmtBytes(entry?.tx_bytes || 0);
           const rxPackets = Math.trunc(num(entry?.rx_packets)).toLocaleString('fr-FR');
@@ -497,22 +505,24 @@
           const txDrop = Math.trunc(num(entry?.tx_dropped)).toLocaleString('fr-FR');
           const rxMeta = `Rx ${rxBytes} (${rxPackets} paquets, err ${rxErr}, drop ${rxDrop})`;
           const txMeta = `Tx ${txBytes} (${txPackets} paquets, err ${txErr}, drop ${txDrop})`;
-          return `
-            <div class="service-row">
-              <span class="dot service-dot ok"></span>
-              <div>
-                <div class="service-name">${name}</div>
-                <div class="service-meta">${rxMeta} • ${txMeta}</div>
-              </div>
-            </div>
-          `;
-        }).join("");
+
+          const row = createEl('div', 'service-row');
+          row.appendChild(createEl('span', 'dot service-dot ok'));
+
+          const details = document.createElement('div');
+          details.appendChild(createEl('div', 'service-name', name));
+          details.appendChild(createEl('div', 'service-meta', `${rxMeta} • ${txMeta}`));
+          row.appendChild(details);
+
+          fragment.appendChild(row);
+        });
+        networkList.appendChild(fragment);
       } else if (Object.prototype.hasOwnProperty.call(data, 'network_traffic')) {
         networkCard.style.display = "block";
-        networkList.innerHTML = `<div class="service-empty">Aucune interface réseau observée</div>`;
+        networkList.appendChild(createServiceEmpty('Aucune interface réseau observée'));
       } else {
         networkCard.style.display = "none";
-        networkList.innerHTML = `<div class="service-empty">—</div>`;
+        networkList.appendChild(createServiceEmpty());
       }
     }
 
@@ -521,49 +531,70 @@
     if (servicesCard && servicesList) {
       const services = Array.isArray(data.services_running) ? data.services_running : [];
       const summary = data.services_summary;
+      clearChildren(servicesList);
       if (services.length > 0) {
         servicesCard.style.display = "block";
-        servicesList.innerHTML = services.map((svc) => {
-          const name = esc(svc?.name || "Service");
+        const fragment = document.createDocumentFragment();
+        services.forEach((svc) => {
+          const name = svc?.name ? String(svc.name) : "Service";
           const stateRaw = svc?.state || "";
-          const state = stateRaw ? esc(stateRaw) : "";
-          const summaryText = svc?.summary ? esc(svc.summary) : "";
+          const state = stateRaw ? String(stateRaw) : "";
+          const summaryText = svc?.summary ? String(svc.summary) : "";
           const dotClass = serviceStateClass(stateRaw);
           const metaParts = [];
-          if (state) metaParts.push(state);
-          if (summaryText) metaParts.push(summaryText);
-          const meta = metaParts.join(" • ");
-          return `
-            <div class="service-row">
-              <span class="dot service-dot ${dotClass}"></span>
-              <div>
-                <div class="service-name">${name}</div>
-                ${meta ? `<div class="service-meta">${meta}</div>` : ""}
-              </div>
-            </div>
-          `;
-        }).join("");
+          if (state) {
+            metaParts.push(state);
+          }
+          if (summaryText) {
+            metaParts.push(summaryText);
+          }
+
+          const row = createEl('div', 'service-row');
+          row.appendChild(createEl('span', `dot service-dot ${dotClass}`));
+
+          const details = document.createElement('div');
+          details.appendChild(createEl('div', 'service-name', name));
+          if (metaParts.length) {
+            details.appendChild(createEl('div', 'service-meta', metaParts.join(" • ")));
+          }
+
+          row.appendChild(details);
+          fragment.appendChild(row);
+        });
+        servicesList.appendChild(fragment);
       } else if (summary && typeof summary.total === 'number') {
         servicesCard.style.display = "block";
         const items = Array.isArray(summary.by_state) ? summary.by_state : [];
-        const breakdown = items
-          .map(item => `<span class="badge">${item.state}: ${item.count}</span>`)
-          .join(" ");
-        servicesList.innerHTML = `
-          <div class="service-row">
-            <span class="dot service-dot"></span>
-            <div>
-              <div class="service-name">${summary.total} service(s) observé(s)</div>
-              <div class="service-meta">${breakdown || "Aucune donnée détaillée"}</div>
-            </div>
-          </div>
-        `;
+        const row = createEl('div', 'service-row');
+        row.appendChild(createEl('span', 'dot service-dot'));
+
+        const details = document.createElement('div');
+        details.appendChild(
+          createEl('div', 'service-name', `${summary.total} service(s) observé(s)`)
+        );
+
+        const meta = createEl('div', 'service-meta');
+        if (items.length > 0) {
+          items.forEach((item, index) => {
+            const badgeText = `${item.state}: ${item.count}`;
+            const badge = createEl('span', 'badge', badgeText);
+            meta.appendChild(badge);
+            if (index < items.length - 1) {
+              meta.appendChild(document.createTextNode(' '));
+            }
+          });
+        } else {
+          meta.textContent = "Aucune donnée détaillée";
+        }
+
+        details.appendChild(meta);
+        row.appendChild(details);
+        servicesList.appendChild(row);
       } else if ('services_running' in data) {
         servicesCard.style.display = "block";
-        servicesList.innerHTML = `<div class="service-empty">Aucun service actif rapporté</div>`;
+        servicesList.appendChild(createServiceEmpty('Aucun service actif rapporté'));
       } else {
         servicesCard.style.display = "none";
-        servicesList.innerHTML = "";
       }
     }
 
@@ -587,63 +618,69 @@
           { tcp: [], udp: [] }
         );
 
-        const renderSockets = (list) =>
-          list
-            .map((sock) => {
-              const proto = esc(sock?.proto || "?");
-              const addr = esc(sock?.addr || "—");
-              const port = sock?.port != null ? Number(sock.port) : "—";
-              const pid =
-                sock && typeof sock.pid === "number"
-                  ? `PID ${sock.pid}`
-                  : "";
-              const procName = sock?.process_name ? esc(sock.process_name) : "";
-              const details = [`${addr}:${port}`];
-              if (procName) {
-                details.push(procName);
-              }
-              if (pid) {
-                details.push(pid);
-              }
-              return `
-                <div class="service-row">
-                  <span class="dot service-dot ok"></span>
-                  <div>
-                    <div class="service-name">${proto.toUpperCase()}</div>
-                    <div class="service-meta">${details.join(" • ")}</div>
-                  </div>
-                </div>
-              `;
-            })
-            .join("");
+        const renderSockets = (list) => {
+          const fragment = document.createDocumentFragment();
+          list.forEach((sock) => {
+            const proto = sock?.proto ? String(sock.proto) : "?";
+            const addr = sock?.addr ? String(sock.addr) : "—";
+            const port = sock?.port != null ? Number(sock.port) : "—";
+            const pid =
+              sock && typeof sock.pid === "number"
+                ? `PID ${sock.pid}`
+                : "";
+            const procName = sock?.process_name ? String(sock.process_name) : "";
+            const detailsParts = [`${addr}:${port}`];
+            if (procName) {
+              detailsParts.push(procName);
+            }
+            if (pid) {
+              detailsParts.push(pid);
+            }
 
+            const row = createEl('div', 'service-row');
+            row.appendChild(createEl('span', 'dot service-dot ok'));
+
+            const details = document.createElement('div');
+            details.appendChild(createEl('div', 'service-name', proto.toUpperCase()));
+            details.appendChild(createEl('div', 'service-meta', detailsParts.join(" • ")));
+            row.appendChild(details);
+
+            fragment.appendChild(row);
+          });
+          return fragment;
+        };
+
+        clearChildren(socketsTcp);
         if (grouped.tcp.length) {
           socketsTcpCard.style.display = "block";
-          socketsTcp.innerHTML = renderSockets(grouped.tcp);
+          socketsTcp.appendChild(renderSockets(grouped.tcp));
         } else {
           socketsTcpCard.style.display = "block";
-          socketsTcp.innerHTML = `<div class="service-empty">Aucun port TCP</div>`;
+          socketsTcp.appendChild(createServiceEmpty('Aucun port TCP'));
         }
 
+        clearChildren(socketsUdp);
         if (grouped.udp.length) {
           socketsUdpCard.style.display = "block";
-          socketsUdp.innerHTML = renderSockets(grouped.udp);
+          socketsUdp.appendChild(renderSockets(grouped.udp));
         } else {
           socketsUdpCard.style.display = "block";
-          socketsUdp.innerHTML = `<div class="service-empty">Aucun port UDP</div>`;
+          socketsUdp.appendChild(createServiceEmpty('Aucun port UDP'));
         }
       } else if ('listening_sockets' in data) {
         socketsGrid.style.display = "grid";
         socketsTcpCard.style.display = "block";
         socketsUdpCard.style.display = "block";
-        socketsTcp.innerHTML = `<div class="service-empty">Aucun port TCP</div>`;
-        socketsUdp.innerHTML = `<div class="service-empty">Aucun port UDP</div>`;
+        clearChildren(socketsTcp);
+        clearChildren(socketsUdp);
+        socketsTcp.appendChild(createServiceEmpty('Aucun port TCP'));
+        socketsUdp.appendChild(createServiceEmpty('Aucun port UDP'));
       } else {
         socketsGrid.style.display = "none";
         socketsTcpCard.style.display = "none";
         socketsUdpCard.style.display = "none";
-        socketsTcp.innerHTML = "";
-        socketsUdp.innerHTML = "";
+        clearChildren(socketsTcp);
+        clearChildren(socketsUdp);
       }
     }
 
