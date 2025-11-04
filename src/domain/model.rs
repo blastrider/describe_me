@@ -10,7 +10,7 @@ pub struct ServiceInfo {
     pub summary: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct UpdatesInfo {
     pub pending: u32,
@@ -52,6 +52,7 @@ pub struct CaptureOptions {
     pub with_services: bool,
     pub with_disk_usage: bool,
     pub with_listening_sockets: bool,
+    pub resolve_socket_processes: bool,
     pub with_network_traffic: bool,
     pub with_updates: bool,
 }
@@ -62,6 +63,7 @@ impl Default for CaptureOptions {
             with_services: false,
             with_disk_usage: false,
             with_listening_sockets: false,
+            resolve_socket_processes: true,
             with_network_traffic: false,
             with_updates: true,
         }
@@ -119,7 +121,7 @@ pub struct NetworkInterfaceTraffic {
 }
 
 /// Détail d’une mise à jour disponible.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct UpdatePackage {
     pub name: String,
