@@ -57,6 +57,8 @@ proptest = "1.5"
 criterion = "0.5"
 serde_json = "1.0"
 toml = "0.8"
+tokio = { version = "1.40", features = ["macros", "rt-multi-thread", "time"] }
+tempfile = "3.10"
 
 [[bin]]
 name = "describe-me"
