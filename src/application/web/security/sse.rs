@@ -166,11 +166,7 @@ mod tests {
         let _first = acquire_permit(&state, &policy, &req)
             .expect("first permit ok")
             .expect("permit expected");
-        let _second = acquire_permit(&state, &policy, &req)
-            .expect("second permit ok")
-            .expect("permit expected");
-
-        let err = acquire_permit(&state, &policy, &req).expect_err("third permit should fail");
+        let err = acquire_permit(&state, &policy, &req).expect_err("second permit should fail");
         assert_eq!(err.status, StatusCode::TOO_MANY_REQUESTS);
     }
 }
