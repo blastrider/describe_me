@@ -219,4 +219,9 @@ mod tests {
         assert!(!html.contains("__SUMMARY__"));
         assert!(!html.contains("__INLINE_CSS__"));
     }
+
+    #[test]
+    fn escape_html_blocks_tags() {
+        assert_eq!(escape_html("<img onerror=1>"), "&lt;img onerror=1&gt;");
+    }
 }
