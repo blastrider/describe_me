@@ -2,6 +2,7 @@ use super::{
     limits::{SecurityPolicy, SecurityState},
     IpMatcher, SecurityRejection, TokenKey, WebRoute,
 };
+use crate::application::logging::LogEvent;
 use crate::application::web::TOKEN_COOKIE_NAME;
 use argon2::{
     password_hash::{
@@ -17,8 +18,8 @@ use axum::{
     },
 };
 use percent_encoding::percent_decode_str;
-use std::{net::SocketAddr, time::Instant};
-use tracing::{error, warn};
+use std::{borrow::Cow, net::SocketAddr, time::Instant};
+use tracing::error;
 
 #[derive(Debug, Clone)]
 pub(super) struct AuthRequest {
@@ -128,10 +129,14 @@ pub(super) fn build_request(
         .get::<ConnectInfo<SocketAddr>>()
         .map(|info| info.0.ip())
         .ok_or_else(|| {
-            warn!(
-                route = route.as_str(),
-                "Connexion sans adresse distante (ConnectInfo absent)"
-            );
+            LogEvent::SecurityIncident {
+                category: Cow::Borrowed("missing_remote_ip"),
+                route: Cow::Borrowed(route.as_str()),
+                ip: None,
+                token: None,
+                detail: Some(Cow::Borrowed("connect_info_absent")),
+            }
+            .emit();
             SecurityRejection::missing_ip()
         })?;
 
@@ -142,11 +147,14 @@ pub(super) fn build_request(
     };
 
     if !allow.is_empty() && !trusted_ip {
-        warn!(
-            ip = %remote_ip,
-            route = route.as_str(),
-            "IP refusée par la allowlist"
-        );
+        LogEvent::SecurityIncident {
+            category: Cow::Borrowed("ip_not_allowlisted"),
+            route: Cow::Borrowed(route.as_str()),
+            ip: Some(Cow::Owned(remote_ip.to_string())),
+            token: None,
+            detail: None,
+        }
+        .emit();
         return Err(SecurityRejection::forbidden_ip());
     }
 
@@ -190,6 +198,14 @@ pub(super) async fn verify_token(
                     error = %err_string(&err),
                     "Echec verification hash token"
                 );
+                LogEvent::SecurityIncident {
+                    category: Cow::Borrowed("token_hash_error"),
+                    route: Cow::Borrowed(request.route.as_str()),
+                    ip: Some(Cow::Owned(request.remote_ip.to_string())),
+                    token: Some(Cow::Owned(request.token_key.to_string())),
+                    detail: Some(Cow::Owned(err_string(&err).to_string())),
+                }
+                .emit();
                 false
             }
         })
@@ -212,21 +228,27 @@ pub(super) async fn verify_token(
         )
         .await;
     if let Some(delay) = failure.retry_after {
-        warn!(
-            ip = %request.remote_ip,
-            route = request.route.as_str(),
-            token = %request.token_key,
-            retry_after = %delay.as_secs_f32(),
-            "Echec authentification (backoff)"
-        );
+        LogEvent::SecurityIncident {
+            category: Cow::Borrowed("auth_failure_backoff"),
+            route: Cow::Borrowed(request.route.as_str()),
+            ip: Some(Cow::Owned(request.remote_ip.to_string())),
+            token: Some(Cow::Owned(request.token_key.to_string())),
+            detail: Some(Cow::Owned(format!(
+                "retry_after_s={:.3}",
+                delay.as_secs_f32()
+            ))),
+        }
+        .emit();
         Err(SecurityRejection::unauthorized(Some(delay)))
     } else {
-        warn!(
-            ip = %request.remote_ip,
-            route = request.route.as_str(),
-            token = %request.token_key,
-            "Echec authentification"
-        );
+        LogEvent::SecurityIncident {
+            category: Cow::Borrowed("auth_failure"),
+            route: Cow::Borrowed(request.route.as_str()),
+            ip: Some(Cow::Owned(request.remote_ip.to_string())),
+            token: Some(Cow::Owned(request.token_key.to_string())),
+            detail: None,
+        }
+        .emit();
         Err(SecurityRejection::unauthorized(None))
     }
 }
