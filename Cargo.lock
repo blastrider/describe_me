@@ -455,6 +455,7 @@ dependencies = [
  "anyhow",
  "argon2",
  "axum",
+ "base64",
  "bcrypt",
  "clap",
  "criterion",
