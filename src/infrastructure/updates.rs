@@ -2,8 +2,13 @@ use crate::domain::{UpdatePackage, UpdatesInfo};
 use crate::SharedSlice;
 use std::io;
 use std::path::Path;
-use std::process::{Command, Stdio};
-use tracing::debug;
+use std::process::{Command, Output, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
+use tracing::{debug, warn};
+
+const UPDATE_COMMAND_TIMEOUT: Duration = Duration::from_secs(20);
+const UPDATE_COMMAND_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
 #[cfg(target_os = "linux")]
 pub fn gather_updates() -> Option<UpdatesInfo> {
@@ -33,6 +38,54 @@ fn gather_freebsd_updates() -> Option<UpdatesInfo> {
     gather_freebsd_pkg_updates()
 }
 
+fn hardened_command(program: &str) -> Command {
+    let mut cmd = Command::new(program);
+    cmd.env_clear();
+    cmd.env("PATH", UPDATE_COMMAND_PATH);
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    cmd
+}
+
+fn run_command(cmd: Command, label: &str) -> io::Result<Output> {
+    run_command_with_timeout(cmd, UPDATE_COMMAND_TIMEOUT, label)
+}
+
+fn run_command_with_timeout(cmd: Command, timeout: Duration, label: &str) -> io::Result<Output> {
+    let mut cmd = cmd;
+    let start = Instant::now();
+    let mut child = cmd.spawn()?;
+    loop {
+        match child.try_wait()? {
+            Some(_) => {
+                let output = child.wait_with_output()?;
+                let elapsed = start.elapsed();
+                debug!(
+                    command = label,
+                    status = ?output.status,
+                    duration_ms = elapsed.as_millis(),
+                    "update_command_completed"
+                );
+                return Ok(output);
+            }
+            None => {
+                if start.elapsed() >= timeout {
+                    warn!(
+                        command = label,
+                        timeout_s = timeout.as_secs(),
+                        "update_command_timeout"
+                    );
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(io::Error::new(io::ErrorKind::TimedOut, "command timed out"));
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn gather_apt_updates() -> Option<UpdatesInfo> {
     let reboot_required = Path::new("/var/run/reboot-required").exists()
@@ -60,13 +113,10 @@ fn gather_apt_updates() -> Option<UpdatesInfo> {
         }
     }
 
-    let mut cmd = Command::new("apt-get");
+    let mut cmd = hardened_command("apt-get");
     cmd.args(["-s", "upgrade"])
-        .env("DEBIAN_FRONTEND", "noninteractive")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let output = match cmd.output() {
+        .env("DEBIAN_FRONTEND", "noninteractive");
+    let output = match run_command(cmd, "apt-get -s upgrade") {
         Ok(out) => out,
         Err(err) => {
             if err.kind() != io::ErrorKind::NotFound {
@@ -96,14 +146,10 @@ enum AptListError {
 
 #[cfg(target_os = "linux")]
 fn apt_list_upgradable() -> Result<Vec<UpdatePackage>, AptListError> {
-    let mut cmd = Command::new("apt");
-    cmd.args(["list", "--upgradable"])
-        .env("LC_ALL", "C")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    let mut cmd = hardened_command("apt");
+    cmd.args(["list", "--upgradable"]).env("LC_ALL", "C");
 
-    let output = match cmd.output() {
+    let output = match run_command(cmd, "apt list --upgradable") {
         Ok(out) => out,
         Err(err) => {
             if err.kind() == io::ErrorKind::NotFound {
@@ -181,9 +227,9 @@ fn parse_apt_upgradable_line(line: &str) -> Option<UpdatePackage> {
 
 #[cfg(target_os = "linux")]
 fn gather_dnf_updates() -> Option<UpdatesInfo> {
-    let mut cmd = Command::new("dnf");
-    cmd.args(["-q", "check-update"]).stdin(Stdio::null());
-    let output = match cmd.output() {
+    let mut cmd = hardened_command("dnf");
+    cmd.args(["-q", "check-update"]);
+    let output = match run_command(cmd, "dnf -q check-update") {
         Ok(out) => out,
         Err(err) => {
             if err.kind() != io::ErrorKind::NotFound {
@@ -222,9 +268,8 @@ fn gather_dnf_updates() -> Option<UpdatesInfo> {
 
 #[cfg(target_os = "linux")]
 fn gather_checkupdates() -> Option<UpdatesInfo> {
-    let mut cmd = Command::new("checkupdates");
-    cmd.stdin(Stdio::null());
-    let output = match cmd.output() {
+    let cmd = hardened_command("checkupdates");
+    let output = match run_command_with_timeout(cmd, Duration::from_secs(10), "checkupdates") {
         Ok(out) => out,
         Err(err) => {
             if err.kind() != io::ErrorKind::NotFound {
@@ -259,12 +304,9 @@ fn gather_checkupdates() -> Option<UpdatesInfo> {
 
 #[cfg(target_os = "linux")]
 fn gather_apk_updates() -> Option<UpdatesInfo> {
-    let mut cmd = Command::new("apk");
-    cmd.args(["version", "-l", "<"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let output = match cmd.output() {
+    let mut cmd = hardened_command("apk");
+    cmd.args(["version", "-l", "<"]);
+    let output = match run_command(cmd, "apk version -l <") {
         Ok(out) => out,
         Err(err) => {
             if err.kind() != io::ErrorKind::NotFound {
@@ -278,10 +320,7 @@ fn gather_apk_updates() -> Option<UpdatesInfo> {
         return None;
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let pending = stdout
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .count() as u32;
+    let pending = count_apk_updates(&stdout) as u32;
     if pending == 0 {
         return Some(UpdatesInfo {
             pending: 0,
@@ -296,14 +335,34 @@ fn gather_apk_updates() -> Option<UpdatesInfo> {
     })
 }
 
+#[cfg(target_os = "linux")]
+fn count_apk_updates(output: &str) -> usize {
+    output
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count()
+}
+
+#[cfg(all(target_os = "linux", any(test, feature = "internals")))]
+pub fn parse_apt_upgradable_line_for_tests(line: &str) -> Option<UpdatePackage> {
+    parse_apt_upgradable_line(line)
+}
+
+#[cfg(all(target_os = "linux", any(test, feature = "internals")))]
+pub fn count_dnf_updates_for_tests(output: &str) -> usize {
+    count_dnf_updates(output)
+}
+
+#[cfg(all(target_os = "linux", any(test, feature = "internals")))]
+pub fn count_apk_updates_for_tests(output: &str) -> usize {
+    count_apk_updates(output)
+}
+
 #[cfg(target_os = "freebsd")]
 fn gather_freebsd_pkg_updates() -> Option<UpdatesInfo> {
-    let mut cmd = Command::new("pkg");
-    cmd.args(["version", "-l", "<"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let output = match cmd.output() {
+    let mut cmd = hardened_command("pkg");
+    cmd.args(["version", "-l", "<"]);
+    let output = match run_command(cmd, "pkg version -l <") {
         Ok(out) => out,
         Err(err) => {
             if err.kind() != io::ErrorKind::NotFound {
@@ -365,14 +424,14 @@ fn count_dnf_updates(output: &str) -> usize {
 
 #[cfg(target_os = "linux")]
 fn detect_needs_restarting() -> Option<bool> {
-    let mut cmd = Command::new("needs-restarting");
-    cmd.arg("-r").stdin(Stdio::null());
-    match cmd.status() {
-        Ok(status) => match status.code() {
+    let mut cmd = hardened_command("needs-restarting");
+    cmd.arg("-r");
+    match run_command_with_timeout(cmd, Duration::from_secs(5), "needs-restarting -r") {
+        Ok(output) => match output.status.code() {
             Some(0) => Some(false),
             Some(1) => Some(true),
             _ => {
-                debug!(status = ?status, "needs-restarting returned unexpected status");
+                debug!(status = ?output.status, "needs-restarting returned unexpected status");
                 None
             }
         },
@@ -388,6 +447,8 @@ fn detect_needs_restarting() -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
+    use proptest::prelude::*;
 
     #[test]
     fn apt_counts_inst_lines() {
@@ -446,5 +507,112 @@ foo.noarch                    1-2.el9               @appstream";
 Security:
     kernel.x86_64 5.14.0-370.el9_1";
         assert_eq!(count_dnf_updates(sample), 1);
+    }
+
+    #[cfg(target_os = "linux")]
+    proptest! {
+        #[test]
+        fn parse_apt_line_roundtrip(
+            name in proptest::string::string_regex("[A-Za-z0-9._+-]{1,16}").unwrap(),
+            repo in proptest::option::of(proptest::string::string_regex("[A-Za-z0-9._+-]{1,16}").unwrap()),
+            available in proptest::option::of(proptest::string::string_regex("[A-Za-z0-9.:~+-]{1,24}").unwrap()),
+            arch in proptest::option::of(proptest::string::string_regex("[A-Za-z0-9_.-]{1,16}").unwrap()),
+            current in proptest::option::of(proptest::string::string_regex("[A-Za-z0-9.:~+-]{1,24}").unwrap()),
+            leading_ws in proptest::bool::ANY,
+            trailing_ws in proptest::bool::ANY,
+        ) {
+            let pkg_token = if let Some(repo_val) = &repo {
+                format!("{name}/{repo_val}")
+            } else {
+                name.clone()
+            };
+
+            let arch_token = if available.is_some() { arch.clone() } else { None };
+
+            let mut tokens = vec![pkg_token];
+            if let Some(av) = &available {
+                tokens.push(av.clone());
+            }
+            if let Some(arch_tok) = &arch_token {
+                tokens.push(arch_tok.clone());
+            }
+
+            let mut line = tokens.join(" ");
+            if let Some(cur) = &current {
+                line.push_str(" [upgradable from: ");
+                line.push_str(cur);
+                line.push(']');
+            }
+            if leading_ws {
+                line = format!("  {line}");
+            }
+            if trailing_ws {
+                line.push_str("   ");
+            }
+
+            let parsed = parse_apt_upgradable_line(&line).expect("should parse");
+            prop_assert_eq!(parsed.name, name);
+            prop_assert_eq!(parsed.available_version, available);
+
+            let expected_repo = match (repo.clone(), arch_token.clone()) {
+                (Some(r), Some(a)) if !a.is_empty() => Some(format!("{r} {a}")),
+                (Some(r), _) => Some(r),
+                (None, Some(a)) if !a.is_empty() => Some(a),
+                _ => None,
+            };
+            prop_assert_eq!(parsed.repository, expected_repo);
+            prop_assert_eq!(parsed.current_version, current);
+        }
+
+        #[test]
+        fn count_dnf_updates_matches_expected(lines in proptest::collection::vec(
+            proptest::sample::select(vec![
+                "package",
+                "header",
+                "blank",
+            ]), 0..32)) {
+            let header_prefixes = [
+                "Last metadata expiration check",
+                "Obsoleting Packages",
+                "Updated Packages",
+                "Available Packages",
+                "Name ",
+                "Package ",
+                "Security:",
+            ];
+
+            let mut expected = 0usize;
+            let mut rendered = Vec::new();
+            for (idx, kind) in lines.iter().enumerate() {
+                match *kind {
+                    "package" => {
+                        expected += 1;
+                        rendered.push(format!("pkg{idx}.arch 1.0 repo"));
+                    }
+                    "header" => {
+                        let prefix = header_prefixes[idx % header_prefixes.len()];
+                        rendered.push(format!("{prefix} anything"));
+                    }
+                    _ => {
+                        rendered.push(String::new());
+                    }
+                }
+            }
+            let text = rendered.join("\n");
+            prop_assert_eq!(count_dnf_updates(&text), expected);
+        }
+
+        #[test]
+        fn count_apk_updates_counts_non_empty(lines in proptest::collection::vec(
+            proptest::string::string_regex("[A-Za-z0-9\\s./-]{0,24}").unwrap(),
+            0..32
+        )) {
+            let text = lines.join("\n");
+            let expected = text
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .count();
+            prop_assert_eq!(count_apk_updates(&text), expected);
+        }
     }
 }
