@@ -89,6 +89,7 @@ pub enum LogEvent<'a> {
         min_interval_ms: u64,
         max_payload: usize,
         max_stream_s: u64,
+        max_stream_bytes: usize,
     },
     SseStreamClosed {
         ip: Cow<'a, str>,
@@ -96,6 +97,7 @@ pub enum LogEvent<'a> {
         events: u64,
         duration_s: f64,
         reason: Cow<'a, str>,
+        bytes: u64,
     },
     SseTick {
         payload_bytes: usize,
@@ -196,6 +198,7 @@ impl<'a> LogEvent<'a> {
                 min_interval_ms,
                 max_payload,
                 max_stream_s,
+                max_stream_bytes,
             } => {
                 info!(
                     ip = ip.as_ref(),
@@ -203,12 +206,14 @@ impl<'a> LogEvent<'a> {
                     min_interval_ms,
                     max_payload,
                     max_stream_s,
-                    "sse_stream_open ip={} token={} min_interval_ms={} max_payload={} max_stream_s={}",
+                    max_stream_bytes,
+                    "sse_stream_open ip={} token={} min_interval_ms={} max_payload={} max_stream_s={} max_stream_bytes={}",
                     ip,
                     token,
                     min_interval_ms,
                     max_payload,
-                    max_stream_s
+                    max_stream_s,
+                    max_stream_bytes
                 );
             }
             LogEvent::SseStreamClosed {
@@ -217,6 +222,7 @@ impl<'a> LogEvent<'a> {
                 events,
                 duration_s,
                 reason,
+                bytes,
             } => {
                 info!(
                     ip = ip.as_ref(),
@@ -224,12 +230,14 @@ impl<'a> LogEvent<'a> {
                     events,
                     duration_s,
                     reason = reason.as_ref(),
-                    "sse_stream_closed ip={} token={} events={} duration_s={} reason={}",
+                    bytes,
+                    "sse_stream_closed ip={} token={} events={} duration_s={} reason={} bytes={}",
                     ip,
                     token,
                     events,
                     duration_s,
-                    reason
+                    reason,
+                    bytes
                 );
             }
             LogEvent::SseTick {
