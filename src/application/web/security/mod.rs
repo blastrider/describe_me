@@ -1,10 +1,14 @@
 mod auth;
 mod limits;
+mod session;
 mod sse;
+
+pub(crate) use limits::GlobalPermit;
 
 use super::clear_token_cookie;
 use auth::{build_request, verify_token, AuthRequest, TokenVerifier};
 use limits::{enforce_rate_limits, ensure_not_blocked, SecurityPolicy, SecurityState};
+use session::SessionManager;
 use sse::acquire_permit;
 
 use super::{AppState, WebAccess};
@@ -36,7 +40,8 @@ pub(super) struct AuthSession {
     ip: IpAddr,
     token: TokenKey,
     sse_permit: Option<SsePermit>,
-    provided_token: Option<Arc<str>>,
+    session_cookie: Option<Arc<str>>,
+    global_permit: Option<limits::GlobalPermit>,
 }
 
 impl AuthSession {
@@ -53,12 +58,16 @@ impl AuthSession {
         self.token
     }
 
-    pub fn provided_token(&self) -> Option<&str> {
-        self.provided_token.as_deref()
+    pub fn session_cookie(&self) -> Option<&str> {
+        self.session_cookie.as_deref()
     }
 
     pub fn take_sse_permit(&mut self) -> Option<SsePermit> {
         self.sse_permit.take()
+    }
+
+    pub fn take_global_permit(&mut self) -> Option<limits::GlobalPermit> {
+        self.global_permit.take()
     }
 }
 
@@ -92,8 +101,10 @@ impl FromRequestParts<AppState> for AuthGuard {
 pub(super) struct WebSecurity {
     token: Option<TokenVerifier>,
     allow: Vec<IpMatcher>,
+    trusted_proxies: Vec<IpMatcher>,
     policy: SecurityPolicy,
     state: Arc<SecurityState>,
+    sessions: SessionManager,
 }
 
 impl WebSecurity {
@@ -104,6 +115,8 @@ impl WebSecurity {
         let WebAccess {
             token: raw_token,
             allow_ips,
+            trusted_proxies,
+            ..
         } = access;
 
         let token = match raw_token {
@@ -134,6 +147,19 @@ impl WebSecurity {
             }
         }
 
+        let mut trusted = Vec::new();
+        for raw in trusted_proxies {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let rule = IpMatcher::parse(trimmed)
+                .map_err(|err| DescribeError::Config(format!("web.trusted_proxies: {err}")))?;
+            if !trusted.contains(&rule) {
+                trusted.push(rule);
+            }
+        }
+
         #[cfg(feature = "config")]
         let policy = override_cfg
             .as_ref()
@@ -147,8 +173,10 @@ impl WebSecurity {
         Ok(Self {
             token,
             allow,
+            trusted_proxies: trusted,
             policy,
             state,
+            sessions: SessionManager::new(),
         })
     }
 
@@ -186,12 +214,30 @@ impl WebSecurity {
         route: WebRoute,
     ) -> Result<AuthSession, SecurityRejection> {
         let now = std::time::Instant::now();
-        let request = match build_request(&self.allow, parts, route) {
+        let request = match build_request(
+            &self.allow,
+            &self.trusted_proxies,
+            &self.sessions,
+            self.token.is_some(),
+            parts,
+            route,
+            now,
+        ) {
             Ok(req) => req,
             Err(rejection) => {
                 if rejection.is_auth_failure() {
                     uniform_auth_delay().await;
                 }
+                return Err(rejection);
+            }
+        };
+        let global_permit = match self
+            .state
+            .acquire_global_permit(request.route, &self.policy)
+        {
+            Ok(permit) => permit,
+            Err(rejection) => {
+                self.log_rejection("rate_limit_global", &request, &rejection);
                 return Err(rejection);
             }
         };
@@ -202,21 +248,25 @@ impl WebSecurity {
             }
             return Err(rejection);
         }
-        if let Err(rejection) = verify_token(
+        let session_cookie = match verify_token(
             &self.state,
             &self.policy,
             self.token.as_ref(),
+            &self.sessions,
             &request,
             now,
         )
         .await
         {
-            self.log_rejection("token_verification_failed", &request, &rejection);
-            if rejection.is_auth_failure() {
-                uniform_auth_delay().await;
+            Ok(cookie) => cookie,
+            Err(rejection) => {
+                self.log_rejection("token_verification_failed", &request, &rejection);
+                if rejection.is_auth_failure() {
+                    uniform_auth_delay().await;
+                }
+                return Err(rejection);
             }
-            return Err(rejection);
-        }
+        };
         if !self
             .state
             .ensure_token_affinity(
@@ -272,10 +322,8 @@ impl WebSecurity {
             ip: request.remote_ip,
             token: request.token_key,
             sse_permit,
-            provided_token: request
-                .provided_token
-                .as_ref()
-                .map(|value| Arc::<str>::from(value.as_str())),
+            session_cookie: session_cookie.map(|value| Arc::<str>::from(value.into_boxed_str())),
+            global_permit,
         })
     }
 }
@@ -500,6 +548,8 @@ mod tests {
         WebAccess {
             token: token.map(|t| t.to_string()),
             allow_ips: Vec::new(),
+            allow_origins: Vec::new(),
+            trusted_proxies: Vec::new(),
         }
     }
 
@@ -671,6 +721,7 @@ mod tests {
         let layer = RecordingLayer::new();
         let subscriber = Registry::default().with(layer.clone());
         let guard = tracing::subscriber::set_default(subscriber);
+        tracing::callsite::rebuild_interest_cache();
 
         LogEvent::SecurityIncident {
             category: Cow::Borrowed("test"),
@@ -717,17 +768,27 @@ mod tests {
         drop(session2);
 
         tokio::task::yield_now().await;
-        let records = layer.records();
+        let mut found = false;
+        let mut records_snapshot = Vec::new();
+        for _ in 0..10 {
+            let records = layer.records();
+            if records.iter().any(|record| {
+                record
+                    .get("category")
+                    .map(|value| value == "token_affinity_violation")
+                    .unwrap_or(false)
+            }) {
+                records_snapshot = records;
+                found = true;
+                break;
+            }
+            records_snapshot = records;
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         drop(guard);
-        let found = records.iter().any(|record| {
-            record
-                .get("category")
-                .map(|value| value == "token_affinity_violation")
-                .unwrap_or(false)
-        });
         assert!(
             found,
-            "expected token_affinity_violation log, got {records:?}"
+            "expected token_affinity_violation log, got {records_snapshot:?}"
         );
     }
 }
