@@ -54,6 +54,24 @@ fn parse_table(
     resolve_processes: bool,
 ) -> io::Result<Vec<ListeningSocket>> {
     let content = fs::read_to_string(path)?;
+    Ok(parse_table_content(
+        &content,
+        proto,
+        required_state_hex,
+        inode_to_pid,
+        pid_cache,
+        resolve_processes,
+    ))
+}
+
+fn parse_table_content(
+    content: &str,
+    proto: &str,
+    required_state_hex: Option<&str>,
+    inode_to_pid: &HashMap<u64, u32>,
+    pid_cache: &mut HashMap<u32, Option<String>>,
+    resolve_processes: bool,
+) -> Vec<ListeningSocket> {
     let mut sockets = Vec::new();
 
     for (i, line) in content.lines().enumerate() {
@@ -104,7 +122,26 @@ fn parse_table(
         });
     }
 
-    Ok(sockets)
+    sockets
+}
+
+#[cfg(any(test, feature = "internals"))]
+pub fn parse_table_from_str(
+    content: &str,
+    proto: &str,
+    required_state_hex: Option<&str>,
+    inode_to_pid: &HashMap<u64, u32>,
+    resolve_processes: bool,
+) -> Vec<ListeningSocket> {
+    let mut cache = HashMap::new();
+    parse_table_content(
+        content,
+        proto,
+        required_state_hex,
+        inode_to_pid,
+        &mut cache,
+        resolve_processes,
+    )
 }
 
 fn parse_ipv4_host_port(spec: &str) -> Option<(String, u16)> {
@@ -243,6 +280,7 @@ pub fn collect_network_traffic() -> Result<Vec<NetworkInterfaceTraffic>, Describ
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use std::collections::HashMap;
     use std::io::Write;
     use tempfile::NamedTempFile;
@@ -296,5 +334,42 @@ mod tests {
         assert_eq!(sockets.len(), 1);
         let sock = &sockets[0];
         assert_eq!(sock.process, Some(4242));
+    }
+
+    proptest! {
+        #[test]
+        fn parse_ipv4_roundtrip(addr_bytes in any::<[u8;4]>(), port in any::<u16>()) {
+            let spec = format!("{:08X}:{:04X}", u32::from_le_bytes(addr_bytes), port);
+            let parsed = parse_ipv4_host_port(&spec).expect("parsed");
+            let expected_addr = format!("{}.{}.{}.{}", addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3]);
+            prop_assert_eq!(parsed.0, expected_addr);
+            prop_assert_eq!(parsed.1, port);
+        }
+
+        #[test]
+        fn parse_table_handles_random_rows(entries in prop::collection::vec((any::<[u8;4]>(), any::<u16>()), 0..16)) {
+            let mut content = String::from("  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode\n");
+            for (idx, (addr_bytes, port)) in entries.iter().enumerate() {
+                let hex_ip = format!("{:08X}", u32::from_le_bytes(*addr_bytes));
+                let hex_port = format!("{:04X}", port);
+                let inode = 1000 + idx as u64;
+                content.push_str(&format!(
+                    "{:4}: {}:{} 00000000:0000 0A 00000000:00000000 00:00000000 00:00000000 00000000 00000000 00000000 00000000 {}\n",
+                    idx,
+                    hex_ip,
+                    hex_port,
+                    inode
+                ));
+            }
+
+            let parsed = parse_table_from_str(&content, "tcp", Some("0A"), &HashMap::new(), false);
+            prop_assert_eq!(parsed.len(), entries.len());
+            for (parsed_sock, (addr_bytes, port)) in parsed.iter().zip(entries.iter()) {
+                let expected_addr =
+                    format!("{}.{}.{}.{}", addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3]);
+                prop_assert_eq!(parsed_sock.addr.as_str(), expected_addr.as_str());
+                prop_assert_eq!(parsed_sock.port, *port);
+            }
+        }
     }
 }
