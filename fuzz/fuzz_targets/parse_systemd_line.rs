@@ -1,13 +1,11 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 
-#[cfg(feature = "systemd")]
-fuzz_target!(|data: &str| {
-    let _ = decribe_me::SystemSnapshot::capture; // référence pour linker la lib
-    let _ = {
-        // on cible uniquement le parseur ligne -> ServiceInfo
-        // (fonction non publique : duplique une version locale de test si besoin)
-    };
+fuzz_target!(|data: &[u8]| {
+    if let Ok(line) = std::str::from_utf8(data) {
+        #[cfg(feature = "systemd")]
+        {
+            let _ = describe_me::internals::__parse_systemctl_line_for_tests(line);
+        }
+    }
 });
-#[cfg(not(feature = "systemd"))]
-fuzz_target!(|_data: &str| {});
