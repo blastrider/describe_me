@@ -143,6 +143,7 @@ impl Drop for SsePermit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::web::security::auth::Credential;
     use axum::http::StatusCode;
     use std::net::Ipv4Addr;
 
@@ -150,7 +151,7 @@ mod tests {
         AuthRequest {
             route: WebRoute::Sse,
             remote_ip: ip,
-            provided_token: None,
+            credential: Credential::None,
             token_key: token,
             require_token: true,
             trusted_ip: false,
