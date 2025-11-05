@@ -4,6 +4,7 @@ use super::{
     SecurityRejection, TokenKey, WebRoute,
 };
 use crate::application::logging::LogEvent;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet, VecDeque},
@@ -28,7 +29,7 @@ pub(crate) struct SecurityPolicy {
 impl SecurityPolicy {
     pub(crate) fn default() -> Self {
         Self {
-            html: RoutePolicy::new(Duration::from_secs(60), 30, 10),
+            html: RoutePolicy::new(Duration::from_secs(60), 30, 10, 120),
             sse: SsePolicy::default(),
             allow_multiplier: 2,
             brute_force: BruteForcePolicy::default(),
@@ -42,6 +43,7 @@ impl SecurityPolicy {
             duration_from_secs(cfg.html.window_seconds, 60),
             cfg.html.per_ip,
             cfg.html.per_token,
+            cfg.html.global,
         );
         let sse = SsePolicy::from_config(&cfg.sse);
         let brute_force = BruteForcePolicy::from_config(&cfg.brute_force);
@@ -113,6 +115,10 @@ impl SecurityPolicy {
     pub(crate) fn sse_max_stream_duration(&self) -> Duration {
         self.sse.max_stream()
     }
+
+    pub(crate) fn sse_max_stream_bytes(&self) -> usize {
+        self.sse.max_stream_bytes()
+    }
 }
 
 fn emit_security_incident(
@@ -137,10 +143,11 @@ struct RoutePolicy {
     window: Duration,
     per_ip: u32,
     per_token: u32,
+    global: u32,
 }
 
 impl RoutePolicy {
-    fn new(window: Duration, per_ip: u32, per_token: u32) -> Self {
+    fn new(window: Duration, per_ip: u32, per_token: u32, global: u32) -> Self {
         Self {
             window: if window.is_zero() {
                 Duration::from_secs(1)
@@ -149,6 +156,7 @@ impl RoutePolicy {
             },
             per_ip,
             per_token,
+            global,
         }
     }
 
@@ -166,6 +174,10 @@ impl RoutePolicy {
     fn token_limit(&self) -> u32 {
         self.per_token
     }
+
+    fn global_limit(&self) -> u32 {
+        self.global
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -176,17 +188,19 @@ pub(super) struct SsePolicy {
     max_stream: Duration,
     min_event_interval: Duration,
     max_payload_bytes: usize,
+    max_stream_bytes: usize,
 }
 
 impl SsePolicy {
     fn default() -> Self {
         Self {
-            route: RoutePolicy::new(Duration::from_secs(60), 10, 6),
+            route: RoutePolicy::new(Duration::from_secs(60), 10, 6, 40),
             max_active_per_ip: 1,
             max_active_per_token: 1,
             max_stream: Duration::from_secs(20 * 60),
             min_event_interval: Duration::from_secs(1),
             max_payload_bytes: 48 * 1024,
+            max_stream_bytes: 4 * 1024 * 1024,
         }
     }
 
@@ -197,12 +211,14 @@ impl SsePolicy {
                 duration_from_secs(cfg.window_seconds, 60),
                 cfg.per_ip,
                 cfg.per_token,
+                cfg.global,
             ),
             max_active_per_ip: cfg.max_active_per_ip,
             max_active_per_token: cfg.max_active_per_token,
             max_stream: duration_from_secs(cfg.max_stream_seconds, 20 * 60),
             min_event_interval: duration_from_millis(cfg.min_event_interval_ms, 1000),
             max_payload_bytes: cfg.max_payload_bytes as usize,
+            max_stream_bytes: cfg.max_stream_bytes as usize,
         }
     }
 
@@ -216,6 +232,10 @@ impl SsePolicy {
 
     pub(super) fn max_stream(&self) -> Duration {
         self.max_stream
+    }
+
+    pub(super) fn max_stream_bytes(&self) -> usize {
+        self.max_stream_bytes
     }
 
     pub(crate) fn max_active_per_ip(&self) -> u32 {
@@ -284,6 +304,24 @@ pub(super) struct SecurityState {
     token_spread: TokenSpreadTracker,
     token_affinity: TokenAffinityTracker,
     sse_active: Arc<ActiveSseState>,
+    global_active: AtomicU32,
+}
+
+#[derive(Debug)]
+pub(crate) struct GlobalPermit {
+    state: Arc<SecurityState>,
+}
+
+impl GlobalPermit {
+    fn new(state: Arc<SecurityState>) -> Self {
+        Self { state }
+    }
+}
+
+impl Drop for GlobalPermit {
+    fn drop(&mut self) {
+        self.state.release_global();
+    }
 }
 
 impl SecurityState {
@@ -296,7 +334,63 @@ impl SecurityState {
             token_spread: TokenSpreadTracker::new(),
             token_affinity: TokenAffinityTracker::new(),
             sse_active: ActiveSseState::new(),
+            global_active: AtomicU32::new(0),
         }
+    }
+
+    fn try_acquire_global(&self, limit: u32) -> Result<(), ()> {
+        if limit == 0 {
+            return Ok(());
+        }
+        let mut current = self.global_active.load(Ordering::Relaxed);
+        loop {
+            if current >= limit {
+                return Err(());
+            }
+            match self.global_active.compare_exchange(
+                current,
+                current + 1,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return Ok(()),
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
+    fn release_global(&self) {
+        self.global_active
+            .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |value| {
+                if value == 0 {
+                    Some(0)
+                } else {
+                    Some(value - 1)
+                }
+            })
+            .ok();
+    }
+
+    pub(super) fn acquire_global_permit(
+        self: &Arc<Self>,
+        route: WebRoute,
+        policy: &SecurityPolicy,
+    ) -> Result<Option<GlobalPermit>, SecurityRejection> {
+        let limit = policy.route_policy(route).global_limit();
+        if limit == 0 {
+            return Ok(None);
+        }
+        self.try_acquire_global(limit).map_err(|_| {
+            emit_security_incident(
+                "rate_limit_global",
+                route,
+                None,
+                None,
+                Some(format!("limit={limit}")),
+            );
+            SecurityRejection::rate_limited(Duration::from_secs(1))
+        })?;
+        Ok(Some(GlobalPermit::new(Arc::clone(self))))
     }
 
     pub(super) async fn register_ip_hit(
@@ -896,13 +990,14 @@ fn duration_from_millis(value: u64, fallback: u64) -> Duration {
 mod tests {
     use super::TokenKey;
     use super::*;
+    use crate::application::web::security::auth::Credential;
     use std::net::Ipv4Addr;
 
     fn request(route: WebRoute, require_token: bool) -> AuthRequest {
         AuthRequest {
             route,
             remote_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
-            provided_token: None,
+            credential: Credential::None,
             token_key: TokenKey::Anonymous,
             require_token,
             trusted_ip: false,
@@ -935,7 +1030,7 @@ mod tests {
         let state = SecurityState::new();
 
         let mut policy = SecurityPolicy::default();
-        policy.html = RoutePolicy::new(Duration::from_secs(60), 1, 1);
+        policy.html = RoutePolicy::new(Duration::from_secs(60), 1, 1, 2);
 
         let req = request(WebRoute::Html, false);
         let now = Instant::now();
