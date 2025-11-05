@@ -290,6 +290,8 @@ async fn main() -> anyhow::Result<()> {
         describe_me::WebAccess {
             token: Some("$argon2id$v=19$m=19456,t=2,p=1$MFDNn+4xkNMOFXaKzJLXmw$8cHenB/55bhNt1vZoGILR6F0yaEtKrnArXwdQhU8cBA".into()),
             allow_ips: vec!["127.0.0.1".into()],
+            allow_origins: vec![],
+            trusted_proxies: vec![],
         },
         describe_me::Exposure::all(),
     ).await?;
@@ -318,11 +320,14 @@ cargo test --features "systemd config net web"
 
 Recommandations :
 
-cargo fmt --all et cargo clippy --all-targets -- -D warnings
+- `cargo fmt --all` et `cargo clippy --all-targets -- -D warnings`
+- Chaîne supply-chain : `cargo audit`, `cargo deny check`, puis `cargo crev verify --recursive` (configurez des reviewers via `cargo crev trust` pour éviter un simple avertissement)
+- Génération SBOM CycloneDX : `cargo cyclonedx --all-features --format json --override-filename describe-me.cdx && mv describe-me.cdx.json target/sbom/describe-me.cdx.json`
+- Proptests (parseurs) : `cargo test --all-features` (proptests inclus)
+- Fuzzing : `cd fuzz && cargo fuzz run parse_proc_net`
+- Bench local (si besoin) : `cargo bench` (criterion)
 
-cargo deny / cargo audit (supply-chain)
-
-Bench local (si besoin) : cargo bench (criterion)
+Pour le détail complet (intégration CI, signatures, cosign), voir `docs/supply-chain.md`.
 
 9) Plateformes & limites
 
