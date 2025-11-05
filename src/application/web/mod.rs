@@ -14,6 +14,8 @@
 //!       describe_me::WebAccess {
 //!           token: Some("$argon2id$v=19$m=19456,t=2,p=1$MFDNn+4xkNMOFXaKzJLXmw$8cHenB/55bhNt1vZoGILR6F0yaEtKrnArXwdQhU8cBA".into()),
 //!           allow_ips: vec!["127.0.0.1".into()],
+//!           allow_origins: vec![],
+//!           trusted_proxies: vec![],
 //!       },
 //!       describe_me::Exposure::all(),
 //!   ).await?;
@@ -24,7 +26,7 @@ mod sse;
 mod template;
 mod updates_cache;
 
-use std::{borrow::Cow, net::SocketAddr, sync::Arc, time::Duration};
+use std::{borrow::Cow, collections::HashSet, net::SocketAddr, sync::Arc, time::Duration};
 
 use axum::{
     extract::{Extension, State},
@@ -84,9 +86,12 @@ const HEADER_X_CONTENT_TYPE_OPTIONS: HeaderName = HeaderName::from_static("x-con
 const HEADER_CROSS_ORIGIN_RESOURCE_POLICY: HeaderName =
     HeaderName::from_static("cross-origin-resource-policy");
 const HEADER_PERMISSIONS_POLICY: HeaderName = HeaderName::from_static("permissions-policy");
-#[cfg(feature = "https_always")]
 const HEADER_STRICT_TRANSPORT_SECURITY: HeaderName =
     HeaderName::from_static("strict-transport-security");
+const HEADER_CROSS_ORIGIN_OPENER_POLICY: HeaderName =
+    HeaderName::from_static("cross-origin-opener-policy");
+const HEADER_CROSS_ORIGIN_EMBEDDER_POLICY: HeaderName =
+    HeaderName::from_static("cross-origin-embedder-policy");
 
 type AxumRequest = axum::extract::Request;
 
@@ -96,6 +101,10 @@ pub struct WebAccess {
     pub token: Option<String>,
     /// IP ou réseaux autorisés (ex: 192.0.2.10, 10.0.0.0/24, ::1).
     pub allow_ips: Vec<String>,
+    /// Origins autorisés (ex: https://admin.example.com) pour contourner les proxys terminant TLS.
+    pub allow_origins: Vec<String>,
+    /// Proxys de confiance dont on accepte l'en-tête X-Forwarded-For.
+    pub trusted_proxies: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -123,11 +132,15 @@ impl CspNonce {
     }
 }
 
-async fn http_security_layer(mut req: AxumRequest, next: Next) -> Response {
+async fn http_security_layer(
+    State(origin_policy): State<OriginPolicy>,
+    mut req: AxumRequest,
+    next: Next,
+) -> Response {
     let nonce_value = generate_csp_nonce();
     let csp_nonce = CspNonce::new(nonce_value);
 
-    if !is_origin_allowed(&req) {
+    if !is_origin_allowed(&req, &origin_policy) {
         let mut response = (
             StatusCode::FORBIDDEN,
             "Requête bloquée par la politique CORS (origin non autorisée).",
@@ -148,6 +161,165 @@ fn generate_csp_nonce() -> String {
     let mut bytes = [0u8; 32];
     OsRng.fill_bytes(&mut bytes);
     URL_SAFE_NO_PAD.encode(bytes)
+}
+
+#[derive(Clone, Debug, Default)]
+struct OriginPolicy {
+    allowed: Arc<[AllowedOrigin]>,
+}
+
+impl OriginPolicy {
+    fn from_allowlist(raw: Vec<String>) -> Result<Self, DescribeError> {
+        if raw.is_empty() {
+            return Ok(Self::default());
+        }
+        let mut seen = HashSet::new();
+        let mut allow = Vec::with_capacity(raw.len());
+        for value in raw {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let origin = AllowedOrigin::parse(trimmed)
+                .map_err(|err| DescribeError::Config(format!("origin \"{trimmed}\": {err}")))?;
+            if seen.insert(origin.clone()) {
+                allow.push(origin);
+            }
+        }
+        Ok(Self {
+            allowed: allow.into(),
+        })
+    }
+
+    fn allows(&self, req: &AxumRequest) -> bool {
+        let origin_header = match req.headers().get(ORIGIN) {
+            Some(origin) => origin,
+            None => return true,
+        };
+        let origin_str = match origin_header.to_str() {
+            Ok(value) => value,
+            Err(_) => return false,
+        };
+        if origin_str.eq_ignore_ascii_case("null") {
+            return false;
+        }
+        let origin_uri: Uri = match origin_str.parse() {
+            Ok(uri) => uri,
+            Err(_) => return false,
+        };
+
+        if !self.allowed.is_empty() {
+            return self
+                .allowed
+                .iter()
+                .any(|allowed| allowed.matches(&origin_uri));
+        }
+
+        let host_header = match req.headers().get(header::HOST) {
+            Some(host) => host,
+            None => return false,
+        };
+        let host_str = match host_header.to_str() {
+            Ok(value) => value,
+            Err(_) => return false,
+        };
+        let host_authority: axum::http::uri::Authority = match host_str.parse() {
+            Ok(authority) => authority,
+            Err(_) => return false,
+        };
+        let origin_host = match origin_uri.host() {
+            Some(host) => host,
+            None => return false,
+        };
+
+        if !origin_host.eq_ignore_ascii_case(host_authority.host()) {
+            return false;
+        }
+
+        let origin_port = origin_uri
+            .port_u16()
+            .or_else(|| default_port(origin_uri.scheme_str()));
+        let host_port = host_authority
+            .port_u16()
+            .or_else(|| default_port(origin_uri.scheme_str()));
+
+        origin_port == host_port
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct AllowedOrigin {
+    scheme: OriginScheme,
+    host: String,
+    port: Option<u16>,
+}
+
+impl AllowedOrigin {
+    fn parse(input: &str) -> Result<Self, String> {
+        let uri: Uri = input.parse::<Uri>().map_err(|err| err.to_string())?;
+        let scheme = match uri.scheme_str() {
+            Some(value) => OriginScheme::parse(value)
+                .ok_or_else(|| format!("schéma non supporté: {value} (attendu http ou https)"))?,
+            None => {
+                return Err("origin incomplet: schéma requis (http ou https)".into());
+            }
+        };
+        let host = uri
+            .host()
+            .ok_or_else(|| "origin incomplet: hôte requis".to_string())?
+            .to_owned();
+        let port = uri.port_u16();
+        if uri.path() != "/" && !uri.path().is_empty() {
+            return Err("origin ne doit pas contenir de chemin".into());
+        }
+        if uri.query().is_some() {
+            return Err("origin ne doit pas contenir de query string".into());
+        }
+        Ok(Self { scheme, host, port })
+    }
+
+    fn matches(&self, candidate: &Uri) -> bool {
+        let Some(host) = candidate.host() else {
+            return false;
+        };
+        if !host.eq_ignore_ascii_case(&self.host) {
+            return false;
+        }
+        match candidate.scheme_str() {
+            Some(value) if self.scheme.matches(value) => {}
+            _ => return false,
+        }
+        let candidate_port = candidate
+            .port_u16()
+            .or_else(|| default_port(candidate.scheme_str()));
+        match self.port {
+            Some(port) => candidate_port == Some(port),
+            None => true,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum OriginScheme {
+    Http,
+    Https,
+}
+
+impl OriginScheme {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "http" | "HTTP" => Some(OriginScheme::Http),
+            "https" | "HTTPS" => Some(OriginScheme::Https),
+            _ => None,
+        }
+    }
+
+    fn matches(&self, other: &str) -> bool {
+        match self {
+            OriginScheme::Http => other.eq_ignore_ascii_case("http"),
+            OriginScheme::Https => other.eq_ignore_ascii_case("https"),
+        }
+    }
 }
 
 fn apply_security_headers(headers: &mut HeaderMap, nonce: &CspNonce) {
@@ -178,10 +350,17 @@ fn apply_security_headers(headers: &mut HeaderMap, nonce: &CspNonce) {
         HEADER_PERMISSIONS_POLICY,
         HeaderValue::from_static("geolocation=(), camera=(), microphone=()"),
     );
-    #[cfg(feature = "https_always")]
     headers.insert(
         HEADER_STRICT_TRANSPORT_SECURITY,
         HeaderValue::from_static("max-age=31536000; includeSubDomains"),
+    );
+    headers.insert(
+        HEADER_CROSS_ORIGIN_OPENER_POLICY,
+        HeaderValue::from_static("same-origin"),
+    );
+    headers.insert(
+        HEADER_CROSS_ORIGIN_EMBEDDER_POLICY,
+        HeaderValue::from_static("require-corp"),
     );
 }
 
@@ -189,58 +368,8 @@ fn mark_response_no_store(headers: &mut HeaderMap) {
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
 }
 
-fn is_origin_allowed(req: &AxumRequest) -> bool {
-    let origin = match req.headers().get(ORIGIN) {
-        Some(origin) => origin,
-        None => return true,
-    };
-
-    let host_header = match req.headers().get(header::HOST) {
-        Some(host) => host,
-        None => return false,
-    };
-
-    let origin_str = match origin.to_str() {
-        Ok(value) => value,
-        Err(_) => return false,
-    };
-
-    if origin_str.eq_ignore_ascii_case("null") {
-        return false;
-    }
-
-    let host_str = match host_header.to_str() {
-        Ok(value) => value,
-        Err(_) => return false,
-    };
-
-    let origin_uri: Uri = match origin_str.parse() {
-        Ok(uri) => uri,
-        Err(_) => return false,
-    };
-
-    let host_authority: axum::http::uri::Authority = match host_str.parse() {
-        Ok(authority) => authority,
-        Err(_) => return false,
-    };
-
-    let origin_host = match origin_uri.host() {
-        Some(host) => host,
-        None => return false,
-    };
-
-    if !origin_host.eq_ignore_ascii_case(host_authority.host()) {
-        return false;
-    }
-
-    let origin_port = origin_uri
-        .port_u16()
-        .or_else(|| default_port(origin_uri.scheme_str()));
-    let host_port = host_authority
-        .port_u16()
-        .or_else(|| default_port(origin_uri.scheme_str()));
-
-    origin_port == host_port
+fn is_origin_allowed(req: &AxumRequest, policy: &OriginPolicy) -> bool {
+    policy.allows(req)
 }
 
 fn default_port(scheme: Option<&str>) -> Option<u16> {
@@ -259,6 +388,7 @@ pub async fn serve_http<A: Into<SocketAddr>>(
     access: WebAccess,
     exposure: Exposure,
 ) -> Result<(), DescribeError> {
+    let origin_policy = OriginPolicy::from_allowlist(access.allow_origins.clone())?;
     #[cfg(feature = "config")]
     let security_config: Option<WebSecurityConfig> = config
         .as_ref()
@@ -300,7 +430,10 @@ pub async fn serve_http<A: Into<SocketAddr>>(
         .route("/", get(index))
         .route("/updates", get(updates_page))
         .route("/sse", get(sse_stream))
-        .layer(middleware::from_fn(http_security_layer))
+        .layer(middleware::from_fn_with_state(
+            origin_policy,
+            http_security_layer,
+        ))
         .with_state(app_state)
         .into_make_service_with_connect_info::<SocketAddr>();
 
@@ -392,8 +525,8 @@ async fn index(
 ) -> impl IntoResponse {
     let session = guard.into_session();
     let mut response = Html(render_index(state.web_debug, csp_nonce.as_str())).into_response();
-    if let Some(token) = session.provided_token() {
-        set_token_cookie(response.headers_mut(), token);
+    if let Some(token) = session.session_cookie() {
+        set_session_cookie(response.headers_mut(), token);
     }
     mark_response_no_store(response.headers_mut());
     response
@@ -405,14 +538,14 @@ async fn updates_page(
     Extension(csp_nonce): Extension<CspNonce>,
 ) -> impl IntoResponse {
     let session = guard.into_session();
-    let cookie_token = session.provided_token().map(str::to_owned);
+    let cookie_token = session.session_cookie().map(str::to_owned);
 
     if !state.exposure.updates() {
         let message = "L'exposition des mises à jour est désactivée pour cette instance.";
         let html = render_updates_page(None, Some(message), csp_nonce.as_str());
         let mut response = Html(html).into_response();
         if let Some(token) = cookie_token.as_deref() {
-            set_token_cookie(response.headers_mut(), token);
+            set_session_cookie(response.headers_mut(), token);
         }
         return response;
     }
@@ -426,7 +559,7 @@ async fn updates_page(
     let html = render_updates_page(updates.as_ref(), None, csp_nonce.as_str());
     let mut response = Html(html).into_response();
     if let Some(token) = cookie_token.as_deref() {
-        set_token_cookie(response.headers_mut(), token);
+        set_session_cookie(response.headers_mut(), token);
     }
     response
 }
@@ -435,17 +568,13 @@ fn map_io(e: impl std::error::Error + Send + Sync + 'static) -> DescribeError {
     DescribeError::System(format!("I/O/Serve error: {e}"))
 }
 
-pub(super) fn set_token_cookie(headers: &mut HeaderMap, token: &str) {
-    if token.is_empty() {
+pub(super) fn set_session_cookie(headers: &mut HeaderMap, value: &str) {
+    if value.is_empty() {
         return;
     }
     use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
-    let encoded = utf8_percent_encode(token, NON_ALPHANUMERIC).to_string();
-    let suffix = if cfg!(feature = "https_always") {
-        "; HttpOnly; Secure"
-    } else {
-        "; HttpOnly"
-    };
+    let encoded = utf8_percent_encode(value, NON_ALPHANUMERIC).to_string();
+    let suffix = "; HttpOnly; Secure";
     let cookie = format!(
         "{name}={value}; Path=/; Max-Age={max_age}; SameSite=Strict{suffix}",
         name = TOKEN_COOKIE_NAME,
@@ -459,11 +588,7 @@ pub(super) fn set_token_cookie(headers: &mut HeaderMap, token: &str) {
 }
 
 pub(crate) fn clear_token_cookie(headers: &mut HeaderMap) {
-    let suffix = if cfg!(feature = "https_always") {
-        "; HttpOnly; Secure"
-    } else {
-        "; HttpOnly"
-    };
+    let suffix = "; HttpOnly; Secure";
     let cookie = format!(
         "{name}=deleted; Path=/; Max-Age=0; SameSite=Strict{suffix}",
         name = TOKEN_COOKIE_NAME,
@@ -478,6 +603,16 @@ pub(crate) fn clear_token_cookie(headers: &mut HeaderMap) {
 mod tests {
     use super::*;
     use axum::http::header::SET_COOKIE;
+
+    fn build_request_with_headers(origin: Option<&str>, host: &str) -> AxumRequest {
+        let mut builder = axum::http::Request::builder()
+            .uri("http://internal/")
+            .header(header::HOST, host);
+        if let Some(origin_value) = origin {
+            builder = builder.header(ORIGIN, origin_value);
+        }
+        builder.body(axum::body::Body::empty()).unwrap()
+    }
 
     #[test]
     fn nonce_is_inserted_in_csp_header() {
@@ -495,12 +630,48 @@ mod tests {
             .and_then(|val| val.to_str().ok())
             .unwrap();
         assert_eq!(permissions, "geolocation=(), camera=(), microphone=()");
+        let coop = headers
+            .get(HEADER_CROSS_ORIGIN_OPENER_POLICY)
+            .and_then(|val| val.to_str().ok())
+            .unwrap();
+        assert_eq!(coop, "same-origin");
+        let coep = headers
+            .get(HEADER_CROSS_ORIGIN_EMBEDDER_POLICY)
+            .and_then(|val| val.to_str().ok())
+            .unwrap();
+        assert_eq!(coep, "require-corp");
     }
 
     #[test]
-    fn set_token_cookie_includes_http_only() {
+    fn origin_allowlist_accepts_configured_origin() {
+        let request = build_request_with_headers(
+            Some("https://public.example.com"),
+            "internal.example.lan:8080",
+        );
+        let policy = OriginPolicy::from_allowlist(vec!["https://public.example.com".to_string()])
+            .expect("origin policy");
+        assert!(is_origin_allowed(&request, &policy));
+    }
+
+    #[test]
+    fn origin_allowlist_blocks_unlisted_origin() {
+        let request = build_request_with_headers(Some("https://evil.example.com"), "internal:8080");
+        let policy = OriginPolicy::from_allowlist(vec!["https://public.example.com".to_string()])
+            .expect("origin policy");
+        assert!(!is_origin_allowed(&request, &policy));
+    }
+
+    #[test]
+    fn origin_defaults_to_same_host_port() {
+        let request = build_request_with_headers(Some("http://internal:8080"), "internal:8080");
+        let policy = OriginPolicy::from_allowlist(Vec::new()).expect("origin policy");
+        assert!(is_origin_allowed(&request, &policy));
+    }
+
+    #[test]
+    fn set_session_cookie_includes_http_only() {
         let mut headers = HeaderMap::new();
-        set_token_cookie(&mut headers, "secret");
+        set_session_cookie(&mut headers, "sess:v1:test");
         let value = headers.get(SET_COOKIE).expect("set-cookie");
         let text = value.to_str().expect("utf8");
         assert!(
@@ -525,11 +696,10 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "https_always")]
     #[test]
-    fn token_cookies_include_secure_when_https_always() {
+    fn session_cookies_include_secure() {
         let mut headers = HeaderMap::new();
-        set_token_cookie(&mut headers, "secret");
+        set_session_cookie(&mut headers, "sess:v1:test");
         let value = headers.get(SET_COOKIE).expect("set-cookie");
         let text = value.to_str().expect("utf8");
         assert!(
@@ -557,9 +727,8 @@ mod tests {
         assert_eq!(value, HeaderValue::from_static("no-store"));
     }
 
-    #[cfg(feature = "https_always")]
     #[test]
-    fn hsts_header_is_added_when_https_always() {
+    fn hsts_header_is_added() {
         let mut headers = HeaderMap::new();
         let nonce = CspNonce::new("abc".into());
         apply_security_headers(&mut headers, &nonce);

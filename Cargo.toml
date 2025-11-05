@@ -28,7 +28,6 @@ config = ["serde", "dep:toml"]
 net = []
 web = ["dep:tokio", "dep:axum", "dep:tokio-stream", "serde", "dep:argon2", "dep:bcrypt", "dep:rand_core"]
 journald = ["dep:tracing-journald"]  
-https_always = []
 
 [dependencies]
 thiserror = "1.0"

@@ -79,6 +79,22 @@ struct Opts {
     #[arg(long = "web-allow-ip", value_name = "IP[/PREFIX]", action = ArgAction::Append)]
     web_allow_ip: Vec<String>,
 
+    /// Origin autorisé pour l'interface web (peut être répété, ex: https://admin.example.com)
+    #[arg(
+        long = "web-allow-origin",
+        value_name = "ORIGIN",
+        action = ArgAction::Append
+    )]
+    web_allow_origin: Vec<String>,
+
+    /// Proxy de confiance fournissant X-Forwarded-For (--web uniquement)
+    #[arg(
+        long = "web-trusted-proxy",
+        value_name = "IP[/PREFIX]",
+        action = ArgAction::Append
+    )]
+    web_trusted_proxy: Vec<String>,
+
     /// Génère un hash (Argon2id/bcrypt) pour configurer --web-token (helper)
     #[arg(
         long = "hash-web-token",
@@ -170,6 +186,10 @@ struct Opts {
     /// Active tous les détails sensibles pour --web
     #[arg(long = "web-expose-all", action = ArgAction::SetTrue)]
     web_expose_all: bool,
+
+    /// Autorise l'application des drapeaux d'exposition sensibles depuis le fichier de configuration.
+    #[arg(long = "allow-config-exposure", action = ArgAction::SetTrue)]
+    allow_config_exposure: bool,
 
     /// Vérifications healthcheck (peut être répété). Ex:
     /// --check mem>90%[:warn|:crit]
@@ -287,6 +307,15 @@ fn main() -> Result<()> {
         );
     }
 
+    let mut allow_config_exposure = opts.allow_config_exposure;
+    if !allow_config_exposure {
+        if let Ok(value) = std::env::var("DESCRIBE_ME_ALLOW_CONFIG_EXPOSURE") {
+            if env_flag_enabled(&value) {
+                allow_config_exposure = true;
+            }
+        }
+    }
+
     #[cfg(feature = "config")]
     if let Some(cfg) = &cfg {
         if let Some(runtime) = cfg.runtime.as_ref() {
@@ -311,6 +340,12 @@ fn main() -> Result<()> {
                 }
                 if opts.web_allow_ip.is_empty() && !cli.web_allow_ip.is_empty() {
                     opts.web_allow_ip = cli.web_allow_ip.clone();
+                }
+                if opts.web_allow_origin.is_empty() && !cli.web_allow_origin.is_empty() {
+                    opts.web_allow_origin = cli.web_allow_origin.clone();
+                }
+                if opts.web_trusted_proxy.is_empty() && !cli.web_trusted_proxy.is_empty() {
+                    opts.web_trusted_proxy = cli.web_trusted_proxy.clone();
                 }
             }
         }
@@ -339,6 +374,16 @@ fn main() -> Result<()> {
                     .allow_ips
                     .extend(web_cfg.allow_ips.iter().cloned());
             }
+            if !web_cfg.allow_origins.is_empty() {
+                web_access
+                    .allow_origins
+                    .extend(web_cfg.allow_origins.iter().cloned());
+            }
+            if !web_cfg.trusted_proxies.is_empty() {
+                web_access
+                    .trusted_proxies
+                    .extend(web_cfg.trusted_proxies.iter().cloned());
+            }
         }
     }
 
@@ -352,17 +397,28 @@ fn main() -> Result<()> {
                 .allow_ips
                 .extend(opts.web_allow_ip.iter().cloned());
         }
+        if !opts.web_allow_origin.is_empty() {
+            web_access
+                .allow_origins
+                .extend(opts.web_allow_origin.iter().cloned());
+        }
+        if !opts.web_trusted_proxy.is_empty() {
+            web_access
+                .trusted_proxies
+                .extend(opts.web_trusted_proxy.iter().cloned());
+        }
     }
 
     #[cfg(feature = "config")]
-    apply_cli_exposure_flags(&mut exposure, &opts, cfg.as_ref());
+    apply_cli_exposure_flags(&mut exposure, &opts, cfg.as_ref(), allow_config_exposure);
     #[cfg(not(feature = "config"))]
-    apply_cli_exposure_flags(&mut exposure, &opts);
+    apply_cli_exposure_flags(&mut exposure, &opts, allow_config_exposure);
 
     #[cfg(all(feature = "web", feature = "config"))]
-    let web_exposure = apply_web_exposure_flags(exposure, &opts, cfg.as_ref());
+    let web_exposure =
+        apply_web_exposure_flags(exposure, &opts, cfg.as_ref(), allow_config_exposure);
     #[cfg(all(feature = "web", not(feature = "config")))]
-    let web_exposure = apply_web_exposure_flags(exposure, &opts);
+    let web_exposure = apply_web_exposure_flags(exposure, &opts, allow_config_exposure);
 
     let exposure_all_effective = exposure.is_all();
 
@@ -643,17 +699,24 @@ fn apply_cli_exposure_flags(
     exposure: &mut describe_me::Exposure,
     opts: &Opts,
     cfg: Option<&describe_me::DescribeConfig>,
+    allow_config_exposure: bool,
 ) {
-    if let Some(cfg) = cfg {
-        if let Some(cfg_exp) = cfg.exposure.as_ref() {
-            exposure.merge(describe_me::Exposure::from(cfg_exp));
+    if allow_config_exposure {
+        if let Some(cfg) = cfg {
+            if let Some(cfg_exp) = cfg.exposure.as_ref() {
+                exposure.merge(describe_me::Exposure::from(cfg_exp));
+            }
         }
     }
     apply_cli_flags(exposure, opts);
 }
 
 #[cfg(not(feature = "config"))]
-fn apply_cli_exposure_flags(exposure: &mut describe_me::Exposure, opts: &Opts) {
+fn apply_cli_exposure_flags(
+    exposure: &mut describe_me::Exposure,
+    opts: &Opts,
+    _allow_config_exposure: bool,
+) {
     apply_cli_flags(exposure, opts);
 }
 
@@ -701,13 +764,16 @@ fn apply_web_exposure_flags(
     exposure: describe_me::Exposure,
     opts: &Opts,
     cfg: Option<&describe_me::DescribeConfig>,
+    allow_config_exposure: bool,
 ) -> describe_me::Exposure {
     let mut web_exposure = exposure;
 
-    if let Some(cfg) = cfg {
-        if let Some(web_cfg) = cfg.web.as_ref() {
-            if let Some(web_exp) = web_cfg.exposure.as_ref() {
-                web_exposure.merge(describe_me::Exposure::from(web_exp));
+    if allow_config_exposure {
+        if let Some(cfg) = cfg {
+            if let Some(web_cfg) = cfg.web.as_ref() {
+                if let Some(web_exp) = web_cfg.exposure.as_ref() {
+                    web_exposure.merge(describe_me::Exposure::from(web_exp));
+                }
             }
         }
     }
@@ -717,7 +783,11 @@ fn apply_web_exposure_flags(
 }
 
 #[cfg(all(feature = "web", not(feature = "config")))]
-fn apply_web_exposure_flags(exposure: describe_me::Exposure, opts: &Opts) -> describe_me::Exposure {
+fn apply_web_exposure_flags(
+    exposure: describe_me::Exposure,
+    opts: &Opts,
+    _allow_config_exposure: bool,
+) -> describe_me::Exposure {
     let mut web_exposure = exposure;
     apply_web_flags(&mut web_exposure, opts);
     web_exposure
@@ -754,6 +824,13 @@ fn apply_web_flags(exposure: &mut describe_me::Exposure, opts: &Opts) {
     if opts.no_redacted {
         exposure.redacted = false;
     }
+}
+
+fn env_flag_enabled(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 #[cfg(test)]

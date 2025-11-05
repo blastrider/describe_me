@@ -46,6 +46,57 @@ jobs:
       - name: benches compile (no-run)
         run: cargo bench --no-run --all-features
 
+  supply-chain:
+    runs-on: ubuntu-latest
+    needs: build-test
+    env:
+      CARGO_CREV_CONFIG_DIR: ${{ github.workspace }}/.cargo/crev
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify latest commit signature
+        if: github.event_name != 'pull_request'
+        run: git verify-commit HEAD
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: supply-chain
+      - name: Install supply-chain tooling
+        run: |
+          cargo install --locked cargo-audit
+          cargo install --locked cargo-deny
+          cargo install --locked cargo-crev
+          cargo install --locked cargo-cyclonedx
+      - name: cargo audit
+        run: cargo audit
+      - name: cargo deny
+        run: cargo deny check
+      - name: cargo crev verify
+        run: |
+          cargo crev repo fetch || true
+          if ! cargo crev verify --recursive; then
+            status=$?
+            if [ "$status" -eq 255 ]; then
+              echo "::warning::cargo crev verify: no trusted IDs configured; skipping failure (configure via 'cargo crev trust')."
+            else
+              exit "$status"
+            fi
+          fi
+      - name: Generate CycloneDX SBOM
+        run: |
+          rm -f describe-me.cdx.json
+          cargo cyclonedx --all-features --format json --override-filename describe-me.cdx
+          mkdir -p target/sbom
+          mv describe-me.cdx.json target/sbom/describe-me.cdx.json
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cyclonedx-sbom
+          path: target/sbom/describe-me.cdx.json
   # msrv-build:
   #   runs-on: ubuntu-latest
   #   steps:
