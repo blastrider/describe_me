@@ -60,11 +60,15 @@ use std::{
 };
 /// Parse /proc/self/mountinfo → map: mount_point -> (maj:min, source)
 fn parse_mountinfo() -> HashMap<String, (String, String)> {
-    let mut map = HashMap::new();
     let Ok(txt) = fs::read_to_string("/proc/self/mountinfo") else {
-        return map;
+        return HashMap::new();
     };
-    for line in txt.lines() {
+    parse_mountinfo_from_str(&txt)
+}
+
+fn parse_mountinfo_from_str(content: &str) -> HashMap<String, (String, String)> {
+    let mut map = HashMap::new();
+    for line in content.lines() {
         // format: ID parent maj:min root mount_point opts - fstype source superopts
         // on split sur " - " pour séparer les 1ères et 2nd parties
         if let Some((left, right)) = line.split_once(" - ") {
@@ -83,6 +87,11 @@ fn parse_mountinfo() -> HashMap<String, (String, String)> {
         }
     }
     map
+}
+
+#[cfg(any(test, feature = "internals"))]
+pub fn parse_mountinfo_for_tests(content: &str) -> HashMap<String, (String, String)> {
+    parse_mountinfo_from_str(content)
 }
 
 fn is_pseudo_fs(fs: Option<&str>) -> bool {
@@ -184,4 +193,56 @@ pub(crate) fn gather_disks() -> Result<DiskUsage, DescribeError> {
         used_bytes: used,
         partitions: SharedSlice::from_vec(partitions),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn parse_mountinfo_reconstructs_entries(
+            entries in prop::collection::vec(
+                (
+                    1u32..10_000,
+                    1u32..10_000,
+                    proptest::string::string_regex("[A-Za-z0-9._-]{1,12}").unwrap(),
+                    proptest::string::string_regex("[A-Za-z0-9./_-]{1,12}").unwrap()
+                ),
+                0..12
+            )
+        ) {
+            let mut content = String::new();
+            let mut expected = HashMap::new();
+
+            for (idx, (id, parent, mount_part, source_part)) in entries.iter().enumerate() {
+                let maj = id % 255;
+                let min = parent % 255;
+                let mount_path = format!("/{mount_part}");
+                let source = format!("/dev/{source_part}");
+                if idx > 0 {
+                    content.push('\n');
+                }
+                content.push_str(&format!(
+                    "{id} {parent} {maj}:{min} / {mount_path} rw - ext4 {source} rw"
+                ));
+                expected.insert(
+                    mount_path.clone(),
+                    (format!("{maj}:{min}"), source.clone()),
+                );
+            }
+
+            let parsed = parse_mountinfo_for_tests(&content);
+            for (mount, data) in expected {
+                prop_assert_eq!(parsed.get(&mount), Some(&data));
+            }
+        }
+
+        #[test]
+        fn parse_mountinfo_tolerates_garbage(data: Vec<u8>) {
+            let text = String::from_utf8_lossy(&data);
+            let _ = parse_mountinfo_for_tests(&text);
+        }
+    }
 }

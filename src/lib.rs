@@ -32,9 +32,18 @@ pub use application::{filter_services, load_config_from_path};
 pub use application::{net_listen, network_traffic}; // <— NEW
 
 // Outils de test/fuzz internes
-#[cfg(all(feature = "systemd", any(test, feature = "internals")))]
+#[cfg(any(test, feature = "internals"))]
 pub mod internals {
+    #[cfg(all(feature = "net", target_os = "linux"))]
+    pub use crate::infrastructure::net::linux::parse_table_from_str;
+    pub use crate::infrastructure::sysinfo::parse_mountinfo_for_tests;
+    #[cfg(feature = "systemd")]
     pub use crate::infrastructure::systemd::__parse_systemctl_line_for_tests;
+    #[cfg(target_os = "linux")]
+    pub use crate::infrastructure::updates::{
+        count_apk_updates_for_tests, count_dnf_updates_for_tests,
+        parse_apt_upgradable_line_for_tests,
+    };
 }
 
 #[cfg(feature = "web")]

@@ -1,0 +1,41 @@
+[package]
+name = "describe-me-fuzz"
+version = "0.0.1"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.describe_me]
+path = ".."
+default-features = false
+features = ["internals", "net"]
+
+[[bin]]
+name = "parse_proc_net"
+path = "fuzz_targets/parse_proc_net.rs"
+
+[[bin]]
+name = "parse_apt_line"
+path = "fuzz_targets/parse_apt_line.rs"
+
+[[bin]]
+name = "parse_dnf_output"
+path = "fuzz_targets/parse_dnf_output.rs"
+
+[[bin]]
+name = "parse_apk_output"
+path = "fuzz_targets/parse_apk_output.rs"
+
+[[bin]]
+name = "parse_mountinfo"
+path = "fuzz_targets/parse_mountinfo.rs"
+
+[[bin]]
+name = "parse_systemd_line"
+path = "fuzz_targets/parse_systemd_line.rs"
+

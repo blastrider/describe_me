@@ -1,5 +1,6 @@
 use super::{
     limits::{SecurityPolicy, SecurityState},
+    session::{SessionCandidate, SessionError, SessionManager, SESSION_COOKIE_PREFIX},
     IpMatcher, SecurityRejection, TokenKey, WebRoute,
 };
 use crate::application::logging::LogEvent;
@@ -25,10 +26,17 @@ use tracing::error;
 pub(super) struct AuthRequest {
     pub(super) route: WebRoute,
     pub(super) remote_ip: std::net::IpAddr,
-    pub(super) provided_token: Option<String>,
+    pub(super) credential: Credential,
     pub(super) token_key: TokenKey,
     pub(super) require_token: bool,
     pub(super) trusted_ip: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(super) enum Credential {
+    None,
+    RawToken(String),
+    Session(SessionCandidate),
 }
 
 #[derive(Clone)]
@@ -121,8 +129,12 @@ pub(super) enum TokenVerifyError {
 
 pub(super) fn build_request(
     allow: &[IpMatcher],
+    trusted_proxies: &[IpMatcher],
+    sessions: &SessionManager,
+    sessions_enabled: bool,
     parts: &Parts,
     route: WebRoute,
+    now: Instant,
 ) -> Result<AuthRequest, SecurityRejection> {
     let remote_ip = parts
         .extensions
@@ -139,6 +151,9 @@ pub(super) fn build_request(
             .emit();
             SecurityRejection::missing_ip()
         })?;
+
+    let source_ip = remote_ip;
+    let (remote_ip, forwarded) = resolve_client_ip(remote_ip, trusted_proxies, parts, route);
 
     let trusted_ip = if allow.is_empty() {
         false
@@ -158,16 +173,24 @@ pub(super) fn build_request(
         return Err(SecurityRejection::forbidden_ip());
     }
 
-    let provided_token = extract_token(parts);
-    let token_key = provided_token
-        .as_ref()
-        .map(|value| TokenKey::from_value(value))
-        .unwrap_or(TokenKey::Anonymous);
+    if forwarded {
+        LogEvent::SecurityIncident {
+            category: Cow::Borrowed("forwarded_for_applied"),
+            route: Cow::Borrowed(route.as_str()),
+            ip: Some(Cow::Owned(remote_ip.to_string())),
+            token: None,
+            detail: Some(Cow::Owned(format!("source={source_ip}"))),
+        }
+        .emit();
+    }
+
+    let (credential, token_key) =
+        extract_credential(parts, sessions, sessions_enabled, route, remote_ip, now)?;
 
     Ok(AuthRequest {
         route,
         remote_ip,
-        provided_token,
+        credential,
         token_key,
         require_token: route != WebRoute::Html,
         trusted_ip,
@@ -178,46 +201,225 @@ pub(super) async fn verify_token(
     state: &SecurityState,
     policy: &SecurityPolicy,
     expected_token: Option<&TokenVerifier>,
+    sessions: &SessionManager,
     request: &AuthRequest,
     now: Instant,
-) -> Result<(), SecurityRejection> {
+) -> Result<Option<String>, SecurityRejection> {
     let Some(expected) = expected_token else {
-        return Ok(());
+        return Ok(None);
     };
 
-    let auth_ok = request
-        .provided_token
-        .as_deref()
-        .map(|provided| match expected.verify(provided) {
-            Ok(true) => true,
-            Ok(false) => false,
-            Err(err) => {
-                error!(
-                    route = request.route.as_str(),
-                    algorithm = expected.algorithm(),
-                    error = %err_string(&err),
-                    "Echec verification hash token"
-                );
-                LogEvent::SecurityIncident {
-                    category: Cow::Borrowed("token_hash_error"),
-                    route: Cow::Borrowed(request.route.as_str()),
-                    ip: Some(Cow::Owned(request.remote_ip.to_string())),
-                    token: Some(Cow::Owned(request.token_key.to_string())),
-                    detail: Some(Cow::Owned(err_string(&err).to_string())),
+    match request.credential.clone() {
+        Credential::Session(candidate) => {
+            sessions.consume(candidate.id(), now).map_err(|err| {
+                log_session_error(&err, request);
+                SecurityRejection::unauthorized(None)
+            })?;
+            Ok(Some(sessions.issue(request.token_key, now)))
+        }
+        Credential::RawToken(token) => {
+            let auth_ok = match expected.verify(&token) {
+                Ok(true) => true,
+                Ok(false) => false,
+                Err(err) => {
+                    error!(
+                        route = request.route.as_str(),
+                        algorithm = expected.algorithm(),
+                        error = %err_string(&err),
+                        "Echec verification hash token"
+                    );
+                    LogEvent::SecurityIncident {
+                        category: Cow::Borrowed("token_hash_error"),
+                        route: Cow::Borrowed(request.route.as_str()),
+                        ip: Some(Cow::Owned(request.remote_ip.to_string())),
+                        token: Some(Cow::Owned(request.token_key.to_string())),
+                        detail: Some(Cow::Owned(err_string(&err).to_string())),
+                    }
+                    .emit();
+                    false
                 }
-                .emit();
-                false
+            };
+
+            if auth_ok {
+                Ok(Some(sessions.issue(request.token_key, now)))
+            } else {
+                Err(build_failure_rejection(state, policy, request, now, "auth_failure").await)
             }
-        })
-        .unwrap_or(false);
+        }
+        Credential::None => {
+            if !request.require_token {
+                Ok(None)
+            } else {
+                Err(
+                    build_failure_rejection(state, policy, request, now, "auth_missing_token")
+                        .await,
+                )
+            }
+        }
+    }
+}
 
-    let missing = request.provided_token.is_none();
-    let missing_allowed = missing && !request.require_token;
-
-    if auth_ok || missing_allowed {
-        return Ok(());
+fn extract_credential(
+    parts: &Parts,
+    sessions: &SessionManager,
+    sessions_enabled: bool,
+    route: WebRoute,
+    remote_ip: std::net::IpAddr,
+    now: Instant,
+) -> Result<(Credential, TokenKey), SecurityRejection> {
+    if let Some(header_value) = parts.headers.get(AUTHORIZATION) {
+        if let Ok(value) = header_value.to_str() {
+            let trimmed = value.trim();
+            if let Some((scheme, token)) = trimmed.split_once(' ') {
+                if scheme.eq_ignore_ascii_case("bearer") {
+                    let token = token.trim();
+                    if !token.is_empty() {
+                        return Ok((
+                            Credential::RawToken(token.to_owned()),
+                            TokenKey::from_value(token),
+                        ));
+                    }
+                }
+            }
+        }
     }
 
+    if let Some(header_value) = parts.headers.get("x-describe-me-token") {
+        if let Ok(value) = header_value.to_str() {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Ok((
+                    Credential::RawToken(trimmed.to_owned()),
+                    TokenKey::from_value(trimmed),
+                ));
+            }
+        }
+    }
+
+    if let Some(cookie_header) = parts.headers.get(COOKIE) {
+        if let Ok(value) = cookie_header.to_str() {
+            for pair in value.split(';') {
+                let mut kv = pair.trim().splitn(2, '=');
+                let name = kv.next().map(str::trim);
+                if name != Some(TOKEN_COOKIE_NAME) {
+                    continue;
+                }
+                if let Some(raw_value) = kv.next() {
+                    let trimmed = raw_value.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    if sessions_enabled && trimmed.starts_with(SESSION_COOKIE_PREFIX) {
+                        match sessions.lookup(trimmed, now) {
+                            Ok(candidate) => {
+                                let token_key = candidate.token_key();
+                                return Ok((Credential::Session(candidate), token_key));
+                            }
+                            Err(SessionError::InvalidFormat) => {}
+                            Err(err) => {
+                                log_session_error_raw(&err, route, remote_ip, TokenKey::Anonymous);
+                                return Err(SecurityRejection::unauthorized(None));
+                            }
+                        }
+                    }
+                    let decoded = percent_decode_str(trimmed)
+                        .decode_utf8()
+                        .map(|cow| cow.into_owned())
+                        .unwrap_or_else(|_| trimmed.to_owned());
+                    if !decoded.is_empty() {
+                        return Ok((
+                            Credential::RawToken(decoded.clone()),
+                            TokenKey::from_value(&decoded),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok((Credential::None, TokenKey::Anonymous))
+}
+
+fn resolve_client_ip(
+    source_ip: std::net::IpAddr,
+    trusted: &[IpMatcher],
+    parts: &Parts,
+    route: WebRoute,
+) -> (std::net::IpAddr, bool) {
+    if trusted.is_empty() || !ip_matches(source_ip, trusted) {
+        return (source_ip, false);
+    }
+
+    let header_value = match parts.headers.get("x-forwarded-for") {
+        Some(value) => value,
+        None => return (source_ip, false),
+    };
+
+    let Ok(header_str) = header_value.to_str() else {
+        log_forwarded_error("forwarded_for_invalid", route, source_ip, "non_utf8");
+        return (source_ip, false);
+    };
+
+    let mut ip_chain = Vec::new();
+    for segment in header_str.split(',') {
+        let token = segment.trim();
+        if token.is_empty() {
+            continue;
+        }
+        match token.parse::<std::net::IpAddr>() {
+            Ok(ip) => ip_chain.push(ip),
+            Err(_) => {
+                log_forwarded_error("forwarded_for_invalid", route, source_ip, token);
+                return (source_ip, false);
+            }
+        }
+    }
+
+    if ip_chain.is_empty() {
+        return (source_ip, false);
+    }
+
+    if ip_chain.iter().skip(1).any(|ip| !ip_matches(*ip, trusted)) {
+        log_forwarded_error(
+            "forwarded_for_untrusted_chain",
+            route,
+            source_ip,
+            header_str,
+        );
+        return (source_ip, false);
+    }
+
+    let client_ip = ip_chain[0];
+    (client_ip, true)
+}
+
+fn ip_matches(ip: std::net::IpAddr, rules: &[IpMatcher]) -> bool {
+    rules.iter().any(|rule| rule.matches(ip))
+}
+
+fn log_forwarded_error(
+    category: &'static str,
+    route: WebRoute,
+    source_ip: std::net::IpAddr,
+    detail: &str,
+) {
+    LogEvent::SecurityIncident {
+        category: Cow::Borrowed(category),
+        route: Cow::Borrowed(route.as_str()),
+        ip: Some(Cow::Owned(source_ip.to_string())),
+        token: None,
+        detail: Some(Cow::Owned(detail.to_string())),
+    }
+    .emit();
+}
+
+async fn build_failure_rejection(
+    state: &SecurityState,
+    policy: &SecurityPolicy,
+    request: &AuthRequest,
+    now: Instant,
+    category: &'static str,
+) -> SecurityRejection {
     let failure = state
         .note_failure(
             request.remote_ip,
@@ -239,70 +441,44 @@ pub(super) async fn verify_token(
             ))),
         }
         .emit();
-        Err(SecurityRejection::unauthorized(Some(delay)))
+        SecurityRejection::unauthorized(Some(delay))
     } else {
         LogEvent::SecurityIncident {
-            category: Cow::Borrowed("auth_failure"),
+            category: Cow::Borrowed(category),
             route: Cow::Borrowed(request.route.as_str()),
             ip: Some(Cow::Owned(request.remote_ip.to_string())),
             token: Some(Cow::Owned(request.token_key.to_string())),
             detail: None,
         }
         .emit();
-        Err(SecurityRejection::unauthorized(None))
+        SecurityRejection::unauthorized(None)
     }
 }
 
-fn extract_token(parts: &Parts) -> Option<String> {
-    if let Some(header_value) = parts.headers.get(AUTHORIZATION) {
-        if let Ok(value) = header_value.to_str() {
-            let trimmed = value.trim();
-            if let Some((scheme, token)) = trimmed.split_once(' ') {
-                if scheme.eq_ignore_ascii_case("bearer") {
-                    let token = token.trim();
-                    if !token.is_empty() {
-                        return Some(token.to_owned());
-                    }
-                }
-            }
-        }
-    }
+fn log_session_error(err: &SessionError, request: &AuthRequest) {
+    log_session_error_raw(err, request.route, request.remote_ip, request.token_key);
+}
 
-    if let Some(header_value) = parts.headers.get("x-describe-me-token") {
-        if let Ok(value) = header_value.to_str() {
-            let trimmed = value.trim();
-            if !trimmed.is_empty() {
-                return Some(trimmed.to_owned());
-            }
-        }
+fn log_session_error_raw(
+    err: &SessionError,
+    route: WebRoute,
+    ip: std::net::IpAddr,
+    token: TokenKey,
+) {
+    let category = match err {
+        SessionError::InvalidFormat => "session_invalid_format",
+        SessionError::Unknown => "session_unknown",
+        SessionError::Expired => "session_expired",
+        SessionError::Replay => "session_replay",
+    };
+    LogEvent::SecurityIncident {
+        category: Cow::Borrowed(category),
+        route: Cow::Borrowed(route.as_str()),
+        ip: Some(Cow::Owned(ip.to_string())),
+        token: Some(Cow::Owned(token.to_string())),
+        detail: None,
     }
-
-    if let Some(cookie_header) = parts.headers.get(COOKIE) {
-        if let Ok(value) = cookie_header.to_str() {
-            for pair in value.split(';') {
-                let mut kv = pair.trim().splitn(2, '=');
-                let name = kv.next().map(str::trim);
-                if name != Some(TOKEN_COOKIE_NAME) {
-                    continue;
-                }
-                if let Some(raw_value) = kv.next() {
-                    let trimmed = raw_value.trim();
-                    if trimmed.is_empty() {
-                        continue;
-                    }
-                    let decoded = percent_decode_str(trimmed)
-                        .decode_utf8()
-                        .map(|cow| cow.into_owned())
-                        .unwrap_or_else(|_| trimmed.to_owned());
-                    if !decoded.is_empty() {
-                        return Some(decoded);
-                    }
-                }
-            }
-        }
-    }
-
-    None
+    .emit();
 }
 fn err_string(err: &TokenVerifyError) -> &str {
     match err {
@@ -315,6 +491,7 @@ mod tests {
     use super::*;
     use crate::application::web::security::{
         limits::{SecurityPolicy, SecurityState},
+        session::SessionManager,
         WebRoute,
     };
     use axum::http::{header::COOKIE, Request, StatusCode};
@@ -353,11 +530,14 @@ mod tests {
     async fn verify_token_accepts_valid_bearer() {
         let state = SecurityState::new();
         let policy = SecurityPolicy::default();
+        let sessions = SessionManager::new();
         let parts = make_parts("/", IpAddr::V4(Ipv4Addr::LOCALHOST), Some("secret"));
-        let request = build_request(&[], &parts, WebRoute::Html).unwrap();
+        let now = Instant::now();
+        let request =
+            build_request(&[], &[], &sessions, true, &parts, WebRoute::Html, now).unwrap();
 
         let verifier = TokenVerifier::parse(cached_argon2()).expect("parse hash");
-        verify_token(&state, &policy, Some(&verifier), &request, Instant::now())
+        verify_token(&state, &policy, Some(&verifier), &sessions, &request, now)
             .await
             .expect("token should be accepted");
     }
@@ -366,11 +546,13 @@ mod tests {
     async fn verify_token_rejects_missing_when_required() {
         let state = SecurityState::new();
         let policy = SecurityPolicy::default();
+        let sessions = SessionManager::new();
         let parts = make_parts("/sse", IpAddr::V4(Ipv4Addr::LOCALHOST), None);
-        let request = build_request(&[], &parts, WebRoute::Sse).unwrap();
+        let now = Instant::now();
+        let request = build_request(&[], &[], &sessions, true, &parts, WebRoute::Sse, now).unwrap();
 
         let verifier = TokenVerifier::parse(cached_argon2()).expect("parse hash");
-        let err = verify_token(&state, &policy, Some(&verifier), &request, Instant::now())
+        let err = verify_token(&state, &policy, Some(&verifier), &sessions, &request, now)
             .await
             .expect_err("missing token should be rejected");
         assert_eq!(err.status, StatusCode::UNAUTHORIZED);
@@ -380,11 +562,14 @@ mod tests {
     async fn verify_token_allows_missing_for_html() {
         let state = SecurityState::new();
         let policy = SecurityPolicy::default();
+        let sessions = SessionManager::new();
         let parts = make_parts("/", IpAddr::V4(Ipv4Addr::LOCALHOST), None);
-        let request = build_request(&[], &parts, WebRoute::Html).unwrap();
+        let now = Instant::now();
+        let request =
+            build_request(&[], &[], &sessions, true, &parts, WebRoute::Html, now).unwrap();
 
         let verifier = TokenVerifier::parse(cached_argon2()).expect("parse hash");
-        verify_token(&state, &policy, Some(&verifier), &request, Instant::now())
+        verify_token(&state, &policy, Some(&verifier), &sessions, &request, now)
             .await
             .expect("html route should allow missing token");
     }
@@ -393,6 +578,7 @@ mod tests {
     async fn verify_token_accepts_cookie() {
         let state = SecurityState::new();
         let policy = SecurityPolicy::default();
+        let sessions = SessionManager::new();
         let request = Request::builder().uri("/sse").body(()).unwrap();
         let (mut parts, _) = request.into_parts();
         parts.headers.insert(
@@ -406,17 +592,52 @@ mod tests {
                 4242,
             ))));
 
-        let auth_request = build_request(&[], &parts, WebRoute::Sse).unwrap();
+        let now = Instant::now();
+        let auth_request =
+            build_request(&[], &[], &sessions, true, &parts, WebRoute::Sse, now).unwrap();
         let verifier = TokenVerifier::parse(cached_argon2()).expect("parse hash");
         verify_token(
             &state,
             &policy,
             Some(&verifier),
+            &sessions,
             &auth_request,
-            Instant::now(),
+            now,
         )
         .await
         .expect("cookie token should be accepted");
+    }
+
+    #[tokio::test]
+    async fn trusted_proxy_overrides_client_ip() {
+        let sessions = SessionManager::new();
+        let mut parts = make_parts("/", IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)), None);
+        parts.headers.insert(
+            "x-forwarded-for",
+            "198.51.100.25, 192.0.2.10".parse().unwrap(),
+        );
+        let trusted = vec![IpMatcher::Exact(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)))];
+        let now = Instant::now();
+        let request =
+            build_request(&[], &trusted, &sessions, true, &parts, WebRoute::Html, now).unwrap();
+        assert_eq!(
+            request.remote_ip,
+            IpAddr::V4(Ipv4Addr::new(198, 51, 100, 25))
+        );
+        assert_ne!(request.remote_ip, IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)));
+    }
+
+    #[tokio::test]
+    async fn untrusted_proxy_header_is_ignored() {
+        let sessions = SessionManager::new();
+        let mut parts = make_parts("/", IpAddr::V4(Ipv4Addr::new(203, 0, 113, 5)), None);
+        parts
+            .headers
+            .insert("x-forwarded-for", "198.51.100.25".parse().unwrap());
+        let now = Instant::now();
+        let request =
+            build_request(&[], &[], &sessions, true, &parts, WebRoute::Html, now).unwrap();
+        assert_eq!(request.remote_ip, IpAddr::V4(Ipv4Addr::new(203, 0, 113, 5)));
     }
 
     #[test]

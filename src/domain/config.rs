@@ -34,6 +34,10 @@ pub struct WebAccessConfig {
     pub token: Option<String>,
     /// IP ou réseaux autorisés (ex: "192.0.2.5", "10.0.0.0/16", "::1").
     pub allow_ips: Vec<String>,
+    /// Origins autorisés (ex: "https://admin.example.com") pour CORS strict.
+    pub allow_origins: Vec<String>,
+    /// Proxys de confiance dont on accepte X-Forwarded-For.
+    pub trusted_proxies: Vec<String>,
     /// Exposition des champs sensibles côté web (--web).
     pub exposure: Option<ExposureConfig>,
     /// Paramétrage des limites de sécurité (rate limiting, anti-bruteforce).
@@ -51,6 +55,8 @@ pub struct RuntimeConfig {
     pub rust_log: Option<String>,
     /// Valeurs par défaut pour la CLI.
     pub cli: Option<CliDefaults>,
+    /// Autorise l'application des drapeaux `expose-*`/`web-expose-*` depuis la configuration.
+    pub allow_config_exposure: bool,
 }
 
 /// Valeurs par défaut pour la CLI.
@@ -66,6 +72,10 @@ pub struct CliDefaults {
     pub web_expose_all: Option<bool>,
     /// Valeurs par défaut pour --web-allow-ip.
     pub web_allow_ip: Vec<String>,
+    /// Valeurs par défaut pour --web-allow-origin.
+    pub web_allow_origin: Vec<String>,
+    /// Valeurs par défaut pour --web-trusted-proxy.
+    pub web_trusted_proxy: Vec<String>,
 }
 
 /// Contrôle fin des champs JSON sensibles.
@@ -174,6 +184,8 @@ pub struct RouteLimitConfig {
     pub per_ip: u32,
     /// Nombre de requêtes autorisées par token dans la fenêtre.
     pub per_token: u32,
+    /// Limite globale (toutes IP confondues) sur la même fenêtre.
+    pub global: u32,
 }
 
 impl RouteLimitConfig {
@@ -182,6 +194,7 @@ impl RouteLimitConfig {
             window_seconds: 60,
             per_ip: 30,
             per_token: 10,
+            global: 120,
         }
     }
 }
@@ -203,6 +216,8 @@ pub struct SseLimitConfig {
     pub per_ip: u32,
     /// Nombre de connexions SSE autorisées par token dans la fenêtre.
     pub per_token: u32,
+    /// Limite globale de connexions SSE sur la fenêtre.
+    pub global: u32,
     /// Nombre maximal de connexions SSE actives simultanément par IP.
     pub max_active_per_ip: u32,
     /// Nombre maximal de connexions SSE actives simultanément par token.
@@ -213,6 +228,8 @@ pub struct SseLimitConfig {
     pub min_event_interval_ms: u64,
     /// Taille maximale d'un payload SSE (en octets).
     pub max_payload_bytes: u32,
+    /// Taille cumulée maximale d'un flux SSE (en octets).
+    pub max_stream_bytes: u32,
 }
 
 impl SseLimitConfig {
@@ -221,11 +238,13 @@ impl SseLimitConfig {
             window_seconds: 60,
             per_ip: 10,
             per_token: 6,
+            global: 40,
             max_active_per_ip: 1,
             max_active_per_token: 1,
             max_stream_seconds: 10 * 60,
             min_event_interval_ms: 1000,
             max_payload_bytes: 48 * 1024,
+            max_stream_bytes: 4 * 1024 * 1024,
         }
     }
 }
