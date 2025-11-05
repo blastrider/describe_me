@@ -27,9 +27,8 @@ use crate::application::capture_snapshot_with_view;
 use crate::application::logging::LogEvent;
 use crate::domain::CaptureOptions;
 
-use super::security::{AuthGuard, SsePermit, TokenKey};
-use super::set_token_cookie;
-use super::AppState;
+use super::security::{AuthGuard, GlobalPermit, SsePermit, TokenKey};
+use super::{mark_response_no_store, set_session_cookie, AppState};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SseCloseReason {
@@ -51,31 +50,47 @@ impl SseCloseReason {
 struct StreamPayload {
     event: Event,
     close_after: Option<SseCloseReason>,
+    bytes: usize,
 }
 
 struct SseMetrics {
     start: Instant,
     max_duration: Duration,
+    max_bytes: usize,
     ip: IpAddr,
     token: TokenKey,
     events: AtomicU64,
+    bytes: AtomicU64,
     reason: AtomicU8,
 }
 
 impl SseMetrics {
-    fn new(ip: IpAddr, token: TokenKey, max_duration: Duration) -> Self {
+    fn new(ip: IpAddr, token: TokenKey, max_duration: Duration, max_bytes: usize) -> Self {
         Self {
             start: Instant::now(),
             max_duration,
+            max_bytes,
             ip,
             token,
             events: AtomicU64::new(0),
+            bytes: AtomicU64::new(0),
             reason: AtomicU8::new(SseCloseReason::Natural as u8),
         }
     }
 
-    fn record_event(&self) {
+    fn record_event(&self, payload_bytes: usize) -> bool {
         self.events.fetch_add(1, Ordering::Relaxed);
+        if self.max_bytes > 0 {
+            let total = self
+                .bytes
+                .fetch_add(payload_bytes as u64, Ordering::Relaxed)
+                + payload_bytes as u64;
+            if total > self.max_bytes as u64 {
+                self.set_reason(SseCloseReason::Limit);
+                return true;
+            }
+        }
+        false
     }
 
     fn set_reason(&self, reason: SseCloseReason) {
@@ -106,6 +121,10 @@ impl SseMetrics {
         self.start.elapsed().as_secs_f64()
     }
 
+    fn bytes(&self) -> u64 {
+        self.bytes.load(Ordering::Relaxed)
+    }
+
     fn reason(&self) -> SseCloseReason {
         match self.reason.load(Ordering::Relaxed) {
             x if x == SseCloseReason::Limit as u8 => SseCloseReason::Limit,
@@ -130,6 +149,7 @@ struct MetricsStream<S> {
     metrics: Arc<SseMetrics>,
     pending_close: Option<SseCloseReason>,
     permit: Option<SsePermit>,
+    global_permit: Option<GlobalPermit>,
     #[pin]
     shutdown_fut: Pin<Box<dyn Future<Output = ()> + Send + 'static>>,
     shutdown_triggered: bool,
@@ -140,6 +160,7 @@ impl<S> MetricsStream<S> {
         inner: S,
         metrics: Arc<SseMetrics>,
         permit: Option<SsePermit>,
+        global_permit: Option<GlobalPermit>,
         shutdown: Arc<Notify>,
     ) -> Self {
         let shutdown_clone = shutdown.clone();
@@ -152,6 +173,7 @@ impl<S> MetricsStream<S> {
             metrics,
             pending_close: None,
             permit,
+            global_permit,
             shutdown_fut,
             shutdown_triggered: false,
         }
@@ -188,12 +210,19 @@ where
 
         match this.inner.as_mut().poll_next(cx) {
             Poll::Ready(Some(Ok(payload))) => {
-                this.metrics.record_event();
-                if let Some(reason) = payload.close_after {
+                let StreamPayload {
+                    event,
+                    close_after,
+                    bytes,
+                } = payload;
+                let exceeded = this.metrics.record_event(bytes);
+                if let Some(reason) = close_after {
                     this.metrics.set_reason(reason);
                     *this.pending_close = Some(reason);
+                } else if exceeded {
+                    *this.pending_close = Some(SseCloseReason::Limit);
                 }
-                Poll::Ready(Some(Ok(payload.event)))
+                Poll::Ready(Some(Ok(event)))
             }
             Poll::Ready(Some(Err(err))) => Poll::Ready(Some(Err(err))),
             Poll::Ready(None) => Poll::Ready(None),
@@ -214,6 +243,7 @@ impl<S> PinnedDrop for MetricsStream<S> {
             events: metrics.events(),
             duration_s: metrics.duration_seconds(),
             reason: Cow::Borrowed(reason.as_str()),
+            bytes: metrics.bytes(),
         }
         .emit();
     }
@@ -229,10 +259,11 @@ pub(super) async fn sse_stream(
     let with_services = false;
 
     let mut session = guard.into_session();
-    let cookie_token = session.provided_token().map(str::to_owned);
+    let cookie_token = session.session_cookie().map(str::to_owned);
     let client_ip = session.ip();
     let token_key = session.token_key();
     let permit = session.take_sse_permit();
+    let global_permit = session.take_global_permit();
     let policy = state.security.policy();
     let shutdown_notify = state.shutdown.clone();
 
@@ -247,7 +278,13 @@ pub(super) async fn sse_stream(
     let min_interval_ms = min_interval.as_millis().min(u128::from(u64::MAX)) as u64;
     let max_stream_s = max_duration.as_secs();
 
-    let metrics = Arc::new(SseMetrics::new(client_ip, token_key, max_duration));
+    let max_stream_bytes = policy.sse_max_stream_bytes();
+    let metrics = Arc::new(SseMetrics::new(
+        client_ip,
+        token_key,
+        max_duration,
+        max_stream_bytes,
+    ));
     let metrics_for_stream = metrics.clone();
 
     LogEvent::SseStreamOpen {
@@ -256,6 +293,7 @@ pub(super) async fn sse_stream(
         min_interval_ms,
         max_payload,
         max_stream_s,
+        max_stream_bytes,
     }
     .emit();
 
@@ -350,16 +388,21 @@ pub(super) async fn sse_stream(
                 metrics.set_reason(reason);
             }
 
-            Ok::<StreamPayload, Infallible>(StreamPayload { event, close_after })
+            Ok::<StreamPayload, Infallible>(StreamPayload {
+                event,
+                close_after,
+                bytes: payload_len,
+            })
         }
     });
 
-    let stream = MetricsStream::new(stream, metrics, permit, shutdown_notify);
+    let stream = MetricsStream::new(stream, metrics, permit, global_permit, shutdown_notify);
 
     let sse = Sse::new(stream).keep_alive(KeepAlive::default());
     let mut response = sse.into_response();
+    mark_response_no_store(response.headers_mut());
     if let Some(token) = cookie_token.as_deref() {
-        set_token_cookie(response.headers_mut(), token);
+        set_session_cookie(response.headers_mut(), token);
     }
     response
 }
