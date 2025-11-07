@@ -29,6 +29,7 @@ mod updates_cache;
 use std::{borrow::Cow, collections::HashSet, net::SocketAddr, sync::Arc, time::Duration};
 
 use axum::{
+    body::{Body, Bytes},
     extract::{Extension, State},
     http::{
         header,
@@ -68,6 +69,9 @@ pub(crate) const TOKEN_COOKIE_NAME: &str = "describe_me_token";
 const TOKEN_COOKIE_MAX_AGE: u32 = 7 * 24 * 3600;
 const UPDATES_CACHE_SUCCESS_TTL: Duration = Duration::from_secs(300);
 const UPDATES_CACHE_FAILURE_RETRY: Duration = Duration::from_secs(60);
+
+#[cfg(feature = "config")]
+const LOGO_MAX_BYTES: u64 = 128 * 1024;
 
 #[cfg(feature = "config")]
 fn duration_from_secs_or_default(value: u64, default: Duration) -> Duration {
@@ -117,6 +121,117 @@ struct AppState {
     exposure: Exposure,
     shutdown: Arc<Notify>,
     updates_cache: UpdatesCache,
+    logo: LogoAsset,
+}
+
+#[derive(Clone)]
+struct LogoAsset {
+    bytes: Bytes,
+}
+
+impl LogoAsset {
+    fn default() -> Self {
+        Self {
+            bytes: Bytes::from_static(assets::LOGO_SVG),
+        }
+    }
+
+    fn response(&self) -> Response {
+        Response::builder()
+            .status(StatusCode::OK)
+            .header(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("image/svg+xml"),
+            )
+            .body(Body::from(self.bytes.clone()))
+            .expect("logo response")
+    }
+
+    #[cfg(feature = "config")]
+    fn from_optional_path(path: Option<&str>) -> Result<Self, DescribeError> {
+        match path {
+            Some(raw) => Self::from_path(raw),
+            None => Ok(Self::default()),
+        }
+    }
+
+    #[cfg(feature = "config")]
+    fn from_path(raw: &str) -> Result<Self, DescribeError> {
+        use std::fs;
+        use std::path::Path;
+
+        let path = Path::new(raw);
+        if !path.is_absolute() {
+            return Err(DescribeError::Config(format!(
+                "web.logo_path \"{}\" doit être un chemin absolu",
+                path.display()
+            )));
+        }
+
+        let canonical = fs::canonicalize(path).map_err(|err| {
+            DescribeError::Config(format!("web.logo_path \"{}\": {err}", path.display()))
+        })?;
+        let metadata = fs::metadata(&canonical).map_err(|err| {
+            DescribeError::Config(format!("web.logo_path \"{}\": {err}", canonical.display()))
+        })?;
+        if !metadata.is_file() {
+            return Err(DescribeError::Config(format!(
+                "web.logo_path \"{}\" n'est pas un fichier",
+                canonical.display()
+            )));
+        }
+        if metadata.len() > LOGO_MAX_BYTES {
+            return Err(DescribeError::Config(format!(
+                "web.logo_path \"{}\" dépasse la limite de {LOGO_MAX_BYTES} octets",
+                canonical.display()
+            )));
+        }
+
+        let data = fs::read(&canonical).map_err(|err| {
+            DescribeError::Config(format!("web.logo_path \"{}\": {err}", canonical.display()))
+        })?;
+
+        validate_logo_bytes(&data).map_err(|reason| {
+            DescribeError::Config(format!(
+                "web.logo_path \"{}\" invalide: {reason}",
+                canonical.display()
+            ))
+        })?;
+
+        Ok(Self {
+            bytes: Bytes::from(data),
+        })
+    }
+}
+
+#[cfg(feature = "config")]
+fn validate_logo_bytes(bytes: &[u8]) -> Result<(), String> {
+    if bytes.is_empty() {
+        return Err("le fichier est vide".into());
+    }
+    if (bytes.len() as u64) > LOGO_MAX_BYTES {
+        return Err(format!(
+            "le fichier dépasse la limite de {LOGO_MAX_BYTES} octets"
+        ));
+    }
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| "le logo doit être un SVG encodé en UTF-8".to_string())?;
+    let lower = text.to_ascii_lowercase();
+    if !lower.contains("<svg") {
+        return Err("balise <svg> introuvable".into());
+    }
+    if lower.contains("<script") {
+        return Err("les balises <script> sont interdites".into());
+    }
+    for attr in ["onload", "onerror", "onclick", "onfocus", "onmouseover"] {
+        if lower.contains(&format!("{attr}=")) {
+            return Err(format!("l'attribut {attr}= est interdit"));
+        }
+    }
+    if lower.contains("javascript:") {
+        return Err("les URLs javascript: sont interdites".into());
+    }
+    Ok(())
 }
 
 #[derive(Clone)]
@@ -415,6 +530,16 @@ pub async fn serve_http<A: Into<SocketAddr>>(
     let updates_refresh_ttl = UPDATES_CACHE_SUCCESS_TTL;
     let updates_cache = UpdatesCache::new(updates_refresh_ttl, UPDATES_CACHE_FAILURE_RETRY);
 
+    #[cfg(feature = "config")]
+    let logo = LogoAsset::from_optional_path(
+        config
+            .as_ref()
+            .and_then(|cfg| cfg.web.as_ref())
+            .and_then(|web| web.logo_path.as_deref()),
+    )?;
+    #[cfg(not(feature = "config"))]
+    let logo = LogoAsset::default();
+
     let app_state = AppState {
         interval,
         #[cfg(feature = "config")]
@@ -424,10 +549,12 @@ pub async fn serve_http<A: Into<SocketAddr>>(
         exposure,
         shutdown: shutdown_for_state,
         updates_cache,
+        logo,
     };
 
     let app = Router::new()
         .route("/", get(index))
+        .route("/assets/logo.svg", get(logo_asset))
         .route("/updates", get(updates_page))
         .route("/sse", get(sse_stream))
         .layer(middleware::from_fn_with_state(
@@ -473,6 +600,10 @@ pub async fn serve_http<A: Into<SocketAddr>>(
         .map_err(map_io)?;
 
     Ok(())
+}
+
+async fn logo_asset(State(state): State<AppState>) -> Response {
+    state.logo.response()
 }
 
 #[cfg(unix)]
@@ -602,6 +733,7 @@ pub(crate) fn clear_token_cookie(headers: &mut HeaderMap) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::to_bytes;
     use axum::http::header::SET_COOKIE;
 
     fn build_request_with_headers(origin: Option<&str>, host: &str) -> AxumRequest {
@@ -739,5 +871,62 @@ mod tests {
             value.to_str().unwrap(),
             "max-age=31536000; includeSubDomains"
         );
+    }
+
+    #[tokio::test]
+    async fn logo_asset_is_static_svg() {
+        let asset = LogoAsset::default();
+        let response = asset.response();
+        let (parts, body) = response.into_parts();
+
+        let content_type = parts
+            .headers
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .expect("content-type header");
+        assert_eq!(content_type, "image/svg+xml");
+
+        let body = to_bytes(body, usize::MAX).await.expect("body bytes");
+        assert_eq!(body.as_ref(), asset.bytes.as_ref());
+    }
+
+    #[cfg(feature = "config")]
+    #[tokio::test]
+    async fn custom_logo_path_is_loaded_and_validated() {
+        use std::fs;
+        use tempfile::tempdir;
+
+        let dir = tempdir().expect("tempdir");
+        let logo_path = dir.path().join("logo.svg");
+        fs::write(
+            &logo_path,
+            r#"<svg xmlns="http://www.w3.org/2000/svg"><text>OK</text></svg>"#,
+        )
+        .expect("write logo");
+
+        let asset =
+            LogoAsset::from_optional_path(logo_path.to_str()).expect("logo from config path");
+        let response = asset.response();
+        let (_, body) = response.into_parts();
+        let body = to_bytes(body, usize::MAX).await.expect("body bytes");
+        assert_eq!(body.as_ref(), asset.bytes.as_ref());
+    }
+
+    #[cfg(feature = "config")]
+    #[test]
+    fn custom_logo_rejects_script() {
+        use std::fs;
+        use tempfile::tempdir;
+
+        let dir = tempdir().expect("tempdir");
+        let logo_path = dir.path().join("logo.svg");
+        fs::write(
+            &logo_path,
+            r#"<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>"#,
+        )
+        .expect("write logo");
+
+        let err = LogoAsset::from_optional_path(logo_path.to_str());
+        assert!(matches!(err, Err(DescribeError::Config(msg)) if msg.contains("script")));
     }
 }

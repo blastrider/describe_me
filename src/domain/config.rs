@@ -38,6 +38,8 @@ pub struct WebAccessConfig {
     pub allow_origins: Vec<String>,
     /// Proxys de confiance dont on accepte X-Forwarded-For.
     pub trusted_proxies: Vec<String>,
+    /// Chemin absolu vers un logo SVG personnalisé (statique).
+    pub logo_path: Option<String>,
     /// Exposition des champs sensibles côté web (--web).
     pub exposure: Option<ExposureConfig>,
     /// Paramétrage des limites de sécurité (rate limiting, anti-bruteforce).
