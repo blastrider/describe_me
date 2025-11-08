@@ -204,6 +204,8 @@ mod tests {
         assert!(html.contains("const WEB_DEBUG = true;") || html.contains(">true<"));
         assert!(!html.contains("__CSP_NONCE__"));
         assert!(!html.contains("__INLINE_CSS__"));
+        assert!(html.contains("src=\"/assets/logo.svg\""));
+        assert!(html.contains("class=\"brand-title\""));
     }
 
     #[test]

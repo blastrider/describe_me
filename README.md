@@ -17,6 +17,7 @@ Documentation supplémentaire : voir le dossier `docs/` :
 - `docs/domain-layer.md` — modèles métier et configuration.
 - `docs/infrastructure-layer.md` — intégrations OS (sysinfo, systemd, net).
 - `docs/web-security.md` — détails sur l’authentification/rate limiting web.
+- `docs/branding.md` — personnalisation du logo web en toute sécurité.
 - `docs/cli.md` — options et flux du binaire `describe-me`.
 - `docs/testing.md` — stratégie de tests, benchmarks et fuzzing.
 - `docs/logging.md` — conventions de logging structurés.
