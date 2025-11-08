@@ -46,6 +46,8 @@ pub struct WebAccessConfig {
     pub security: Option<WebSecurityConfig>,
     /// Intervalle de rafraîchissement (en secondes) pour le cache des mises à jour.
     pub updates_refresh_seconds: Option<u64>,
+    /// Paramètres TLS optionnels (activent HTTPS natif).
+    pub tls: Option<WebTlsOptions>,
 }
 
 /// Paramètres runtime supplémentaires (logging, CLI).
@@ -173,6 +175,17 @@ impl Default for WebSecurityConfig {
             brute_force: BruteForceConfig::default(),
         }
     }
+}
+
+/// Paramètres TLS (certificat/clé) pour HTTPS natif.
+#[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "serde", derive(Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct WebTlsOptions {
+    /// Chemin vers le certificat serveur (PEM).
+    pub cert_path: String,
+    /// Chemin vers la clé privée correspondante (PEM).
+    pub key_path: String,
 }
 
 /// Limites génériques pour un endpoint.

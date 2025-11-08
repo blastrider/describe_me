@@ -384,6 +384,14 @@ fn main() -> Result<()> {
                     .trusted_proxies
                     .extend(web_cfg.trusted_proxies.iter().cloned());
             }
+            if let Some(tls_cfg) = web_cfg.tls.as_ref() {
+                if !tls_cfg.cert_path.is_empty() && !tls_cfg.key_path.is_empty() {
+                    web_access.tls = Some(describe_me::WebTlsConfig {
+                        cert_path: tls_cfg.cert_path.clone(),
+                        key_path: tls_cfg.key_path.clone(),
+                    });
+                }
+            }
         }
     }
 

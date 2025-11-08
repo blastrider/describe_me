@@ -12,6 +12,7 @@ Licence : Apache-2.0
 Repo : https://github.com/Max-Perso/describe_me
 
 Documentation supplémentaire : voir le dossier `docs/` :
+
 - `docs/architecture.md` — vue d’ensemble des couches et features.
 - `docs/application-layer.md` — logique applicative et serveurs.
 - `docs/domain-layer.md` — modèles métier et configuration.
@@ -24,13 +25,16 @@ Documentation supplémentaire : voir le dossier `docs/` :
 - `docs/shared-slices.md` — partage mémoire des listes (services, sockets, etc.).
 - `docs/updates.md` — détection des mises à jour système et exposition des résultats.
 
-1) Installation
-Depuis les sources
+1. Installation
+   Depuis les sources
+
 # Cloner
+
 git clone https://github.com/Max-Perso/describe_me
 cd describe_me
 
 # Build (lib + tests de base)
+
 cargo build
 cargo test
 
@@ -49,42 +53,49 @@ web : UI & SSE HTTP (Axum), endpoints temps-réel
 Exemples :
 
 # CLI seul
+
 cargo build --features "cli"
 
 # CLI + systemd + config + net
+
 cargo build --features "cli systemd config net"
 
 # Tout (incluant serveur web)
+
 cargo build --features "cli systemd config net web"
 
-2) Utilisation rapide (CLI)
+2. Utilisation rapide (CLI)
 
 Afficher un snapshot JSON lisible :
 
 ./target/debug/describe-me
 
-
 Options courantes :
 
 # Services (systemd requis)
+
 ./target/debug/describe-me --with-services
 
 # Disques (agrégé + partitions)
+
 ./target/debug/describe-me --disks
 
 # Sockets d’écoute (feature net requise)
+
 ./target/debug/describe-me --net-listen
 
 # Trafic réseau (feature net requise)
+
 ./target/debug/describe-me --net-traffic
 
 # Charger une config TOML (feature config requise)
+
 ./target/debug/describe-me --config ./src/examples/config.toml
 
 # JSON compact / pretty (inclut snapshot complet)
+
 ./target/debug/describe-me --json
 ./target/debug/describe-me --pretty
-
 
 Astuce : combine librement, ex.
 ./describe-me --with-services --disks --net-listen --net-traffic --config config.toml --pretty
@@ -118,7 +129,7 @@ Seules les écritures explicites vers `/var/lib/describe-me` (créé via `StateD
 
 Astuce : grâce au refus d'exécution en root du binaire, lance-le manuellement via `sudo -u describe-me describe-me ...` pour reproduire l'environnement du service.
 
-3) Healthcheck --check (codes 0/1/2)
+3. Healthcheck --check (codes 0/1/2)
 
 Permet de scripter des checks (CI/Nagios/Icinga). Retourne le plus sévère rencontré :
 
@@ -139,31 +150,36 @@ service=nginx.service:running[:warn|:crit] (nécessite --with-services et featur
 Exemples :
 
 # CRIT si mémoire > 90%
+
 ./target/debug/describe-me --check 'mem>90%'
 
 # WARN si /var > 80%
+
 ./target/debug/describe-me --check 'disk(/var)>80%:warn' >/dev/null; echo $?
 
 # Service (state contient "running") — nécessite systemd + --with-services
+
 ./target/debug/describe-me --with-services --check 'service=ssh.service:running' >/dev/null; echo $?
 
 # Checks multiples : code de sortie = max(WARN/CRIT)
-./target/debug/describe-me \
-  --with-services \
-  --check 'mem>85%:warn' \
-  --check 'mem>95%:crit' \
-  --check 'disk(/)>90%:crit' \
-  >/dev/null; echo $?
 
+./target/debug/describe-me \
+ --with-services \
+ --check 'mem>85%:warn' \
+ --check 'mem>95%:crit' \
+ --check 'disk(/)>90%:crit' \
+
+> /dev/null; echo $?
 
 Intégration simple Nagios/Icinga (stderr contient les messages) :
 
 /opt/describe-me --with-services \
-  --check 'mem>90%:crit' \
-  --check 'disk(/var)>80%:warn' \
-  >/dev/null
+ --check 'mem>90%:crit' \
+ --check 'disk(/var)>80%:warn' \
 
-4) Mode Web (SSE temps réel)
+> /dev/null
+
+4. Mode Web (SSE temps réel)
 
 Nécessite --features web (et cli côté binaire).
 
@@ -191,6 +207,20 @@ Pour exposer publiquement, fournissez explicitement l'adresse (ex :`--web 0.0.0
 
 Les champs sensibles (hostname, version d'OS/noyau, services détaillés, partitions disque) sont masqués par défaut dans le JSON/SSE. Utilisez les flags `--expose-*` / `--web-expose-*` ou la configuration TOML pour les rendre visibles de façon volontaire.
 
+HTTPS natif : ajoutez un bloc `[web.tls]` avec `cert_path` et `key_path` (PEM). Exemple dans `src/examples/config_tls.toml`. Une fois activé, l’URL devient `https://...` et le cookie de session est livré avec l’attribut `Secure`. Pour rester en HTTP (LAN), laissez simplement le bloc absent ou utilisez `config_http.toml`.
+Procédure rapide pour générer un certificat auto-signé :
+
+```
+mkdir -p ./certs
+openssl req -x509 -nodes -newkey rsa:4096 \
+  -keyout ./certs/server-key.pem \
+  -out ./certs/server.pem \
+  -days 365 \
+  -subj "/CN=describe-me.local"
+chmod 600 ./certs/server-key.pem
+```
+
+Référencez ensuite ces fichiers dans `[web.tls]` et redémarrez `describe_me`. Les clients devront approuver manuellement ce certificat auto-signé.
 
 GET / : page HTML (cartes système/mémoire/disque/services)
 
@@ -198,22 +228,22 @@ GET /sse : flux SSE (JSON) émettant périodiquement SystemSnapshot
 
 --web-debug : affiche aussi le JSON brut dans l’UI
 
-Le filtrage des services via config s’applique aussi côté web si --config est fourni
+Le filtrage des services via config s’applique aussi côté web si --config est fourni. Un reverse-proxy reste recommandé pour gérer ACME/HTTP->HTTPS, mais n’est plus strictement obligatoire si vous fournissez vos propres certificats via `[web.tls]`.
 
-En prod, place-le derrière un reverse proxy/TLS (Nginx/Traefik).
-(Roadmap : TLS natif + Basic Auth optionnelle.)
-
-5) Fichier de configuration (optionnel)
+5. Fichier de configuration (optionnel)
 
 Disponible avec --features config.
 Actuellement : whitelist des services + configuration du mode web + exposition des champs sensibles.
 
 Exemple minimal config.toml
+
 # Filtrage d’affichage des services (si feature systemd et --with-services)
+
 [services]
 include = ["nginx.service", "postgresql.service"]
 
 # Contrôles d'accès web par défaut (optionnels)
+
 [web]
 token = "$argon2id$v=19$m=19456,t=2,p=1$MFDNn+4xkNMOFXaKzJLXmw$8cHenB/55bhNt1vZoGILR6F0yaEtKrnArXwdQhU8cBA"
 allow_ips = ["127.0.0.1", "10.0.0.0/16"]
@@ -223,23 +253,22 @@ expose_services = true
 expose_disk_partitions = true
 
 # Exposition des champs sensibles pour la sortie CLI/JSON (par défaut: tout masqué)
+
 [exposure]
 expose_hostname = true
 expose_os = true
 expose_kernel = true
 redacted = true
 
-
 Utilisation CLI :
 
 ./target/debug/describe-me --with-services --config ./src/examples/config.toml
-
 
 Utilisation lib :
 
 #[cfg(feature = "config")]
 {
-    use describe_me::{load_config_from_path, filter_services, SystemSnapshot, CaptureOptions};
+use describe_me::{load_config_from_path, filter_services, SystemSnapshot, CaptureOptions};
 
     let cfg = load_config_from_path("config.toml")?;
     let mut snap = SystemSnapshot::capture_with(CaptureOptions {
@@ -248,17 +277,18 @@ Utilisation lib :
         ..CaptureOptions::default()
     })?;
     snap.services_running = filter_services(std::mem::take(&mut snap.services_running), &cfg);
+
 }
 
-6) Utilisation comme bibliothèque
-Snapshot système
-use describe_me::SystemSnapshot;
+6. Utilisation comme bibliothèque
+   Snapshot système
+   use describe_me::SystemSnapshot;
 
 fn main() -> anyhow::Result<()> {
-    let snap = SystemSnapshot::capture()?;
-    println!("CPU: {}", snap.cpu_count);
-    println!("RAM totale: {} o", snap.total_memory_bytes);
-    Ok(())
+let snap = SystemSnapshot::capture()?;
+println!("CPU: {}", snap.cpu_count);
+println!("RAM totale: {} o", snap.total_memory_bytes);
+Ok(())
 }
 
 Usage disque
@@ -267,57 +297,55 @@ use describe_me::disk_usage;
 let du = disk_usage()?;
 println!("Total: {} o, Libre: {} o", du.total_bytes, du.available_bytes);
 for p in du.partitions {
-    let used = p.total_bytes.saturating_sub(p.available_bytes);
-    println!("{}  used={} o / total={} o", p.mount_point, used, p.total_bytes);
+let used = p.total_bytes.saturating_sub(p.available_bytes);
+println!("{} used={} o / total={} o", p.mount_point, used, p.total_bytes);
 }
 
-Sockets d’écoute (feature net)
-#[cfg(feature = "net")]
+Sockets d’écoute (feature net) #[cfg(feature = "net")]
 {
-    let sockets = describe_me::net_listen()?;
-    for s in sockets {
-        println!("{} {}:{}", s.proto, s.addr, s.port);
-    }
+let sockets = describe_me::net_listen()?;
+for s in sockets {
+println!("{} {}:{}", s.proto, s.addr, s.port);
+}
 }
 
-Serveur web (feature web, via la lib)
-#[cfg(feature = "web")]
-#[tokio::main]
+Serveur web (feature web, via la lib) #[cfg(feature = "web")] #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Même impl que le CLI --web
-    describe_me::serve_http(([0,0,0,0], 8080), std::time::Duration::from_secs(2),
-        #[cfg(feature = "config")] None,
-        /* web_debug = */ false,
-        describe_me::WebAccess {
-            token: Some("$argon2id$v=19$m=19456,t=2,p=1$MFDNn+4xkNMOFXaKzJLXmw$8cHenB/55bhNt1vZoGILR6F0yaEtKrnArXwdQhU8cBA".into()),
-            allow_ips: vec!["127.0.0.1".into()],
-            allow_origins: vec![],
-            trusted_proxies: vec![],
-        },
-        describe_me::Exposure::all(),
-    ).await?;
-    Ok(())
+// Même impl que le CLI --web
+describe_me::serve_http(([0,0,0,0], 8080), std::time::Duration::from_secs(2), #[cfg(feature = "config")] None,
+/_ web_debug = _/ false,
+describe_me::WebAccess {
+token: Some("$argon2id$v=19$m=19456,t=2,p=1$MFDNn+4xkNMOFXaKzJLXmw$8cHenB/55bhNt1vZoGILR6F0yaEtKrnArXwdQhU8cBA".into()),
+allow_ips: vec!["127.0.0.1".into()],
+allow_origins: vec![],
+trusted_proxies: vec![],
+},
+describe_me::Exposure::all(),
+).await?;
+Ok(())
 }
 
 Pour obtenir les détails masqués dans la sortie JSON du CLI, utilisez par exemple `--expose-hostname --expose-services` (ou simplement `--expose-all`). Pour le mode web, utilisez `--web-expose-*` ou la section `[web.exposure]` du fichier de configuration.
 
-7) Matrice des features
-Feature	Ce que ça ajoute	Dépendances activées
-cli	Binaire describe-me + options ligne de commande	anyhow, clap, serde, nix, argon2, bcrypt, rand_core
-systemd	Listing des services systemd	— (Linux/systemd requis)
-config	Chargement TOML + filtrage (services.include)	serde, toml
-net	Sockets d’écoute (TCP/UDP)	—
-web	UI + SSE HTTP (Axum)	axum, tokio, tokio-stream, serde, argon2, bcrypt, rand_core
+7. Matrice des features
+   Feature Ce que ça ajoute Dépendances activées
+   cli Binaire describe-me + options ligne de commande anyhow, clap, serde, nix, argon2, bcrypt, rand_core
+   systemd Listing des services systemd — (Linux/systemd requis)
+   config Chargement TOML + filtrage (services.include) serde, toml
+   net Sockets d’écoute (TCP/UDP) —
+   web UI + SSE HTTP (Axum) axum, tokio, tokio-stream, serde, argon2, bcrypt, rand_core
 
 Par défaut, aucune feature n’est activée. Active celles dont tu as besoin.
 
-8) Tests & Qualité
+8. Tests & Qualité
+
 # Tests unitaires (sans features)
+
 cargo test
 
 # Avec features clés
-cargo test --features "systemd config net web"
 
+cargo test --features "systemd config net web"
 
 Recommandations :
 
@@ -330,7 +358,7 @@ Recommandations :
 
 Pour le détail complet (intégration CI, signatures, cosign), voir `docs/supply-chain.md`.
 
-9) Plateformes & limites
+9. Plateformes & limites
 
 Linux : support principal. --with-services nécessite systemd.
 
@@ -338,7 +366,7 @@ Containers CI : certaines infos (disques/partitions) peuvent être partielles.
 
 Droits : lister certains sockets/services peut nécessiter des privilèges.
 
-10) FAQ
+10. FAQ
 
 Q. Rien pour les services ?
 R. Compile avec --features systemd et exécute sur une machine systemd (et utilise --with-services).
@@ -351,9 +379,9 @@ R. Utilise --check puis vérifie le code de sortie (0/1/2). Exemple GitHub Actio
 
 - name: Healthcheck runner
   run: |
-    cargo run --features "cli" --bin describe-me -- \
-      --check 'mem>95%:crit' \
-      >/dev/null
+  cargo run --features "cli" --bin describe-me -- \
+   --check 'mem>95%:crit' \
+   >/dev/null
 
 Licence
 
