@@ -122,7 +122,7 @@ pub enum LogEvent<'a> {
     },
 }
 
-impl<'a> LogEvent<'a> {
+impl LogEvent<'_> {
     pub fn emit(self) {
         match self {
             LogEvent::Startup {
