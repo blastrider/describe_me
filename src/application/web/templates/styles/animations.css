@@ -1,0 +1,16 @@
+@keyframes waveGradient {
+  0% {
+    background-position: 0% 40%, 60% 20%, 20% 40%;
+  }
+  50% {
+    background-position: 40% 60%, 40% 80%, 50% 60%;
+  }
+  100% {
+    background-position: 100% 30%, 20% 60%, 80% 50%;
+  }
+}
+@keyframes wavePatternDrift {
+  0% { transform: translate3d(0%, 0%, 0); }
+  50% { transform: translate3d(-3%, -2%, 0); }
+  100% { transform: translate3d(-6%, -4%, 0); }
+}
