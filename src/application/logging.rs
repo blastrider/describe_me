@@ -67,6 +67,7 @@ pub enum LogEvent<'a> {
     HttpServerStarted {
         addr: Cow<'a, str>,
         interval_s: f64,
+        tls: bool,
     },
     HttpServerShutdown {
         signal: Cow<'a, str>,
@@ -152,10 +153,19 @@ impl LogEvent<'_> {
                     checks
                 );
             }
-            LogEvent::HttpServerStarted { addr, interval_s } => {
+            LogEvent::HttpServerStarted {
+                addr,
+                interval_s,
+                tls,
+            } => {
                 info!(
                     addr = addr.as_ref(),
-                    interval_s, "http_server_started addr={} interval_s={}", addr, interval_s
+                    interval_s,
+                    tls,
+                    "http_server_started addr={} interval_s={} tls={}",
+                    addr,
+                    interval_s,
+                    tls
                 );
             }
             LogEvent::HttpServerShutdown { signal } => {

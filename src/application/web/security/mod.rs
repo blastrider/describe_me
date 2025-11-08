@@ -550,6 +550,7 @@ mod tests {
             allow_ips: Vec::new(),
             allow_origins: Vec::new(),
             trusted_proxies: Vec::new(),
+            tls: None,
         }
     }
 
