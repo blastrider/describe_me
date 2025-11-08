@@ -23,6 +23,23 @@ header {
   box-shadow: 0 0 8px var(--warn);
   display: inline-block; flex-shrink: 0;
 }
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 32px;
+}
+.brand-logo {
+  width: 120px;
+  max-width: 40vw;
+  height: auto;
+  display: block;
+}
+.brand-title {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0;
+}
 .ok { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
 .dot.err { background: var(--err); box-shadow: 0 0 8px var(--err); }
 main { padding: 20px; display: grid; gap: 16px; max-width: 1200px; margin: 0 auto; }
