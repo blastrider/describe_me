@@ -2,7 +2,29 @@ use super::assets::MAIN_JS;
 use crate::domain::{UpdatePackage, UpdatesInfo};
 
 const INDEX_HTML_TEMPLATE: &str = include_str!("templates/index.html");
-const INDEX_CSS: &str = include_str!("templates/index.css");
+const HEADER_SECTION: &str = include_str!("templates/partials/header.html");
+const MAIN_LAYOUT_TEMPLATE: &str = include_str!("templates/partials/main_layout.html");
+const PRIMARY_GRID: &str = include_str!("templates/partials/primary_grid.html");
+const SERVICES_SECTION: &str = include_str!("templates/partials/services.html");
+const SOCKETS_SECTION: &str = include_str!("templates/partials/sockets.html");
+const RAW_SECTION: &str = include_str!("templates/partials/raw.html");
+const TOKEN_OVERLAY: &str = include_str!("templates/partials/token_overlay.html");
+const FOOTER_SECTION: &str = include_str!("templates/partials/footer.html");
+const INDEX_CSS: &str = concat!(
+    include_str!("templates/styles/variables.css"),
+    "\n",
+    include_str!("templates/styles/base.css"),
+    "\n",
+    include_str!("templates/styles/grid.css"),
+    "\n",
+    include_str!("templates/styles/components.css"),
+    "\n",
+    include_str!("templates/styles/overlays.css"),
+    "\n",
+    include_str!("templates/styles/animations.css"),
+    "\n",
+    include_str!("templates/styles/light-theme.css"),
+);
 const UPDATES_HTML_TEMPLATE: &str = include_str!("templates/updates.html");
 const UPDATES_CSS: &str = include_str!("templates/updates.css");
 
@@ -42,13 +64,35 @@ where
 pub(super) fn render_index(web_debug: bool, csp_nonce: &str) -> String {
     let debug_flag = if web_debug { "true" } else { "false" };
     let main_js = MAIN_JS.replace("__WEB_DEBUG__", debug_flag);
-    let extra_capacity = INDEX_CSS.len() + main_js.len() + csp_nonce.len() * 2;
+    let main_content = fill_template(
+        MAIN_LAYOUT_TEMPLATE,
+        PRIMARY_GRID.len() + SERVICES_SECTION.len() + SOCKETS_SECTION.len() + RAW_SECTION.len(),
+        |key| match key {
+            "PRIMARY_GRID" => Some(PRIMARY_GRID),
+            "SERVICES_SECTION" => Some(SERVICES_SECTION),
+            "SOCKETS_SECTION" => Some(SOCKETS_SECTION),
+            "RAW_SECTION" => Some(RAW_SECTION),
+            _ => None,
+        },
+    );
+
+    let extra_capacity = INDEX_CSS.len()
+        + main_js.len()
+        + main_content.len()
+        + HEADER_SECTION.len()
+        + TOKEN_OVERLAY.len()
+        + FOOTER_SECTION.len()
+        + csp_nonce.len() * 2;
 
     fill_template(INDEX_HTML_TEMPLATE, extra_capacity, |key| match key {
         "INLINE_CSS" => Some(INDEX_CSS),
         "MAIN_JS" => Some(main_js.as_str()),
         "WEB_DEBUG" => Some(debug_flag),
         "CSP_NONCE" => Some(csp_nonce),
+        "HEADER" => Some(HEADER_SECTION),
+        "MAIN_CONTENT" => Some(main_content.as_str()),
+        "TOKEN_OVERLAY" => Some(TOKEN_OVERLAY),
+        "FOOTER" => Some(FOOTER_SECTION),
         _ => None,
     })
 }

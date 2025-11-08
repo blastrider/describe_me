@@ -1,0 +1,68 @@
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, sans-serif;
+  position: relative;
+  overflow-x: hidden;
+}
+body::before,
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+body::before {
+  z-index: -2;
+  background-image:
+    radial-gradient(circle at 20% 15%, rgba(58, 210, 159, 0.12), transparent 55%),
+    radial-gradient(circle at 80% 0%, rgba(255, 107, 107, 0.12), transparent 58%),
+    linear-gradient(135deg, var(--bg-wave-1), var(--bg-wave-2) 45%, var(--bg-wave-highlight));
+  background-size: 160% 160%, 180% 180%, 200% 200%;
+  background-position: 0% 40%, 60% 20%, 50% 50%;
+  animation: waveGradient 24s ease-in-out infinite alternate;
+  filter: blur(0.5px);
+}
+body::after {
+  z-index: -1;
+  background-image:
+    repeating-linear-gradient(120deg, var(--bg-grid) 0 4px, transparent 4px 16px),
+    repeating-linear-gradient(60deg, rgba(255, 255, 255, 0.02) 0 2px, transparent 2px 12px);
+  opacity: 0.8;
+  mix-blend-mode: soft-light;
+  animation: wavePatternDrift 30s linear infinite;
+}
+header {
+  padding: 16px 20px; border-bottom: 1px solid #222838;
+  display: flex; align-items: center; gap: 10px;
+}
+.dot {
+  width: 10px; height: 10px; border-radius: 999px; background: var(--warn);
+  box-shadow: 0 0 8px var(--warn);
+  display: inline-block; flex-shrink: 0;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 32px;
+}
+.brand-logo {
+  width: 120px;
+  max-width: 40vw;
+  height: auto;
+  display: block;
+}
+.brand-title {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0;
+}
+.ok { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+.dot.err { background: var(--err); box-shadow: 0 0 8px var(--err); }
+main { padding: 20px; display: grid; gap: 16px; max-width: 1200px; margin: 0 auto; }
+.blurred {
+  filter: blur(6px);
+  transition: filter 0.25s ease;
+}
