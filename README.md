@@ -2,6 +2,8 @@
 
 Outil Rust minimaliste pour capturer l’état d’un serveur (CPU, RAM, disques, services systemd, sockets, mises à jour) et l’exposer via une CLI, une API SSE/HTML et une bibliothèque réutilisable. Fonctionne sans privilèges root et s’exécute aussi bien en binaire autonome qu’en tant que dépendance.
 
+![describe_me logo](src/application/web/assets/gen.svg)
+
 ## Points clés
 
 - **Snapshot complet** : hostname, OS, uptime, charge, disques, services, sockets, trafic réseau, mises à jour.
