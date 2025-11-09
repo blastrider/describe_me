@@ -29,7 +29,7 @@ en appelant les outils systèmes disponibles. Aucun privilège root n’est requ
 |------------|--------------------|----------|------------------|
 | Debian/Ubuntu | `apt-get -s upgrade` | lignes `Inst ...` | fichiers `/var/run/reboot-required` ou `/run/reboot-required` |
 | RHEL/CentOS/Fedora & co | `dnf -q check-update` | sorties « package version repo » (ignore les sections `Security:`, `Obsoleting Packages`, etc.) | `needs-restarting -r` (si dispo) + fichiers reboot |
-| Arch Linux | `checkupdates` | nombre de lignes non vides (ignore code 2 = erreur) | fichiers reboot si présents |
+| Arch/Manjaro | `pacman -Qu` (détail) puis `checkupdates` (compteur) | lignes `pkg old -> new` | fichiers reboot si présents |
 | Alpine | `apk version -l '<'` | lignes non vides | fichier `/run/reboot-required` si présent |
 | FreeBSD | `pkg version -l '<'` | lignes non vides | non supporté (toujours `false`) |
 
