@@ -12,4 +12,4 @@ pub const MAIN_JS: &str = concat!(
     include_str!("js/bootstrap.js"),
     "\n"
 );
-pub const LOGO_SVG: &[u8] = include_bytes!("logo.svg");
+pub const LOGO_SVG: &[u8] = include_bytes!("gen.svg");
