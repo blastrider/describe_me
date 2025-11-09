@@ -42,6 +42,7 @@ use axum::{
     routing::get,
     Router,
 };
+use axum_server::tls_rustls::RustlsConfig;
 use tokio::sync::Notify;
 use tracing::warn;
 
@@ -109,6 +110,14 @@ pub struct WebAccess {
     pub allow_origins: Vec<String>,
     /// Proxys de confiance dont on accepte l'en-tête X-Forwarded-For.
     pub trusted_proxies: Vec<String>,
+    /// Paramètres TLS optionnels.
+    pub tls: Option<WebTlsConfig>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WebTlsConfig {
+    pub cert_path: String,
+    pub key_path: String,
 }
 
 #[derive(Clone)]
@@ -504,6 +513,7 @@ pub async fn serve_http<A: Into<SocketAddr>>(
     exposure: Exposure,
 ) -> Result<(), DescribeError> {
     let origin_policy = OriginPolicy::from_allowlist(access.allow_origins.clone())?;
+    let tls_settings = access.tls.clone();
     #[cfg(feature = "config")]
     let security_config: Option<WebSecurityConfig> = config
         .as_ref()
@@ -552,7 +562,7 @@ pub async fn serve_http<A: Into<SocketAddr>>(
         logo,
     };
 
-    let app = Router::new()
+    let router = Router::new()
         .route("/", get(index))
         .route("/assets/logo.svg", get(logo_asset))
         .route("/updates", get(updates_page))
@@ -561,49 +571,87 @@ pub async fn serve_http<A: Into<SocketAddr>>(
             origin_policy,
             http_security_layer,
         ))
-        .with_state(app_state)
-        .into_make_service_with_connect_info::<SocketAddr>();
+        .with_state(app_state);
 
     let bind_addr: SocketAddr = addr.into();
-    let listener = match tokio::net::TcpListener::bind(bind_addr).await {
-        Ok(l) => l,
-        Err(err) => {
-            let msg = err.to_string();
-            LogEvent::HttpBindFailed {
-                addr: Cow::Owned(bind_addr.to_string()),
-                error: Cow::Owned(msg),
-            }
-            .emit();
-            return Err(map_io(err));
-        }
-    };
-    let bind_addr = listener.local_addr().unwrap_or(bind_addr);
     let interval_secs = interval.as_secs_f64();
-    LogEvent::HttpServerStarted {
-        addr: Cow::Owned(bind_addr.to_string()),
-        interval_s: interval_secs,
-    }
-    .emit();
 
-    let shutdown = async move {
-        let signal = wait_for_shutdown_signal().await;
-        LogEvent::HttpServerShutdown {
-            signal: Cow::Owned(signal.to_string()),
+    if let Some(tls) = tls_settings {
+        let rustls = build_rustls_config(&tls).await?;
+        LogEvent::HttpServerStarted {
+            addr: Cow::Owned(format!("https://{}", bind_addr)),
+            interval_s: interval_secs,
+            tls: true,
         }
         .emit();
-        shutdown_for_task.notify_waiters();
-    };
-
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown)
+        let handle = axum_server::Handle::new();
+        let notify = shutdown_for_task.clone();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let shutdown_task = tokio::spawn({
+            let handle = handle.clone();
+            async move {
+                tokio::select! {
+                    _ = wait_for_shutdown(notify) => {
+                        handle.shutdown();
+                    }
+                    _ = shutdown_rx => {}
+                }
+            }
+        });
+        let result = axum_server::bind_rustls(bind_addr, rustls)
+            .handle(handle)
+            .serve(
+                router
+                    .clone()
+                    .into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await;
+        let _ = shutdown_tx.send(());
+        let _ = shutdown_task.await;
+        result.map_err(map_io)?;
+    } else {
+        let listener = match tokio::net::TcpListener::bind(bind_addr).await {
+            Ok(l) => l,
+            Err(err) => {
+                let msg = err.to_string();
+                LogEvent::HttpBindFailed {
+                    addr: Cow::Owned(bind_addr.to_string()),
+                    error: Cow::Owned(msg),
+                }
+                .emit();
+                return Err(map_io(err));
+            }
+        };
+        let actual = listener.local_addr().unwrap_or(bind_addr);
+        LogEvent::HttpServerStarted {
+            addr: Cow::Owned(format!("http://{}", actual)),
+            interval_s: interval_secs,
+            tls: false,
+        }
+        .emit();
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(wait_for_shutdown(shutdown_for_task.clone()))
         .await
         .map_err(map_io)?;
+    }
 
     Ok(())
 }
 
 async fn logo_asset(State(state): State<AppState>) -> Response {
     state.logo.response()
+}
+
+async fn wait_for_shutdown(notify: Arc<Notify>) {
+    let signal = wait_for_shutdown_signal().await;
+    LogEvent::HttpServerShutdown {
+        signal: Cow::Owned(signal.to_string()),
+    }
+    .emit();
+    notify.notify_waiters();
 }
 
 #[cfg(unix)]
@@ -697,6 +745,19 @@ async fn updates_page(
 
 fn map_io(e: impl std::error::Error + Send + Sync + 'static) -> DescribeError {
     DescribeError::System(format!("I/O/Serve error: {e}"))
+}
+
+async fn build_rustls_config(cfg: &WebTlsConfig) -> Result<RustlsConfig, DescribeError> {
+    let cert = cfg.cert_path.trim();
+    let key = cfg.key_path.trim();
+    if cert.is_empty() || key.is_empty() {
+        return Err(DescribeError::Config(
+            "web.tls nécessite cert_path et key_path".into(),
+        ));
+    }
+    RustlsConfig::from_pem_file(cert, key)
+        .await
+        .map_err(|err| DescribeError::Config(format!("chargement TLS {cert}/{key}: {err}")))
 }
 
 pub(super) fn set_session_cookie(headers: &mut HeaderMap, value: &str) {

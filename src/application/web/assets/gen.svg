@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 300" role="img" aria-labelledby="title desc">
+  <title id="title">describe_me – Monitoring allegory logo</title>
+  <desc id="desc">A lighthouse built from server racks emits a watch beam; an ECG line runs across, symbolizing continuous monitoring.</desc>
+  <style>
+    :root { --fg:#0f172a; --accent:#22c55e; --muted:#94a3b8; --bg:none; }
+    @media (prefers-color-scheme: dark){
+      :root { --fg:#e2e8f0; --accent:#22c55e; --muted:#64748b; }
+    }
+    .st{ fill:none; stroke-linecap:round; stroke-linejoin:round; }
+    .fg{ stroke:var(--fg); fill:var(--bg); }
+    .fillfg{ fill:var(--fg); }
+    .accent{ stroke:var(--accent); fill:var(--accent); }
+    .muted{ stroke:var(--muted); fill:var(--muted); }
+  </style>
+
+  <!-- Pictogram: Lighthouse made of server racks -->
+  <g transform="translate(70,30)">
+    <!-- base platform -->
+    <path d="M-10,220 h250" class="st fg" stroke-width="10"></path>
+    <!-- tower (server stack) -->
+    <g>
+      <rect x="40" y="30" width="120" height="180" rx="14" class="st fg" stroke-width="10"></rect>
+      <!-- drawers / bays -->
+      <g class="st fg" stroke-width="8">
+        <rect x="58" y="52" width="84" height="22" rx="8"></rect>
+        <rect x="58" y="90" width="84" height="22" rx="8"></rect>
+        <rect x="58" y="128" width="84" height="22" rx="8"></rect>
+        <rect x="58" y="166" width="84" height="22" rx="8"></rect>
+      </g>
+      <!-- LEDs -->
+      <g>
+        <circle cx="134" cy="63" r="5" class="accent"></circle>
+        <circle cx="134" cy="101" r="5" class="accent"></circle>
+        <circle cx="134" cy="139" r="5" class="accent"></circle>
+        <circle cx="134" cy="177" r="5" class="accent"></circle>
+      </g>
+    </g>
+    <!-- lantern room (eye) -->
+    <g transform="translate(100,15)">
+      <circle cx="0" cy="0" r="18" class="st fg" stroke-width="8"></circle>
+      <circle cx="0" cy="0" r="6" class="fillfg"></circle>
+    </g>
+    <!-- watch beam -->
+    <path d="M118,15 l145,-30 v60 z" class="muted" opacity="0.18"></path>
+    <path d="M118,15 l145,-30" class="st muted" stroke-width="6" opacity="0.6"></path>
+    <path d="M118,15 l145,30" class="st muted" stroke-width="6" opacity="0.6"></path>
+  </g>
+
+  <!-- ECG line (continuous monitoring) -->
+  <path class="st accent" stroke-width="8" d="M260,230 
+           h70 
+           l20,-40 l20,40 
+           h40 
+           l16,-26 l10,18 l12,-22 l14,30 
+           h40 
+           l22,-44 l22,44 
+           h45 
+           c40,0 70,0 110,0
+           h45 
+           l20,-38 l20,38 
+           h55
+           c25,0 45,0 70,0"></path>
+
+  <!-- Optional subtle wordmark line (underscore only) -->
+  <rect x="262" y="246" width="520" height="8" rx="4" class="muted" opacity="0.35"></rect>
+</svg>

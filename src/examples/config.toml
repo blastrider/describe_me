@@ -4,10 +4,10 @@ rust_log = "debug"
 
 [runtime.cli]
 # Valeurs par défaut alignées sur les flags CLI (--web, --with-services, etc.).
-web = "127.0.0.1:8080"
+web = "0.0.0.0:8080"
 with_services = true
 web_expose_all = true
-web_allow_ip = ["127.0.0.1", "::1"]
+# web_allow_ip = ["127.0.0.1", "::1", "192.168.1.0/24"]
 
 [services]
 # Noms exacts des unités systemd à afficher côté CLI/SSE.
@@ -27,12 +27,13 @@ redacted = true
 
 [web]
 # Contrôles d'accès pour le serveur HTTP (--web).
-token = ""
-allow_ips = ["127.0.0.1", "::1"]
+token = "$argon2id$v=19$m=131072,t=4,p=1$Ol1xVMQE169CLv7Ys76xrw$SiIsl7c7TlV6g+t+LfmDzwlXKtZKqfVeCqynII1BvCc"
+allow_ips = ["127.0.0.1", "::1", "192.168.1.0/24"]
+allow_origins = ["http://192.168.1.36:8080"]
 # Intervalle (en secondes) pour rafraîchir le cache "Mises à jour".
 updates_refresh_seconds = 20
 # Logo SVG personnalisé optionnel (chemin absolu).
-logo_path = "/home/max/Documents/Projets/Rust/describe_me/src/application/web/assets/logo.svg"
+logo_path = "/home/adm-max/Documents/rust-projects/describe_me/src/application/web/assets/gen.svg"
 
 [web.exposure]
 # Exposition fine des champs sensibles côté serveur web.

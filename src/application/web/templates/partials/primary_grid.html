@@ -1,0 +1,51 @@
+<div class="grid" data-draggable-zone>
+  <section class="card">
+    <h2>Système</h2>
+    <div class="row"><span class="k">Hostname</span><span class="v" id="hostname">—</span></div>
+    <div class="row"><span class="k">OS</span><span class="v" id="os">—</span></div>
+    <div class="row"><span class="k">Kernel</span><span class="v" id="kernel">—</span></div>
+    <div class="row"><span class="k">Uptime</span><span class="v" id="uptime">—</span></div>
+    <div class="row"><span class="k">CPU(s)</span><span class="v" id="cpus">—</span></div>
+  </section>
+
+  <section class="card" id="updatesCard" style="display:none">
+    <div class="card-header">
+      <h2>Mises à jour</h2>
+      <div class="card-actions">
+        <a href="/updates" class="link-button small" id="updatesDetailsPage">Page dédiée</a>
+        <button type="button" id="updatesDetailsToggle" class="link-button small" style="display:none">Détails</button>
+      </div>
+    </div>
+    <div class="row"><span class="k">En attente</span><span class="v" id="updatesPending">—</span></div>
+    <div class="row"><span class="k">Redémarrage</span><span class="v" id="updatesReboot">—</span></div>
+    <div class="row"><span class="k">Statut</span><span class="v" id="updatesStatus">—</span></div>
+    <div class="updates-details collapsed" id="updatesDetails">
+      <div class="services-list updates-list" id="updatesList">
+        <div class="service-empty">—</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Mémoire</h2>
+    <div class="row"><span class="k">Total</span><span class="v" id="memTotal">—</span></div>
+    <div class="row"><span class="k">Utilisée</span><span class="v" id="memUsed">—</span></div>
+  </section>
+
+  <section class="card">
+    <h2>Disque</h2>
+    <div class="row"><span class="k">Total</span><span class="v" id="diskTotal">—</span></div>
+    <div class="row"><span class="k">Libre</span><span class="v" id="diskAvail">—</span></div>
+    <div class="line">
+      <div class="bar"><span id="diskBar" style="width:0%"></span></div>
+    </div>
+    <div class="mono" id="partitions">—</div>
+  </section>
+
+  <section class="card" id="networkCard" style="display:none">
+    <h2>Trafic reseau</h2>
+    <div class="network-grid" id="networkList">
+      <div class="service-empty">—</div>
+    </div>
+  </section>
+</div>

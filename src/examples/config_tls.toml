@@ -1,0 +1,84 @@
+# Exemple complet de configuration HTTPS (certificat auto-signé ou ACME).
+# Cette variante expose TOUTES les options usuelles : runtime CLI, filtrage
+# des services, exposition JSON/SSE, limites de sécurité et bloc TLS natif.
+
+[runtime]
+rust_log = "info,describe_me=debug"
+
+[runtime.cli]
+web = "0.0.0.0:8443"
+with_services = true
+web_expose_all = true
+web_allow_ip = ["127.0.0.1", "::1", "192.168.1.0/24"]
+web_allow_origin = ["https://192.168.1.36:8443"]
+web_trusted_proxy = ["192.168.1.10"]
+
+[web]
+token = "$argon2id$v=19$m=131072,t=4,p=1$x1V+ijOhRvklcO5gr4NS8g$ZZ3Ra67H3ijudkXg0rxbKYrvCnZpsTvSAjzmd7vjvlY"
+allow_ips = ["127.0.0.1", "::1", "192.168.1.0/24"]
+allow_origins = ["https://192.168.1.36:8443"]
+trusted_proxies = ["192.168.1.10"]
+updates_refresh_seconds = 20
+logo_path = "/home/adm-max/Documents/rust-projects/describe_me/src/application/web/assets/gen.svg"
+
+[web.tls]
+cert_path = "./certs/server.pem"
+key_path = "./certs/server-key.pem"
+
+[web.exposure]
+expose_hostname = true
+expose_os = true
+expose_kernel = true
+expose_services = true
+expose_disk_partitions = true
+expose_listening_sockets = true
+expose_network_traffic = true
+expose_updates = true
+redacted = true
+
+[web.security]
+allowlist_multiplier = 2
+token_ip_affinity_limit = 2
+
+[web.security.html]
+window_seconds = 60
+per_ip = 40
+per_token = 12
+global = 120
+
+[web.security.sse]
+window_seconds = 60
+per_ip = 15
+per_token = 10
+max_active_per_ip = 2
+max_active_per_token = 2
+max_stream_seconds = 600
+min_event_interval_ms = 500
+max_payload_bytes = 98304
+max_stream_bytes = 4194304
+global = 40
+
+[web.security.brute_force]
+window_seconds = 600
+threshold = 5
+initial_backoff_seconds = 10
+backoff_multiplier = 2.0
+backoff_ceiling_seconds = 120
+quarantine_seconds = 3600
+token_failure_threshold = 12
+token_ip_spread = 2
+sse_min_retry_seconds = 2
+
+[services]
+include = ["cron.service", "sshd.service", "nginx.service"]
+
+[exposure]
+expose_hostname = true
+expose_os = true
+expose_kernel = true
+expose_services = true
+expose_disk_partitions = true
+expose_listening_sockets = true
+expose_network_traffic = true
+expose_updates = true
+redacted = true
