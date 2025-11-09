@@ -47,7 +47,7 @@ pub mod internals {
 }
 
 #[cfg(feature = "web")]
-pub use application::web::{serve_http, WebAccess};
+pub use application::web::{serve_http, WebAccess, WebTlsConfig};
 
 pub use application::health::{eval_checks, parse_check, Severity};
 

@@ -1,0 +1,14 @@
+:root {
+  --bg: #0f1115;
+  --card: #151923;
+  --text: #e6eef8;
+  --muted: #a8b3c3;
+  --ok: #3ad29f;
+  --warn: #ffd166;
+  --err: #ff6b6b;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --bg-wave-1: #0c101b;
+  --bg-wave-2: #151b2a;
+  --bg-wave-highlight: #1f2738;
+  --bg-grid: rgba(255, 255, 255, 0.03);
+}

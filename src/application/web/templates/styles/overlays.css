@@ -1,0 +1,30 @@
+.token-overlay {
+  position: fixed; inset: 0;
+  background: rgba(15, 17, 21, 0.92);
+  display: none; align-items: center; justify-content: center;
+  padding: 20px; z-index: 100;
+}
+.token-overlay.visible { display: flex; }
+.token-dialog {
+  background: var(--card); border: 1px solid #222838; border-radius: 10px;
+  padding: 24px; max-width: 360px; width: 100%;
+  box-shadow: 0 8px 24px rgba(0,0,0,.35);
+}
+.token-dialog h2 { margin: 0 0 12px; font-size: 18px; color: var(--text); }
+.token-dialog p { margin: 0 0 16px; color: var(--muted); font-size: 14px; }
+.token-dialog form { display: flex; flex-direction: column; gap: 10px; }
+.token-dialog input {
+  padding: 10px 12px; border-radius: 6px; border: 1px solid #2a3147;
+  background: #0f1115; color: var(--text); font-size: 15px;
+}
+.token-dialog .actions {
+  display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap;
+}
+.token-dialog button {
+  flex: 1 1 auto; padding: 10px 12px; border-radius: 6px; border: none;
+  background: #3ad29f; color: #0f1115; font-weight: 600; cursor: pointer;
+}
+.token-dialog button.secondary {
+  background: transparent; border: 1px solid #2a3147; color: var(--text);
+}
+.token-error { margin-top: 12px; font-size: 13px; color: var(--err); }

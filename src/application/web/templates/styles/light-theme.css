@@ -1,0 +1,18 @@
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg:#f6f7fb;
+    --card:#ffffff;
+    --text:#1d2330;
+    --muted:#5b667a;
+    --bg-wave-1:#e3e7f5;
+    --bg-wave-2:#cfd6f0;
+    --bg-wave-highlight:#f7f8ff;
+    --bg-grid:rgba(13, 19, 33, 0.05);
+  }
+  body { background: var(--bg); color: var(--text); }
+  .card { border-color: #e4e8f1; }
+  .service-row { background: #f0f2fb; border-color: #d6dbeb; }
+  .token-dialog { background: #ffffff; border-color: #d6dbeb; }
+  .token-dialog input { background: #ffffff; border-color: #d0d6e5; color: #1d2330; }
+  .token-dialog button.secondary { border-color: #d0d6e5; color: #1d2330; }
+}
