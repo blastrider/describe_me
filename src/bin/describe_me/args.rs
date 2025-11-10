@@ -214,6 +214,9 @@ pub enum MetadataCommand {
     /// Manipule la description du serveur stockée en base.
     #[command(subcommand)]
     Description(DescriptionCommand),
+    /// Gère la liste des tags serveur.
+    #[command(subcommand)]
+    Tags(TagsCommand),
 }
 
 #[derive(Debug, Subcommand)]
@@ -226,6 +229,29 @@ pub enum DescriptionCommand {
         text: String,
     },
     /// Supprime la description persistée.
+    Clear,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TagsCommand {
+    /// Affiche les tags actuels.
+    Show,
+    /// Remplace complètement la liste des tags.
+    Set {
+        #[arg(value_name = "TAG", required = true, num_args = 1..)]
+        tags: Vec<String>,
+    },
+    /// Ajoute un ou plusieurs tags à la liste existante.
+    Add {
+        #[arg(value_name = "TAG", required = true, num_args = 1..)]
+        tags: Vec<String>,
+    },
+    /// Supprime un ou plusieurs tags existants.
+    Remove {
+        #[arg(value_name = "TAG", required = true, num_args = 1..)]
+        tags: Vec<String>,
+    },
+    /// Supprime tous les tags.
     Clear,
 }
 
@@ -329,5 +355,18 @@ mod tests {
                 DescriptionCommand::Show
             )))
         ));
+    }
+
+    #[test]
+    fn parses_metadata_tags_commands() {
+        let opts =
+            Opts::try_parse_from(["describe-me", "metadata", "tags", "set", "ubuntu", "ftp"])
+                .unwrap();
+        match opts.command {
+            Some(CliCommand::Metadata(MetadataCommand::Tags(TagsCommand::Set { tags }))) => {
+                assert_eq!(tags, vec!["ubuntu", "ftp"]);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
     }
 }

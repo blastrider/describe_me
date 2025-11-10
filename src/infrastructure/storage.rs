@@ -10,6 +10,7 @@ use crate::domain::DescribeError;
 
 const METADATA_TABLE: TableDefinition<&str, &str> = TableDefinition::new("server_metadata");
 const DESCRIPTION_KEY: &str = "server_description";
+const TAGS_KEY: &str = "server_tags";
 const DB_FILE_NAME: &str = "metadata.redb";
 const APP_DIR_NAME: &str = "describe-me";
 static STATE_DIR_OVERRIDE: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
@@ -83,6 +84,47 @@ impl MetadataStore {
             Err(TableError::TableDoesNotExist(_)) => {
                 // Nothing persisted yet — nothing to clear.
             }
+            Err(err) => return Err(map_db_err(err)),
+        }
+        tx.commit().map_err(map_db_err)?;
+        Ok(())
+    }
+
+    pub(crate) fn set_tags_raw(&self, payload: &str) -> Result<(), DescribeError> {
+        let tx = self.db.begin_write().map_err(map_db_err)?;
+        {
+            let mut table = tx.open_table(METADATA_TABLE).map_err(map_db_err)?;
+            if payload.is_empty() {
+                table.remove(TAGS_KEY).map_err(map_storage_err)?;
+            } else {
+                table.insert(TAGS_KEY, payload).map_err(map_storage_err)?;
+            }
+        }
+        tx.commit().map_err(map_db_err)?;
+        Ok(())
+    }
+
+    pub(crate) fn get_tags_raw(&self) -> Result<Option<String>, DescribeError> {
+        let tx = self.db.begin_read().map_err(map_db_err)?;
+        let table = match tx.open_table(METADATA_TABLE) {
+            Ok(table) => table,
+            Err(TableError::TableDoesNotExist(_)) => return Ok(None),
+            Err(err) => return Err(map_db_err(err)),
+        };
+        let value = table
+            .get(TAGS_KEY)
+            .map_err(map_storage_err)?
+            .map(|v| v.value().to_owned());
+        Ok(value)
+    }
+
+    pub(crate) fn clear_tags(&self) -> Result<(), DescribeError> {
+        let tx = self.db.begin_write().map_err(map_db_err)?;
+        match tx.open_table(METADATA_TABLE) {
+            Ok(mut table) => {
+                table.remove(TAGS_KEY).map_err(map_storage_err)?;
+            }
+            Err(TableError::TableDoesNotExist(_)) => {}
             Err(err) => return Err(map_db_err(err)),
         }
         tx.commit().map_err(map_db_err)?;

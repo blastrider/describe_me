@@ -20,7 +20,7 @@ use serde::Serialize;
 use allowlists::{resolve_web_list, CliListOrigin};
 use args::{
     hash_web_token, parse as parse_opts, read_token_from_stdin, CliCommand, DescriptionCommand,
-    MetadataCommand,
+    MetadataCommand, TagsCommand,
 };
 use exposure_cfg::apply_cli_exposure_flags;
 #[cfg(feature = "web")]
@@ -62,6 +62,7 @@ fn handle_command(cmd: CliCommand) -> Result<()> {
 fn handle_metadata_command(cmd: MetadataCommand) -> Result<()> {
     match cmd {
         MetadataCommand::Description(action) => handle_description_command(action),
+        MetadataCommand::Tags(action) => handle_tags_command(action),
     }
 }
 
@@ -86,6 +87,44 @@ fn handle_description_command(cmd: DescriptionCommand) -> Result<()> {
     Ok(())
 }
 
+fn handle_tags_command(cmd: TagsCommand) -> Result<()> {
+    match cmd {
+        TagsCommand::Show => {
+            let tags = describe_me::load_server_tags()?;
+            if tags.is_empty() {
+                println!("(aucun tag configuré)");
+            } else {
+                println!("{}", tags.join(", "));
+            }
+        }
+        TagsCommand::Set { tags } => {
+            let normalized = describe_me::set_server_tags(&tags)?;
+            if normalized.is_empty() {
+                println!("Aucun tag valide fourni, liste nettoyée.");
+            } else {
+                println!("Tags définis: {}", normalized.join(", "));
+            }
+        }
+        TagsCommand::Add { tags } => {
+            let normalized = describe_me::add_server_tags(&tags)?;
+            println!("Tags actuels: {}", normalized.join(", "));
+        }
+        TagsCommand::Remove { tags } => {
+            let normalized = describe_me::remove_server_tags(&tags)?;
+            if normalized.is_empty() {
+                println!("Plus aucun tag défini.");
+            } else {
+                println!("Tags restants: {}", normalized.join(", "));
+            }
+        }
+        TagsCommand::Clear => {
+            describe_me::clear_server_tags()?;
+            println!("Tags supprimés.");
+        }
+    }
+    Ok(())
+}
+
 fn print_description_block(desc: &str) {
     if desc.contains('\n') {
         println!("Description :");
@@ -99,6 +138,13 @@ fn print_description_block(desc: &str) {
     } else {
         println!("Description : {desc}");
     }
+}
+
+fn print_tags_line(tags: &[String]) {
+    if tags.is_empty() {
+        return;
+    }
+    println!("Tags : {}", tags.join(", "));
 }
 
 #[cfg(unix)]
@@ -449,6 +495,10 @@ fn main() -> Result<()> {
 
     if let Some(desc) = snapshot_view.server_description.as_deref() {
         print_description_block(desc);
+        println!();
+    }
+    if !snapshot_view.server_tags.is_empty() {
+        print_tags_line(&snapshot_view.server_tags);
         println!();
     }
 
