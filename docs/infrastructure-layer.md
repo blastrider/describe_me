@@ -50,7 +50,8 @@ de bord.
   répertoires sont créés à la volée.
 - Fournit les primitives `set_description` / `get_description` /
   `clear_description` utilisées pour stocker la description libre du
-  serveur.
+  serveur, ainsi que `set_tags_raw` / `get_tags_raw` pour la liste de
+  tags normalisés.
 
 ## Approche commune
 

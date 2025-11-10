@@ -84,3 +84,18 @@ de configuration : ajoutez `state_dir = "/var/lib/describe-me"` dans la section
 ce chemin pour `metadata.redb`.
 Les snapshots (CLI, JSON, SSE) réutilisent automatiquement ce contenu et l’interface web
 affiche un bloc « Description » modifiable (formulaire avec sauvegarde immédiate via `POST /api/description`).
+
+Les tags serveur sont gérés via la même sous-commande :
+
+```
+describe-me metadata tags show
+describe-me metadata tags set ubuntu ftp prod
+describe-me metadata tags add staging europe
+describe-me metadata tags remove prod
+describe-me metadata tags clear
+```
+
+Les tags sont normalisés (minuscules, tirets) et affichés dans la sortie CLI ainsi
+que dans l’interface web pour faciliter le regroupement des machines. Le tableau
+de bord web dispose également d’un champ « Tags » pour ajouter/supprimer/vider la
+liste directement depuis le navigateur (mêmes validations côté API).

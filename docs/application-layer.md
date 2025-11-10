@@ -60,6 +60,10 @@ La couche `application` compose les services de `domain` et
   - Le répertoire de stockage (`metadata.redb`) peut être écrasé via
     `override_state_directory` (utilisé automatiquement si `[runtime] state_dir`
     est défini dans la configuration TOML).
+  - De nouveaux helpers gèrent les tags (`set_server_tags`, `add_server_tags`,
+    `remove_server_tags`, `load_server_tags`) afin que la CLI et l’interface web
+    puissent afficher et modifier les labels normalisés d’un serveur. L’UI web
+    embarque désormais un formulaire (AJAX) pour ajouter/retirer/vider ces tags.
 
 - `net.rs` (feature `net`)
   - `net_listen()` : expose les sockets TCP/UDP en écoute via
