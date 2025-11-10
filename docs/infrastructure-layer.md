@@ -45,7 +45,8 @@ de bord.
   table `server_metadata`.
 - Résout automatiquement le répertoire d’état en respectant (ordre de
   priorité) `DESCRIBE_ME_STATE_DIR`, la variable `STATE_DIRECTORY`
-  exposée par systemd, puis les emplacements XDG/`LOCALAPPDATA`. Les
+  exposée par systemd, la valeur `[runtime] state_dir` de la configuration,
+  puis les emplacements XDG/`LOCALAPPDATA`. Les
   répertoires sont créés à la volée.
 - Fournit les primitives `set_description` / `get_description` /
   `clear_description` utilisées pour stocker la description libre du

@@ -57,6 +57,9 @@ La couche `application` compose les services de `domain` et
   - `capture_snapshot_with_view` enrichit `SnapshotView.server_description`
     avec la valeur persistée, en journalisant les erreurs redb sans
     casser la capture principale.
+  - Le répertoire de stockage (`metadata.redb`) peut être écrasé via
+    `override_state_directory` (utilisé automatiquement si `[runtime] state_dir`
+    est défini dans la configuration TOML).
 
 - `net.rs` (feature `net`)
   - `net_listen()` : expose les sockets TCP/UDP en écoute via
