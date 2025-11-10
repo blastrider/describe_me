@@ -178,6 +178,10 @@ expose_kernel = true
 redacted = true
 ```
 
+> Astuce : pour `allow_ips`, `allow_origins` et `trusted_proxies`, la priorité
+> est `--web-*` (CLI) > `[web]` > `[runtime.cli]`. Chaque section définit donc
+> ses propres valeurs sans cumul implicite.
+
 Autres variantes :
 
 - `src/examples/config_http.toml` — écoute HTTP (LAN).
