@@ -35,6 +35,10 @@ un fichier TOML (`DescribeConfig`). Il peut définir :
 
 > **Note :** `web.token` attend désormais une empreinte Argon2id/bcrypt. Utilisez
 > `describe-me --hash-web-token 'secret'` pour produire une valeur compatible.
+> Les listes `web.allow_ips`, `web.allow_origins` et `web.trusted_proxies` ne
+> sont pas fusionnées : une valeur CLI (`--web-*`) prime sur `[web]`, elle-même
+> prioritaire sur `[runtime.cli]`. Un réglage donné n'agit donc qu'à l'endroit
+> où il est défini.
 
 Les erreurs de lecture/parsing sont remontées par `DescribeError::Config`
 et journalisées (`LogEvent::ConfigError`).
