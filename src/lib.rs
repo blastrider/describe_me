@@ -56,7 +56,8 @@ pub use application::exposure::Exposure;
 pub use application::logging::{init_logging, LogEvent};
 
 pub use application::metadata::{
-    clear_server_description, load_server_description, set_server_description,
+    clear_server_description, load_server_description, override_state_directory,
+    set_server_description,
 };
 
 #[cfg(feature = "serde")]
