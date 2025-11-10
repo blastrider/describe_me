@@ -216,6 +216,8 @@ pub struct SnapshotView {
     pub used_swap_bytes: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub server_description: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub server_tags: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub disk_usage: Option<DiskUsageView>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -275,6 +277,7 @@ impl SnapshotView {
             total_swap_bytes: snapshot.total_swap_bytes,
             used_swap_bytes: snapshot.used_swap_bytes,
             server_description: None,
+            server_tags: Vec::new(),
             disk_usage,
             os_name,
             kernel_release,

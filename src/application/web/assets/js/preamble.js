@@ -22,6 +22,12 @@ const descriptionEdit = document.getElementById('descriptionEdit');
 const descriptionCancel = document.getElementById('descriptionCancel');
 const descriptionSave = document.getElementById('descriptionSave');
 const descriptionHint = document.getElementById('descriptionHint');
+const tagsList = document.getElementById('tagsList');
+const tagsEmpty = document.getElementById('tagsEmpty');
+const tagsForm = document.getElementById('tagsForm');
+const tagsInput = document.getElementById('tagsInput');
+const tagsClear = document.getElementById('tagsClear');
+const tagsHint = document.getElementById('tagsHint');
 
 const tokenOverlay = document.getElementById('tokenOverlay');
 const tokenForm = document.getElementById('tokenForm');
@@ -85,6 +91,15 @@ if (descriptionForm && descriptionInput && descriptionEdit) {
   if (descriptionCancel) {
     descriptionCancel.addEventListener('click', () => closeDescriptionEditor());
   }
+}
+if (tagsForm && tagsInput) {
+  tagsForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    submitTagsAdd();
+  });
+}
+if (tagsClear) {
+  tagsClear.addEventListener('click', () => submitTagsClear());
 }
 
 const el = (id) => document.getElementById(id);

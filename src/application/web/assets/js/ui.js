@@ -1,6 +1,9 @@
 let latestDescription = "";
 let descriptionEditing = false;
 let descriptionSaving = false;
+let latestTags = [];
+let tagsSaving = false;
+const TAGS_MAX_PER_REQUEST = 64;
 
 function updateUI(data) {
   err.textContent = "";
@@ -8,6 +11,7 @@ function updateUI(data) {
   syncDescriptionUI(
     typeof data.server_description === "string" ? data.server_description : ""
   );
+  syncTagsUI(Array.isArray(data.server_tags) ? data.server_tags : []);
   el('hostname').textContent = data.hostname || "—";
   el('os').textContent = data.os || data.os_name || "—";
   el('kernel').textContent = data.kernel || data.kernel_release || "—";
@@ -366,6 +370,39 @@ function syncDescriptionUI(value) {
   }
 }
 
+function syncTagsUI(list) {
+  if (!tagsList || !tagsEmpty) {
+    return;
+  }
+  latestTags = Array.isArray(list) ? [...list] : [];
+  clearChildren(tagsList);
+  const tags = latestTags;
+  if (tags.length === 0) {
+    tagsEmpty.style.display = "block";
+    return;
+  }
+  tagsEmpty.style.display = "none";
+  const fragment = document.createDocumentFragment();
+  tags.forEach((tag) => {
+    const value = typeof tag === "string" ? tag : "";
+    if (!value) return;
+    const pill = document.createElement('span');
+    pill.className = 'tag-pill';
+    pill.appendChild(document.createTextNode(value));
+    if (tagsForm) {
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'tag-remove';
+      remove.setAttribute('aria-label', `Supprimer ${value}`);
+      remove.addEventListener('click', () => handleTagRemoval(value));
+      remove.textContent = '×';
+      pill.appendChild(remove);
+    }
+    fragment.appendChild(pill);
+  });
+  tagsList.appendChild(fragment);
+}
+
 function openDescriptionEditor() {
   if (!descriptionForm) {
     return;
@@ -405,6 +442,17 @@ function setDescriptionHint(message, tone = "") {
   descriptionHint.classList.remove('error', 'success');
   if (tone) {
     descriptionHint.classList.add(tone);
+  }
+}
+
+function setTagsHint(message, tone = "") {
+  if (!tagsHint) {
+    return;
+  }
+  tagsHint.textContent = message || "";
+  tagsHint.classList.remove('error', 'success');
+  if (tone) {
+    tagsHint.classList.add(tone);
   }
 }
 
@@ -474,5 +522,94 @@ async function readJsonMessage(response) {
     return text;
   } catch (_) {
     return "";
+  }
+}
+
+function parseInputTags(raw) {
+  return raw
+    .split(/[,\s]+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length > 0)
+    .slice(0, TAGS_MAX_PER_REQUEST);
+}
+
+function submitTagsAdd() {
+  if (tagsSaving) {
+    return;
+  }
+  if (!tagsInput) {
+    return;
+  }
+  const tokens = parseInputTags(tagsInput.value || "");
+  if (tokens.length === 0) {
+    setTagsHint("Merci de saisir au moins un tag.", "error");
+    return;
+  }
+  postTagsRequest("add", tokens);
+}
+
+function handleTagRemoval(tag) {
+  if (tagsSaving) {
+    return;
+  }
+  postTagsRequest("remove", [tag]);
+}
+
+function submitTagsClear() {
+  if (tagsSaving) {
+    return;
+  }
+  postTagsRequest("clear", []);
+}
+
+async function postTagsRequest(op, tags) {
+  tagsSaving = true;
+  setTagsHint("Enregistrement…");
+  if (tagsInput && op !== "remove") {
+    tagsInput.disabled = true;
+  }
+  try {
+    const headers = { "Content-Type": "application/json" };
+    if (currentToken) {
+      headers["Authorization"] = `Bearer ${currentToken}`;
+    }
+    const body = { op, tags };
+    const response = await fetch('/api/tags', {
+      method: 'POST',
+      headers,
+      credentials: 'same-origin',
+      body: JSON.stringify(body),
+    });
+    if (response.status === 401) {
+      const message = await readJsonMessage(response);
+      showTokenPrompt(message || "Jeton requis pour modifier les tags.");
+      return;
+    }
+    if (response.status === 403) {
+      const message = await readJsonMessage(response);
+      setTagsHint(message || "Adresse IP non autorisée.", 'error');
+      return;
+    }
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const message =
+        (data && typeof data.error === "string" && data.error) ||
+        "Impossible de mettre à jour les tags.";
+      setTagsHint(message, 'error');
+      return;
+    }
+    const next = Array.isArray(data.tags) ? data.tags : [];
+    syncTagsUI(next);
+    if (tagsInput) {
+      tagsInput.value = "";
+    }
+    setTagsHint("Tags mis à jour.", 'success');
+  } catch (_) {
+    setTagsHint("Impossible de mettre à jour les tags.", 'error');
+  } finally {
+    tagsSaving = false;
+    if (tagsInput) {
+      tagsInput.disabled = false;
+    }
   }
 }

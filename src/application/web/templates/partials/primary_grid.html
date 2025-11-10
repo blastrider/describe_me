@@ -17,6 +17,28 @@
       </div>
       <p class="form-hint" id="descriptionHint" role="status" aria-live="polite"></p>
     </form>
+    <div class="tags-block">
+      <div class="tags-block-header">
+        <h3>Tags</h3>
+      </div>
+      <div class="tags-list" id="tagsList" role="list"></div>
+      <p id="tagsEmpty" class="tags-placeholder">Aucun tag défini.</p>
+      <form class="tags-form" id="tagsForm">
+        <label for="tagsInput" class="sr-only">Ajouter des tags</label>
+        <input
+          type="text"
+          id="tagsInput"
+          name="tags"
+          placeholder="Ex: ubuntu, ftp"
+          autocomplete="off"
+        />
+        <div class="tags-actions">
+          <button type="submit" class="primary-button small" id="tagsAdd">Ajouter</button>
+          <button type="button" class="link-button small" id="tagsClear">Tout effacer</button>
+        </div>
+      </form>
+      <p class="form-hint" id="tagsHint" role="status" aria-live="polite"></p>
+    </div>
   </section>
 
   <section class="card">
