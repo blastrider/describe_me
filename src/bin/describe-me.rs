@@ -119,10 +119,6 @@ fn ensure_not_root() -> Result<()> {
 fn main() -> Result<()> {
     let mut opts = parse_opts();
 
-    if let Some(cmd) = opts.command.take() {
-        return handle_command(cmd);
-    }
-
     if opts.hash_web_token.is_some() || opts.hash_web_token_stdin {
         let token = if let Some(value) = opts.hash_web_token.take() {
             value
@@ -152,6 +148,19 @@ fn main() -> Result<()> {
         bail!(
             "--config nécessite la feature `config` (cargo run --features \"cli systemd config\")."
         );
+    }
+
+    #[cfg(feature = "config")]
+    if let Some(cfg) = &cfg {
+        if let Some(runtime) = cfg.runtime.as_ref() {
+            if let Some(state_dir) = runtime.state_dir.as_deref() {
+                describe_me::override_state_directory(state_dir);
+            }
+        }
+    }
+
+    if let Some(cmd) = opts.command.take() {
+        return handle_command(cmd);
     }
 
     let mut allow_config_exposure = opts.allow_config_exposure;
