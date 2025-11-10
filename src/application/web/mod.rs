@@ -39,8 +39,8 @@ use axum::{
     middleware,
     middleware::Next,
     response::{Html, IntoResponse, Response},
-    routing::get,
-    Router,
+    routing::{get, post},
+    Json, Router,
 };
 use axum_server::tls_rustls::RustlsConfig;
 use tokio::sync::Notify;
@@ -48,9 +48,11 @@ use tracing::warn;
 
 use crate::application::exposure::Exposure;
 use crate::application::logging::LogEvent;
+use crate::application::metadata::set_server_description;
 use crate::domain::DescribeError;
 #[cfg(feature = "config")]
 use crate::domain::{DescribeConfig, WebSecurityConfig};
+use serde::{Deserialize, Serialize};
 
 use security::{AuthGuard, WebSecurity};
 use sse::sse_stream;
@@ -70,6 +72,7 @@ pub(crate) const TOKEN_COOKIE_NAME: &str = "describe_me_token";
 const TOKEN_COOKIE_MAX_AGE: u32 = 7 * 24 * 3600;
 const UPDATES_CACHE_SUCCESS_TTL: Duration = Duration::from_secs(300);
 const UPDATES_CACHE_FAILURE_RETRY: Duration = Duration::from_secs(60);
+const DESCRIPTION_MAX_BYTES: usize = 2048;
 
 #[cfg(feature = "config")]
 const LOGO_MAX_BYTES: u64 = 128 * 1024;
@@ -136,6 +139,21 @@ struct AppState {
 #[derive(Clone)]
 struct LogoAsset {
     bytes: Bytes,
+}
+
+#[derive(Deserialize)]
+struct DescriptionPayload {
+    text: String,
+}
+
+#[derive(Serialize)]
+struct DescriptionResponse {
+    description: String,
+}
+
+#[derive(Serialize)]
+struct ApiErrorResponse {
+    error: String,
 }
 
 impl LogoAsset {
@@ -564,6 +582,7 @@ pub async fn serve_http<A: Into<SocketAddr>>(
 
     let router = Router::new()
         .route("/", get(index))
+        .route("/api/description", post(update_description))
         .route("/assets/logo.svg", get(logo_asset))
         .route("/updates", get(updates_page))
         .route("/sse", get(sse_stream))
@@ -741,6 +760,55 @@ async fn updates_page(
         set_session_cookie(response.headers_mut(), token);
     }
     response
+}
+
+async fn update_description(
+    _guard: AuthGuard,
+    Json(payload): Json<DescriptionPayload>,
+) -> impl IntoResponse {
+    let text = match normalize_description(&payload.text) {
+        Ok(value) => value,
+        Err(msg) => return json_error(StatusCode::BAD_REQUEST, msg),
+    };
+
+    if let Err(err) = set_server_description(&text) {
+        LogEvent::SystemError {
+            location: Cow::Borrowed("web_description_update"),
+            error: Cow::Owned(err.to_string()),
+        }
+        .emit();
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Impossible d'enregistrer la description.",
+        );
+    }
+
+    (
+        StatusCode::OK,
+        Json(DescriptionResponse { description: text }),
+    )
+        .into_response()
+}
+
+fn normalize_description(input: &str) -> Result<String, &'static str> {
+    let sanitized = {
+        let crlf_folded = input.replace("\r\n", "\n");
+        crlf_folded.replace('\r', "\n")
+    };
+    if sanitized.len() > DESCRIPTION_MAX_BYTES {
+        return Err("La description ne peut pas dépasser 2048 caractères.");
+    }
+    Ok(sanitized)
+}
+
+fn json_error(status: StatusCode, message: impl Into<String>) -> Response {
+    (
+        status,
+        Json(ApiErrorResponse {
+            error: message.into(),
+        }),
+    )
+        .into_response()
 }
 
 fn map_io(e: impl std::error::Error + Send + Sync + 'static) -> DescribeError {
@@ -932,6 +1000,19 @@ mod tests {
             value.to_str().unwrap(),
             "max-age=31536000; includeSubDomains"
         );
+    }
+
+    #[test]
+    fn normalize_description_replaces_carriage_returns() {
+        let normalized = super::normalize_description("hello\r\nworld\rgoodbye").expect("ok");
+        assert_eq!(normalized, "hello\nworld\ngoodbye");
+    }
+
+    #[test]
+    fn normalize_description_enforces_limit() {
+        let long = "x".repeat(super::DESCRIPTION_MAX_BYTES + 1);
+        let err = super::normalize_description(&long).unwrap_err();
+        assert!(err.contains("2048"), "unexpected message: {err}");
     }
 
     #[tokio::test]

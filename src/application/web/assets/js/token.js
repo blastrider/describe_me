@@ -1,4 +1,43 @@
-let currentToken = sessionStorage.getItem('describe_me_token') || "";
+const TOKEN_STORAGE_KEY = 'describe_me_token';
+
+function loadPersistedToken() {
+  try {
+    return window.localStorage.getItem(TOKEN_STORAGE_KEY) || "";
+  } catch (_) {
+    try {
+      return window.sessionStorage.getItem(TOKEN_STORAGE_KEY) || "";
+    } catch (_) {
+      return "";
+    }
+  }
+}
+
+function persistToken(value) {
+  try {
+    window.localStorage.setItem(TOKEN_STORAGE_KEY, value);
+  } catch (_) {
+    try {
+      window.sessionStorage.setItem(TOKEN_STORAGE_KEY, value);
+    } catch (_) {
+      // ignore
+    }
+  }
+}
+
+function clearPersistedToken() {
+  try {
+    window.localStorage.removeItem(TOKEN_STORAGE_KEY);
+  } catch (_) {
+    // ignore
+  }
+  try {
+    window.sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+  } catch (_) {
+    // ignore
+  }
+}
+
+let currentToken = loadPersistedToken();
 if (currentToken) {
   tokenInput.value = currentToken;
 }
@@ -14,13 +53,13 @@ tokenForm.addEventListener('submit', (event) => {
     return;
   }
   currentToken = value;
-  sessionStorage.setItem('describe_me_token', currentToken);
+  persistToken(currentToken);
   hideTokenPrompt();
   restartStream();
 });
 
 tokenForget.addEventListener('click', () => {
-  sessionStorage.removeItem('describe_me_token');
+  clearPersistedToken();
   currentToken = "";
   tokenInput.value = "";
   tokenErrorEl.textContent = "";

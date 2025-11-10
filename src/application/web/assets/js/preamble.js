@@ -13,6 +13,15 @@ const updatesList = document.getElementById('updatesList');
 const updatesToggle = document.getElementById('updatesDetailsToggle');
 const networkCard = document.getElementById('networkCard');
 const networkList = document.getElementById('networkList');
+const descriptionCard = document.getElementById('descriptionCard');
+const descriptionText = document.getElementById('descriptionText');
+const descriptionEmpty = document.getElementById('descriptionEmpty');
+const descriptionForm = document.getElementById('descriptionForm');
+const descriptionInput = document.getElementById('descriptionInput');
+const descriptionEdit = document.getElementById('descriptionEdit');
+const descriptionCancel = document.getElementById('descriptionCancel');
+const descriptionSave = document.getElementById('descriptionSave');
+const descriptionHint = document.getElementById('descriptionHint');
 
 const tokenOverlay = document.getElementById('tokenOverlay');
 const tokenForm = document.getElementById('tokenForm');
@@ -66,6 +75,16 @@ if (updatesToggle && updatesDetails) {
     updatesToggle.textContent = collapsed ? "Détails" : "Masquer";
     updatesToggle.setAttribute('aria-expanded', (!collapsed).toString());
   });
+}
+if (descriptionForm && descriptionInput && descriptionEdit) {
+  descriptionForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    submitDescriptionForm();
+  });
+  descriptionEdit.addEventListener('click', () => openDescriptionEditor());
+  if (descriptionCancel) {
+    descriptionCancel.addEventListener('click', () => closeDescriptionEditor());
+  }
 }
 
 const el = (id) => document.getElementById(id);

@@ -1,6 +1,13 @@
+let latestDescription = "";
+let descriptionEditing = false;
+let descriptionSaving = false;
+
 function updateUI(data) {
   err.textContent = "";
 
+  syncDescriptionUI(
+    typeof data.server_description === "string" ? data.server_description : ""
+  );
   el('hostname').textContent = data.hostname || "—";
   el('os').textContent = data.os || data.os_name || "—";
   el('kernel').textContent = data.kernel || data.kernel_release || "—";
@@ -337,4 +344,135 @@ function updateUI(data) {
 function showError(message) {
   err.textContent = message;
   dot.classList.remove('ok');
+}
+
+function syncDescriptionUI(value) {
+  if (!descriptionCard || !descriptionText || !descriptionEmpty) {
+    return;
+  }
+  latestDescription = typeof value === "string" ? value : "";
+  const hasContent = latestDescription.trim().length > 0;
+  if (hasContent) {
+    descriptionText.textContent = latestDescription;
+    descriptionText.style.display = "block";
+    descriptionEmpty.style.display = "none";
+  } else {
+    descriptionText.textContent = "";
+    descriptionText.style.display = "none";
+    descriptionEmpty.style.display = "block";
+  }
+  if (!descriptionEditing && descriptionInput) {
+    descriptionInput.value = latestDescription;
+  }
+}
+
+function openDescriptionEditor() {
+  if (!descriptionForm) {
+    return;
+  }
+  descriptionEditing = true;
+  descriptionForm.hidden = false;
+  if (descriptionEdit) {
+    descriptionEdit.setAttribute('disabled', 'disabled');
+  }
+  if (descriptionInput) {
+    descriptionInput.value = latestDescription;
+    descriptionInput.focus();
+  }
+  setDescriptionHint("", "");
+}
+
+function closeDescriptionEditor(reset = true) {
+  if (!descriptionForm) {
+    return;
+  }
+  descriptionEditing = false;
+  descriptionForm.hidden = true;
+  if (descriptionEdit) {
+    descriptionEdit.removeAttribute('disabled');
+  }
+  if (reset && descriptionInput) {
+    descriptionInput.value = latestDescription;
+  }
+  setDescriptionHint("", "");
+}
+
+function setDescriptionHint(message, tone = "") {
+  if (!descriptionHint) {
+    return;
+  }
+  descriptionHint.textContent = message || "";
+  descriptionHint.classList.remove('error', 'success');
+  if (tone) {
+    descriptionHint.classList.add(tone);
+  }
+}
+
+async function submitDescriptionForm() {
+  if (!descriptionInput || descriptionSaving) {
+    return;
+  }
+  descriptionSaving = true;
+  setDescriptionHint("Enregistrement…");
+  if (descriptionSave) {
+    descriptionSave.disabled = true;
+  }
+  try {
+    const payload = { text: descriptionInput.value };
+    const headers = { "Content-Type": "application/json" };
+    if (currentToken) {
+      headers["Authorization"] = `Bearer ${currentToken}`;
+    }
+    const response = await fetch('/api/description', {
+      method: 'POST',
+      headers,
+      credentials: 'same-origin',
+      body: JSON.stringify(payload),
+    });
+    if (response.status === 401) {
+      const message = await readJsonMessage(response);
+      showTokenPrompt(message || "Jeton requis pour modifier la description.");
+      return;
+    }
+    if (response.status === 403) {
+      const message = await readJsonMessage(response);
+      setDescriptionHint(message || "Adresse IP non autorisée.", 'error');
+      return;
+    }
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const message =
+        (data && typeof data.error === "string" && data.error) ||
+        "Impossible d'enregistrer la description.";
+      setDescriptionHint(message, 'error');
+      return;
+    }
+    const nextValue =
+      data && typeof data.description === "string" ? data.description : "";
+    syncDescriptionUI(nextValue);
+    closeDescriptionEditor();
+  } catch (_) {
+    setDescriptionHint("Impossible d'enregistrer la description.", 'error');
+  } finally {
+    descriptionSaving = false;
+    if (descriptionSave) {
+      descriptionSave.disabled = false;
+    }
+  }
+}
+
+async function readJsonMessage(response) {
+  try {
+    const text = await response.text();
+    if (!text) {
+      return "";
+    }
+    const data = JSON.parse(text);
+    if (data && typeof data.error === "string") {
+      return data.error;
+    }
+    return text;
+  } catch (_) {
+    return "";
+  }
 }
