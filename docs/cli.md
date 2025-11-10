@@ -53,6 +53,30 @@ Le mode CLI assemble :
 - Si `--summary` est présent, une ligne courte est affichée avant toute autre
   sortie. Elle inclut notamment `updates=<N>` et `reboot=<yes|no|unknown>`, puis
   les sorties habituelles (tableaux, JSON, etc.) sont produites.
+- Lorsque la description est définie, une section `Description : ...` est
+  imprimée avant les tableaux, et le champ `server_description` est inclus
+  dans le JSON/SSE.
 
 Le serveur web réutilise ces mêmes structures, cadencées par `tokio` et
 l’intervalle `--web-interval`.
+
+## Métadonnées persistées (redb)
+
+Le binaire embarque maintenant un mini-stockage redb (`metadata.redb`) pour
+retenir une description libre du serveur (rôle, contexte, contacts). La CLI
+expose une sous-commande dédiée :
+
+```
+describe-me metadata description show
+describe-me metadata description set "Serveur FTP staging (contact: infra@example.com)"
+describe-me metadata description clear
+```
+
+- `set` crée ou remplace la description.
+- `show` affiche la valeur brute ou indique l’absence de donnée.
+- `clear` supprime l’entrée.
+
+Le fichier est écrit dans `DESCRIBE_ME_STATE_DIR` s’il est défini, sinon dans
+`STATE_DIRECTORY` (systemd) ou, à défaut, dans les emplacements XDG/`LOCALAPPDATA`.
+Les snapshots (CLI, JSON, SSE) réutilisent automatiquement ce contenu et l’interface web
+affiche un bloc « Description » modifiable (formulaire avec sauvegarde immédiate via `POST /api/description`).

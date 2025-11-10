@@ -39,6 +39,18 @@ de bord.
 - Implémente des helpers de parsing (`count_apt_lines`, `count_dnf_updates`)
   couverts par des tests unitaires.
 
+## `storage.rs`
+
+- Initialise la base `redb` (`metadata.redb`) via `MetadataStore` et la
+  table `server_metadata`.
+- Résout automatiquement le répertoire d’état en respectant (ordre de
+  priorité) `DESCRIBE_ME_STATE_DIR`, la variable `STATE_DIRECTORY`
+  exposée par systemd, puis les emplacements XDG/`LOCALAPPDATA`. Les
+  répertoires sont créés à la volée.
+- Fournit les primitives `set_description` / `get_description` /
+  `clear_description` utilisées pour stocker la description libre du
+  serveur.
+
 ## Approche commune
 
 - Pas de `unsafe`.

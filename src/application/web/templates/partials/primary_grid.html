@@ -1,4 +1,24 @@
 <div class="grid" data-draggable-zone>
+  <section class="card" id="descriptionCard">
+    <div class="card-header">
+      <h2>Description</h2>
+      <div class="card-actions">
+        <button type="button" class="link-button small" id="descriptionEdit">Modifier</button>
+      </div>
+    </div>
+    <p id="descriptionEmpty" class="description-placeholder">Aucune description n'est définie pour ce serveur.</p>
+    <div id="descriptionText" class="description-text" style="display:none" aria-live="polite"></div>
+    <form id="descriptionForm" class="description-form" hidden>
+      <label for="descriptionInput" class="sr-only">Nouvelle description</label>
+      <textarea id="descriptionInput" name="description" rows="4" placeholder="Ex: Serveur FTP staging, contact ops@example.com"></textarea>
+      <div class="form-actions">
+        <button type="submit" class="primary-button" id="descriptionSave">Enregistrer</button>
+        <button type="button" class="link-button small" id="descriptionCancel">Annuler</button>
+      </div>
+      <p class="form-hint" id="descriptionHint" role="status" aria-live="polite"></p>
+    </form>
+  </section>
+
   <section class="card">
     <h2>Système</h2>
     <div class="row"><span class="k">Hostname</span><span class="v" id="hostname">—</span></div>

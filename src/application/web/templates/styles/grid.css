@@ -52,3 +52,17 @@ h2 { font-size: 16px; margin: 0 0 10px; color: var(--muted); }
 .link-button:hover { text-decoration: none; }
 .link-button.small { font-size: 13px; color: var(--muted); }
 .link-button.small:hover { color: var(--text); }
+.primary-button {
+  border: none;
+  border-radius: 20px;
+  padding: 6px 16px;
+  font-weight: 600;
+  cursor: pointer;
+  background: #3ad29f;
+  color: #0b111f;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+}
+.primary-button:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
