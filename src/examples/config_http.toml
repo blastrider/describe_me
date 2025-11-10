@@ -3,6 +3,7 @@
 
 [runtime]
 rust_log = "info,describe_me=debug"
+# state_dir = "/var/lib/describe-me"
 
 [runtime.cli]
 web = "0.0.0.0:8080"

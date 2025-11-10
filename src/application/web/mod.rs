@@ -48,7 +48,10 @@ use tracing::warn;
 
 use crate::application::exposure::Exposure;
 use crate::application::logging::LogEvent;
-use crate::application::metadata::set_server_description;
+use crate::application::metadata::{
+    add_server_tags, clear_server_tags, override_state_directory, remove_server_tags,
+    set_server_description, set_server_tags,
+};
 use crate::domain::DescribeError;
 #[cfg(feature = "config")]
 use crate::domain::{DescribeConfig, WebSecurityConfig};
@@ -73,6 +76,8 @@ const TOKEN_COOKIE_MAX_AGE: u32 = 7 * 24 * 3600;
 const UPDATES_CACHE_SUCCESS_TTL: Duration = Duration::from_secs(300);
 const UPDATES_CACHE_FAILURE_RETRY: Duration = Duration::from_secs(60);
 const DESCRIPTION_MAX_BYTES: usize = 2048;
+const TAGS_MAX_PER_REQUEST: usize = 64;
+const TAG_LENGTH_LIMIT: usize = 48;
 
 #[cfg(feature = "config")]
 const LOGO_MAX_BYTES: u64 = 128 * 1024;
@@ -154,6 +159,29 @@ struct DescriptionResponse {
 #[derive(Serialize)]
 struct ApiErrorResponse {
     error: String,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+enum TagOperation {
+    #[default]
+    Set,
+    Add,
+    Remove,
+    Clear,
+}
+
+#[derive(Deserialize)]
+struct TagsPayload {
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default)]
+    op: TagOperation,
+}
+
+#[derive(Serialize)]
+struct TagsResponse {
+    tags: Vec<String>,
 }
 
 impl LogoAsset {
@@ -559,6 +587,15 @@ pub async fn serve_http<A: Into<SocketAddr>>(
     let updates_cache = UpdatesCache::new(updates_refresh_ttl, UPDATES_CACHE_FAILURE_RETRY);
 
     #[cfg(feature = "config")]
+    if let Some(cfg) = config.as_ref() {
+        if let Some(runtime) = cfg.runtime.as_ref() {
+            if let Some(dir) = runtime.state_dir.as_deref() {
+                override_state_directory(dir);
+            }
+        }
+    }
+
+    #[cfg(feature = "config")]
     let logo = LogoAsset::from_optional_path(
         config
             .as_ref()
@@ -582,10 +619,11 @@ pub async fn serve_http<A: Into<SocketAddr>>(
 
     let router = Router::new()
         .route("/", get(index))
-        .route("/api/description", post(update_description))
         .route("/assets/logo.svg", get(logo_asset))
         .route("/updates", get(updates_page))
         .route("/sse", get(sse_stream))
+        .route("/api/description", post(update_description))
+        .route("/api/tags", post(update_tags))
         .layer(middleware::from_fn_with_state(
             origin_policy,
             http_security_layer,
@@ -809,6 +847,56 @@ fn json_error(status: StatusCode, message: impl Into<String>) -> Response {
         }),
     )
         .into_response()
+}
+
+fn validate_tags_payload(payload: &TagsPayload) -> Option<&'static str> {
+    match payload.op {
+        TagOperation::Clear => None,
+        _ => {
+            if payload.tags.is_empty() {
+                return Some("Merci de fournir au moins un tag.");
+            }
+            if payload.tags.len() > TAGS_MAX_PER_REQUEST {
+                return Some("Trop de tags fournis.");
+            }
+            if payload
+                .tags
+                .iter()
+                .any(|tag| tag.chars().count() > TAG_LENGTH_LIMIT)
+            {
+                return Some("Un tag dépasse la longueur maximale autorisée.");
+            }
+            None
+        }
+    }
+}
+
+async fn update_tags(_guard: AuthGuard, Json(payload): Json<TagsPayload>) -> impl IntoResponse {
+    if let Some(error) = validate_tags_payload(&payload) {
+        return json_error(StatusCode::BAD_REQUEST, error);
+    }
+
+    let tags = payload
+        .tags
+        .into_iter()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .take(TAGS_MAX_PER_REQUEST)
+        .collect::<Vec<_>>();
+
+    let op = payload.op;
+    let result = match op {
+        TagOperation::Set => set_server_tags(tags.iter().map(|s| s.as_str())),
+        TagOperation::Add => add_server_tags(tags.iter().map(|s| s.as_str())),
+        TagOperation::Remove => remove_server_tags(tags.iter().map(|s| s.as_str())),
+        TagOperation::Clear => clear_server_tags().map(|_| Vec::new()),
+    };
+
+    match result {
+        Ok(list) => (StatusCode::OK, Json(TagsResponse { tags: list.clone() })).into_response(),
+        Err(DescribeError::System(msg)) => json_error(StatusCode::INTERNAL_SERVER_ERROR, msg),
+        Err(err) => json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
 }
 
 fn map_io(e: impl std::error::Error + Send + Sync + 'static) -> DescribeError {

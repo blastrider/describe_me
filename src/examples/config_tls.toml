@@ -4,6 +4,7 @@
 
 [runtime]
 rust_log = "warn"
+# state_dir = "/var/lib/describe-me"
 
 [runtime.cli]
 web = "0.0.0.0:8443"
@@ -12,7 +13,7 @@ web_expose_all = true
 
 [web]
 token = "$argon2id$v=19$m=131072,t=4,p=1$x1V+ijOhRvklcO5gr4NS8g$ZZ3Ra67H3ijudkXg0rxbKYrvCnZpsTvSAjzmd7vjvlY"
-allow_ips = ["127.0.0.1", "::1"]
+allow_ips = ["127.0.0.1", "::1", "192.168.1.0/24"]
 allow_origins = ["https://192.168.1.36:8443"]
 trusted_proxies = ["192.168.1.10"]
 updates_refresh_seconds = 20
@@ -67,7 +68,7 @@ token_ip_spread = 2
 sse_min_retry_seconds = 2
 
 [services]
-include = ["cron.service", "sshd.service", "nginx.service"]
+include = ["cron.service", "sshd.service", "nginx.service", "docker.service"]
 
 [exposure]
 expose_hostname = true

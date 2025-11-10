@@ -183,6 +183,18 @@ pub fn capture_snapshot_with_view(
             .emit();
         }
     }
+    match crate::application::metadata::load_server_tags() {
+        Ok(tags) => {
+            view.server_tags = tags;
+        }
+        Err(err) => {
+            LogEvent::SystemError {
+                location: Cow::Borrowed("server_tags_load"),
+                error: Cow::Owned(err.to_string()),
+            }
+            .emit();
+        }
+    }
     Ok((snapshot, view))
 }
 

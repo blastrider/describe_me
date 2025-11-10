@@ -1,6 +1,8 @@
 [runtime]
 # Valeur RUST_LOG appliquée par défaut (ex: "info,describe_me=debug").
 rust_log = "debug"
+# Emplacement personnalisé du state/metadata (facultatif).
+# state_dir = "/var/lib/describe-me"
 
 [runtime.cli]
 # Valeurs par défaut alignées sur les flags CLI (--web, --with-services, etc.).
