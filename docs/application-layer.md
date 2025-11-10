@@ -47,6 +47,16 @@ La couche `application` compose les services de `domain` et
   - `security.rs` (nouvelle structure) s’appuie sur
     `RateLimiter`, `FailureTracker`, `TokenSpreadTracker` pour limiter la
     duplication.
+  - `mod.rs` expose également `POST /api/description` (authentifié) qui persiste
+    la description libre via redb, afin que le bloc « Description » de l’interface
+    web puisse être édité en direct.
+- `metadata.rs`
+  - Wrappe `infrastructure::storage::MetadataStore` (redb) et expose
+    `set_server_description`, `load_server_description` et
+    `clear_server_description`.
+  - `capture_snapshot_with_view` enrichit `SnapshotView.server_description`
+    avec la valeur persistée, en journalisant les erreurs redb sans
+    casser la capture principale.
 
 - `net.rs` (feature `net`)
   - `net_listen()` : expose les sockets TCP/UDP en écoute via
@@ -56,6 +66,7 @@ La couche `application` compose les services de `domain` et
 
 1. Construction d’`Exposure` depuis la CLI ou la config.
 2. Capture du `SystemSnapshot`.
-3. Transformation en `SnapshotView` (redaction/hints).
+3. Transformation en `SnapshotView` (redaction/hints + description
+   persistée).
 4. Optionnellement, application des health checks et exposition via CLI,
    JSON (`--json` / `--pretty`) ou SSE.
