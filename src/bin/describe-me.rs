@@ -206,6 +206,39 @@ enum TokenHashAlgorithm {
     Bcrypt,
 }
 
+#[cfg(feature = "web")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CliListOrigin {
+    None,
+    RuntimeDefault,
+    ExplicitCli,
+}
+
+#[cfg(feature = "web")]
+impl CliListOrigin {
+    fn from_values(values: &[String]) -> Self {
+        if values.is_empty() {
+            Self::None
+        } else {
+            Self::ExplicitCli
+        }
+    }
+
+    fn runtime_slice<'a>(&self, values: &'a [String]) -> Option<&'a [String]> {
+        match self {
+            Self::RuntimeDefault => Some(values),
+            _ => None,
+        }
+    }
+
+    fn cli_slice<'a>(&self, values: &'a [String]) -> Option<&'a [String]> {
+        match self {
+            Self::ExplicitCli => Some(values),
+            _ => None,
+        }
+    }
+}
+
 #[cfg(feature = "cli")]
 #[derive(Serialize)]
 struct CombinedOutput<'a> {
@@ -316,6 +349,13 @@ fn main() -> Result<()> {
         }
     }
 
+    #[cfg(feature = "web")]
+    let mut web_allow_ip_source = CliListOrigin::from_values(&opts.web_allow_ip);
+    #[cfg(feature = "web")]
+    let mut web_allow_origin_source = CliListOrigin::from_values(&opts.web_allow_origin);
+    #[cfg(feature = "web")]
+    let mut web_trusted_proxy_source = CliListOrigin::from_values(&opts.web_trusted_proxy);
+
     #[cfg(feature = "config")]
     if let Some(cfg) = &cfg {
         if let Some(runtime) = cfg.runtime.as_ref() {
@@ -340,12 +380,24 @@ fn main() -> Result<()> {
                 }
                 if opts.web_allow_ip.is_empty() && !cli.web_allow_ip.is_empty() {
                     opts.web_allow_ip = cli.web_allow_ip.clone();
+                    #[cfg(feature = "web")]
+                    {
+                        web_allow_ip_source = CliListOrigin::RuntimeDefault;
+                    }
                 }
                 if opts.web_allow_origin.is_empty() && !cli.web_allow_origin.is_empty() {
                     opts.web_allow_origin = cli.web_allow_origin.clone();
+                    #[cfg(feature = "web")]
+                    {
+                        web_allow_origin_source = CliListOrigin::RuntimeDefault;
+                    }
                 }
                 if opts.web_trusted_proxy.is_empty() && !cli.web_trusted_proxy.is_empty() {
                     opts.web_trusted_proxy = cli.web_trusted_proxy.clone();
+                    #[cfg(feature = "web")]
+                    {
+                        web_trusted_proxy_source = CliListOrigin::RuntimeDefault;
+                    }
                 }
             }
         }
@@ -364,33 +416,19 @@ fn main() -> Result<()> {
     let mut exposure = describe_me::Exposure::default();
 
     #[cfg(all(feature = "web", feature = "config"))]
-    if let Some(cfg) = &cfg {
-        if let Some(web_cfg) = &cfg.web {
-            if let Some(token) = web_cfg.token.as_ref() {
-                web_access.token = Some(token.clone());
-            }
-            if !web_cfg.allow_ips.is_empty() {
-                web_access
-                    .allow_ips
-                    .extend(web_cfg.allow_ips.iter().cloned());
-            }
-            if !web_cfg.allow_origins.is_empty() {
-                web_access
-                    .allow_origins
-                    .extend(web_cfg.allow_origins.iter().cloned());
-            }
-            if !web_cfg.trusted_proxies.is_empty() {
-                web_access
-                    .trusted_proxies
-                    .extend(web_cfg.trusted_proxies.iter().cloned());
-            }
-            if let Some(tls_cfg) = web_cfg.tls.as_ref() {
-                if !tls_cfg.cert_path.is_empty() && !tls_cfg.key_path.is_empty() {
-                    web_access.tls = Some(describe_me::WebTlsConfig {
-                        cert_path: tls_cfg.cert_path.clone(),
-                        key_path: tls_cfg.key_path.clone(),
-                    });
-                }
+    let web_cfg = cfg.as_ref().and_then(|cfg| cfg.web.as_ref());
+
+    #[cfg(all(feature = "web", feature = "config"))]
+    if let Some(web_cfg) = web_cfg {
+        if let Some(token) = web_cfg.token.as_ref() {
+            web_access.token = Some(token.clone());
+        }
+        if let Some(tls_cfg) = web_cfg.tls.as_ref() {
+            if !tls_cfg.cert_path.is_empty() && !tls_cfg.key_path.is_empty() {
+                web_access.tls = Some(describe_me::WebTlsConfig {
+                    cert_path: tls_cfg.cert_path.clone(),
+                    key_path: tls_cfg.key_path.clone(),
+                });
             }
         }
     }
@@ -400,21 +438,36 @@ fn main() -> Result<()> {
         if let Some(token) = &opts.web_token {
             web_access.token = Some(token.clone());
         }
-        if !opts.web_allow_ip.is_empty() {
-            web_access
-                .allow_ips
-                .extend(opts.web_allow_ip.iter().cloned());
-        }
-        if !opts.web_allow_origin.is_empty() {
-            web_access
-                .allow_origins
-                .extend(opts.web_allow_origin.iter().cloned());
-        }
-        if !opts.web_trusted_proxy.is_empty() {
-            web_access
-                .trusted_proxies
-                .extend(opts.web_trusted_proxy.iter().cloned());
-        }
+        #[cfg(feature = "config")]
+        let config_allow_ips = web_cfg.map(|cfg| cfg.allow_ips.as_slice());
+        #[cfg(not(feature = "config"))]
+        let config_allow_ips: Option<&[String]> = None;
+
+        #[cfg(feature = "config")]
+        let config_allow_origins = web_cfg.map(|cfg| cfg.allow_origins.as_slice());
+        #[cfg(not(feature = "config"))]
+        let config_allow_origins: Option<&[String]> = None;
+
+        #[cfg(feature = "config")]
+        let config_trusted_proxies = web_cfg.map(|cfg| cfg.trusted_proxies.as_slice());
+        #[cfg(not(feature = "config"))]
+        let config_trusted_proxies: Option<&[String]> = None;
+
+        web_access.allow_ips = resolve_web_list(
+            web_allow_ip_source.cli_slice(&opts.web_allow_ip),
+            config_allow_ips,
+            web_allow_ip_source.runtime_slice(&opts.web_allow_ip),
+        );
+        web_access.allow_origins = resolve_web_list(
+            web_allow_origin_source.cli_slice(&opts.web_allow_origin),
+            config_allow_origins,
+            web_allow_origin_source.runtime_slice(&opts.web_allow_origin),
+        );
+        web_access.trusted_proxies = resolve_web_list(
+            web_trusted_proxy_source.cli_slice(&opts.web_trusted_proxy),
+            config_trusted_proxies,
+            web_trusted_proxy_source.runtime_slice(&opts.web_trusted_proxy),
+        );
     }
 
     #[cfg(feature = "config")]
@@ -839,6 +892,30 @@ fn env_flag_enabled(value: &str) -> bool {
         value.trim().to_ascii_lowercase().as_str(),
         "1" | "true" | "yes" | "on"
     )
+}
+
+#[cfg(feature = "web")]
+fn resolve_web_list(
+    cli_values: Option<&[String]>,
+    config_values: Option<&[String]>,
+    runtime_values: Option<&[String]>,
+) -> Vec<String> {
+    if let Some(values) = cli_values {
+        if !values.is_empty() {
+            return values.to_vec();
+        }
+    }
+    if let Some(values) = config_values {
+        if !values.is_empty() {
+            return values.to_vec();
+        }
+    }
+    if let Some(values) = runtime_values {
+        if !values.is_empty() {
+            return values.to_vec();
+        }
+    }
+    Vec::new()
 }
 
 #[cfg(test)]
