@@ -61,6 +61,8 @@ pub struct RuntimeConfig {
     pub cli: Option<CliDefaults>,
     /// Autorise l'application des drapeaux `expose-*`/`web-expose-*` depuis la configuration.
     pub allow_config_exposure: bool,
+    /// Répertoire personnalisé pour les données persistées (metadata.redb).
+    pub state_dir: Option<String>,
 }
 
 /// Valeurs par défaut pour la CLI.
