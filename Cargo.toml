@@ -53,6 +53,7 @@ pin-project = "1.1"
 percent-encoding = "2.3"
 base64 = "0.22"
 axum-server = { version = "0.7", features = ["tls-rustls"], optional = true }
+redb = "1.5"
 
 [dev-dependencies]
 proptest = "1.5"

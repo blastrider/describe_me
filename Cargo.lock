@@ -579,6 +579,7 @@ dependencies = [
  "pin-project",
  "proptest",
  "rand_core 0.6.4",
+ "redb",
  "serde",
  "serde_json",
  "sysinfo",
@@ -1324,6 +1325,15 @@ checksum = "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91"
 dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",
+]
+
+[[package]]
+name = "redb"
+version = "1.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "17a0b35b8077c954324cc3504bea8d35e27a2f5d07c0ba41052a35d92f020f84"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
