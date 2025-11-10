@@ -170,7 +170,19 @@ pub fn capture_snapshot_with_view(
         *services_mut = filtered;
     }
 
-    let view = SnapshotView::new(&snapshot, exposure);
+    let mut view = SnapshotView::new(&snapshot, exposure);
+    match crate::application::metadata::load_server_description() {
+        Ok(desc) => {
+            view.server_description = desc;
+        }
+        Err(err) => {
+            LogEvent::SystemError {
+                location: Cow::Borrowed("server_description_load"),
+                error: Cow::Owned(err.to_string()),
+            }
+            .emit();
+        }
+    }
     Ok((snapshot, view))
 }
 
@@ -243,3 +255,4 @@ pub mod health;
 
 pub mod exposure;
 pub mod logging;
+pub mod metadata;

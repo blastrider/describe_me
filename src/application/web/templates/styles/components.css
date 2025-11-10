@@ -26,3 +26,59 @@
 #rawBody.collapsed { display: none; }
 .updates-details { margin-top: 12px; }
 .updates-details.collapsed { display: none; }
+.description-text {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid #2a3147;
+  background: #1d2333;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.description-placeholder {
+  color: var(--muted);
+  font-style: italic;
+  margin: 0;
+}
+.description-form {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.description-form[hidden] {
+  display: none;
+}
+.description-form textarea {
+  width: 100%;
+  min-height: 110px;
+  border-radius: 8px;
+  border: 1px solid #2a3147;
+  background: #111727;
+  color: inherit;
+  font: inherit;
+  padding: 10px 12px;
+  resize: vertical;
+}
+.description-form textarea:focus {
+  outline: 2px solid #3ad29f88;
+  outline-offset: 2px;
+}
+.description-form .form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.description-form .form-hint {
+  font-size: 13px;
+  min-height: 1em;
+  margin: 0;
+  color: var(--muted);
+}
+.description-form .form-hint.error {
+  color: var(--err);
+}
+.description-form .form-hint.success {
+  color: var(--ok);
+}
