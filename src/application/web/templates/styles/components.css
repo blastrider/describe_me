@@ -82,3 +82,76 @@
 .description-form .form-hint.success {
   color: var(--ok);
 }
+.tags-block {
+  margin-top: 14px;
+  border-top: 1px solid #2a3147;
+  padding-top: 12px;
+}
+.tags-block-header h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.tags-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 24px;
+}
+.tags-form {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.tags-form input {
+  border-radius: 8px;
+  border: 1px solid #2a3147;
+  background: #111727;
+  color: inherit;
+  font: inherit;
+  padding: 8px 10px;
+}
+.tags-form input:focus {
+  outline: 2px solid #3ad29f88;
+  outline-offset: 2px;
+}
+.tags-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.primary-button.small {
+  padding: 4px 12px;
+  font-size: 13px;
+}
+.tag-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: #1d2333;
+  border: 1px solid #2a3147;
+  font-size: 13px;
+  text-transform: lowercase;
+  gap: 6px;
+}
+.tag-remove {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  padding: 0;
+}
+.tag-remove:hover {
+  color: var(--err);
+}
+.tags-placeholder {
+  color: var(--muted);
+  font-style: italic;
+  margin: 0;
+}

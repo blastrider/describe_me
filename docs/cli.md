@@ -78,5 +78,24 @@ describe-me metadata description clear
 
 Le fichier est écrit dans `DESCRIBE_ME_STATE_DIR` s’il est défini, sinon dans
 `STATE_DIRECTORY` (systemd) ou, à défaut, dans les emplacements XDG/`LOCALAPPDATA`.
+Il est désormais possible de forcer explicitement ce répertoire via le fichier
+de configuration : ajoutez `state_dir = "/var/lib/describe-me"` dans la section
+`[runtime]` (ex. `config_tls.toml`) et toutes les commandes CLI/Web utiliseront
+ce chemin pour `metadata.redb`.
 Les snapshots (CLI, JSON, SSE) réutilisent automatiquement ce contenu et l’interface web
 affiche un bloc « Description » modifiable (formulaire avec sauvegarde immédiate via `POST /api/description`).
+
+Les tags serveur sont gérés via la même sous-commande :
+
+```
+describe-me metadata tags show
+describe-me metadata tags set ubuntu ftp prod
+describe-me metadata tags add staging europe
+describe-me metadata tags remove prod
+describe-me metadata tags clear
+```
+
+Les tags sont normalisés (minuscules, tirets) et affichés dans la sortie CLI ainsi
+que dans l’interface web pour faciliter le regroupement des machines. Le tableau
+de bord web dispose également d’un champ « Tags » pour ajouter/supprimer/vider la
+liste directement depuis le navigateur (mêmes validations côté API).
