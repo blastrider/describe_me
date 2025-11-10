@@ -1,244 +1,27 @@
 #![forbid(unsafe_code)]
 
-use anyhow::{anyhow, bail, Context, Result};
-use argon2::password_hash::{PasswordHasher, SaltString};
-use argon2::{Algorithm, Argon2, Params, Version};
-use clap::{ArgAction, Parser, ValueEnum};
+#[path = "describe_me/allowlists.rs"]
+mod allowlists;
+#[path = "describe_me/args.rs"]
+mod args;
+#[path = "describe_me/exposure.rs"]
+mod exposure_cfg;
+
+use anyhow::{bail, Result};
 #[cfg(feature = "net")]
 use describe_me::domain::{ListeningSocket, NetworkInterfaceTraffic};
 use describe_me::LogEvent;
 #[cfg(all(unix, feature = "cli"))]
 use nix::unistd::Uid;
-use rand_core::OsRng;
 #[cfg(feature = "cli")]
 use serde::Serialize;
 
-#[derive(Parser, Debug)]
-#[command(name = "describe-me", version, about = "Décrit rapidement le serveur")]
-struct Opts {
-    /// Énumérer aussi les services (Linux/systemd)
-    #[arg(long)]
-    with_services: bool,
-
-    /// Afficher l'usage disque (agrégé + partitions)
-    /// (Note: l'usage disque est de toute façon présent dans le snapshot JSON)
-    #[arg(long)]
-    disks: bool,
-
-    /// Fichier de config TOML (feature `config`)
-    #[arg(long)]
-    config: Option<std::path::PathBuf>,
-
-    /// Affiche les sockets d’écoute (TCP/UDP) — nécessite la feature `net`
-    #[arg(long = "net-listen", action = ArgAction::SetTrue)]
-    net_listen: bool,
-
-    /// Affiche le trafic réseau agrégé par interface — nécessite la feature `net`
-    #[arg(long = "net-traffic", action = ArgAction::SetTrue)]
-    net_traffic: bool,
-
-    /// Affiche aussi le PID propriétaire (si résolu) — nécessite `--net-listen`
-    #[arg(long = "process", requires = "net_listen", action = ArgAction::SetTrue)]
-    show_process: bool,
-
-    /// Force la sortie 100% JSON (un seul document)
-    #[arg(long, action = ArgAction::SetTrue)]
-    json: bool,
-
-    /// Mise en forme JSON indentée (implique --json)
-    #[arg(long, action = ArgAction::SetTrue)]
-    pretty: bool,
-
-    /// Affiche un résumé concis sur une ligne (ex: updates=3 reboot=no)
-    #[arg(long, action = ArgAction::SetTrue)]
-    summary: bool,
-
-    /// Lance un serveur web SSE (HTML/CSS/JS) — nécessite la feature `web`.
-    /// Optionnellement préciser l'adresse:port (ex: 127.0.0.1:9000). Par défaut: 127.0.0.1:8080.
-    #[arg(
-        long = "web",
-        value_name = "ADDR:PORT",
-        default_missing_value = "127.0.0.1:8080",
-        num_args = 0..=1
-    )]
-    web: Option<String>,
-
-    /// Intervalle d'actualisation (secondes) pour le mode --web (défaut: 2)
-    #[arg(long = "web-interval", value_name = "SECS", default_value_t = 2)]
-    web_interval_secs: u64,
-
-    /// Affiche également le JSON brut dans l'interface --web
-    #[arg(long = "web-debug", action = ArgAction::SetTrue)]
-    web_debug: bool,
-
-    /// Hash du jeton requis pour --web (Authorization: Bearer ou en-tête x-describe-me-token)
-    #[arg(long = "web-token", value_name = "TOKEN")]
-    web_token: Option<String>,
-
-    /// IP ou réseaux autorisés pour --web (peut être répété, ex: 127.0.0.1, 10.0.0.0/16)
-    #[arg(long = "web-allow-ip", value_name = "IP[/PREFIX]", action = ArgAction::Append)]
-    web_allow_ip: Vec<String>,
-
-    /// Origin autorisé pour l'interface web (peut être répété, ex: https://admin.example.com)
-    #[arg(
-        long = "web-allow-origin",
-        value_name = "ORIGIN",
-        action = ArgAction::Append
-    )]
-    web_allow_origin: Vec<String>,
-
-    /// Proxy de confiance fournissant X-Forwarded-For (--web uniquement)
-    #[arg(
-        long = "web-trusted-proxy",
-        value_name = "IP[/PREFIX]",
-        action = ArgAction::Append
-    )]
-    web_trusted_proxy: Vec<String>,
-
-    /// Génère un hash (Argon2id/bcrypt) pour configurer --web-token (helper)
-    #[arg(
-        long = "hash-web-token",
-        value_name = "TOKEN",
-        conflicts_with = "hash_web_token_stdin"
-    )]
-    hash_web_token: Option<String>,
-
-    /// Lit le token depuis stdin et génère un hash (helper)
-    #[arg(
-        long = "hash-web-token-stdin",
-        action = ArgAction::SetTrue,
-        conflicts_with = "hash_web_token"
-    )]
-    hash_web_token_stdin: bool,
-
-    /// Algorithme utilisé avec --hash-web-token (--hash-web-token-stdin)
-    #[arg(
-        long = "hash-web-token-alg",
-        value_enum,
-        default_value_t = TokenHashAlgorithm::Argon2id
-    )]
-    hash_web_token_alg: TokenHashAlgorithm,
-
-    /// Expose le hostname exact dans le JSON (opt-in, sinon masqué)
-    #[arg(long = "expose-hostname", action = ArgAction::SetTrue)]
-    expose_hostname: bool,
-
-    /// Expose la version complète de l'OS dans le JSON
-    #[arg(long = "expose-os", action = ArgAction::SetTrue)]
-    expose_os: bool,
-
-    /// Expose la version complète du noyau dans le JSON
-    #[arg(long = "expose-kernel", action = ArgAction::SetTrue)]
-    expose_kernel: bool,
-
-    /// Expose la liste détaillée des services dans le JSON
-    #[arg(long = "expose-services", action = ArgAction::SetTrue)]
-    expose_services: bool,
-
-    /// Expose le détail des partitions disque (points de montage, etc.)
-    #[arg(long = "expose-disk-partitions", action = ArgAction::SetTrue)]
-    expose_disk_partitions: bool,
-
-    /// Expose le trafic réseau par interface dans le JSON
-    #[arg(long = "expose-network-traffic", action = ArgAction::SetTrue)]
-    expose_network_traffic: bool,
-
-    /// Expose le statut des mises à jour (nombre, reboot requis)
-    #[arg(long = "expose-updates", action = ArgAction::SetTrue)]
-    expose_updates: bool,
-
-    /// Désactive le mode redacted (versions OS/noyau tronquées par défaut).
-    #[arg(long = "no-redacted", action = ArgAction::SetTrue)]
-    no_redacted: bool,
-
-    /// Active tous les champs sensibles d'un coup (hostname, kernel, services...)
-    #[arg(long = "expose-all", action = ArgAction::SetTrue)]
-    expose_all: bool,
-
-    /// Expose le hostname côté --web (sinon masqué par défaut)
-    #[arg(long = "web-expose-hostname", action = ArgAction::SetTrue)]
-    web_expose_hostname: bool,
-
-    /// Expose la version complète de l'OS côté --web
-    #[arg(long = "web-expose-os", action = ArgAction::SetTrue)]
-    web_expose_os: bool,
-
-    /// Expose la version complète du noyau côté --web
-    #[arg(long = "web-expose-kernel", action = ArgAction::SetTrue)]
-    web_expose_kernel: bool,
-
-    /// Expose la liste détaillée des services côté --web
-    #[arg(long = "web-expose-services", action = ArgAction::SetTrue)]
-    web_expose_services: bool,
-
-    /// Expose les partitions disque détaillées côté --web
-    #[arg(long = "web-expose-disk-partitions", action = ArgAction::SetTrue)]
-    web_expose_disk_partitions: bool,
-
-    /// Expose le trafic réseau par interface côté --web
-    #[arg(long = "web-expose-network-traffic", action = ArgAction::SetTrue)]
-    web_expose_network_traffic: bool,
-
-    /// Expose le statut des mises à jour côté --web
-    #[arg(long = "web-expose-updates", action = ArgAction::SetTrue)]
-    web_expose_updates: bool,
-
-    /// Active tous les détails sensibles pour --web
-    #[arg(long = "web-expose-all", action = ArgAction::SetTrue)]
-    web_expose_all: bool,
-
-    /// Autorise l'application des drapeaux d'exposition sensibles depuis le fichier de configuration.
-    #[arg(long = "allow-config-exposure", action = ArgAction::SetTrue)]
-    allow_config_exposure: bool,
-
-    /// Vérifications healthcheck (peut être répété). Ex:
-    /// --check mem>90%[:warn|:crit]
-    /// --check disk(/var)>80%[:warn|:crit]
-    /// --check service=nginx.service:running[:warn|:crit]
-    #[arg(long = "check", value_name = "EXPR", action = ArgAction::Append)]
-    checks: Vec<String>,
-}
-
-#[derive(Copy, Clone, Debug, ValueEnum)]
-enum TokenHashAlgorithm {
-    #[value(alias = "argon2")]
-    Argon2id,
-    Bcrypt,
-}
-
 #[cfg(feature = "web")]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CliListOrigin {
-    None,
-    RuntimeDefault,
-    ExplicitCli,
-}
-
+use allowlists::{resolve_web_list, CliListOrigin};
+use args::{hash_web_token, parse as parse_opts, read_token_from_stdin};
+use exposure_cfg::apply_cli_exposure_flags;
 #[cfg(feature = "web")]
-impl CliListOrigin {
-    fn from_values(values: &[String]) -> Self {
-        if values.is_empty() {
-            Self::None
-        } else {
-            Self::ExplicitCli
-        }
-    }
-
-    fn runtime_slice<'a>(&self, values: &'a [String]) -> Option<&'a [String]> {
-        match self {
-            Self::RuntimeDefault => Some(values),
-            _ => None,
-        }
-    }
-
-    fn cli_slice<'a>(&self, values: &'a [String]) -> Option<&'a [String]> {
-        match self {
-            Self::ExplicitCli => Some(values),
-            _ => None,
-        }
-    }
-}
-
+use exposure_cfg::apply_web_exposure_flags;
 #[cfg(feature = "cli")]
 #[derive(Serialize)]
 struct CombinedOutput<'a> {
@@ -267,25 +50,6 @@ fn summary_line(view: &describe_me::SnapshotView) -> String {
     format!("updates={pending} reboot={reboot}")
 }
 
-fn hash_web_token(token: &str, algorithm: TokenHashAlgorithm) -> Result<String> {
-    match algorithm {
-        TokenHashAlgorithm::Argon2id => {
-            let salt = SaltString::generate(&mut OsRng);
-            let params = Params::new(128 * 1024, 4, 1, None)
-                .map_err(|err| anyhow!("argon2 params: {err}"))?;
-            let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
-            let hash = argon2
-                .hash_password(token.as_bytes(), &salt)
-                .map_err(|err| anyhow!("argon2id: {err}"))?;
-            Ok(hash.to_string())
-        }
-        TokenHashAlgorithm::Bcrypt => {
-            let hash = bcrypt::hash(token, bcrypt::DEFAULT_COST)?;
-            Ok(hash)
-        }
-    }
-}
-
 #[cfg(unix)]
 fn ensure_not_root() -> Result<()> {
     if Uid::current().is_root() {
@@ -302,18 +66,13 @@ fn ensure_not_root() -> Result<()> {
 }
 
 fn main() -> Result<()> {
-    let mut opts = Opts::parse();
+    let mut opts = parse_opts();
 
     if opts.hash_web_token.is_some() || opts.hash_web_token_stdin {
         let token = if let Some(value) = opts.hash_web_token.take() {
             value
         } else {
-            use std::io::{self, Read};
-            let mut buffer = String::new();
-            io::stdin()
-                .read_to_string(&mut buffer)
-                .context("lecture du token depuis stdin")?;
-            buffer.trim_end_matches(&['\n', '\r'][..]).to_owned()
+            read_token_from_stdin()?
         };
 
         if token.is_empty() {
@@ -755,138 +514,6 @@ fn main() -> Result<()> {
     // ------------------------------------------------------------------------
 }
 
-#[cfg(feature = "config")]
-fn apply_cli_exposure_flags(
-    exposure: &mut describe_me::Exposure,
-    opts: &Opts,
-    cfg: Option<&describe_me::DescribeConfig>,
-    allow_config_exposure: bool,
-) {
-    if allow_config_exposure {
-        if let Some(cfg) = cfg {
-            if let Some(cfg_exp) = cfg.exposure.as_ref() {
-                exposure.merge(describe_me::Exposure::from(cfg_exp));
-            }
-        }
-    }
-    apply_cli_flags(exposure, opts);
-}
-
-#[cfg(not(feature = "config"))]
-fn apply_cli_exposure_flags(
-    exposure: &mut describe_me::Exposure,
-    opts: &Opts,
-    _allow_config_exposure: bool,
-) {
-    apply_cli_flags(exposure, opts);
-}
-
-fn apply_cli_flags(exposure: &mut describe_me::Exposure, opts: &Opts) {
-    if opts.expose_all {
-        *exposure = describe_me::Exposure::all();
-    } else {
-        if opts.expose_hostname {
-            exposure.set_hostname(true);
-        }
-        if opts.expose_os {
-            exposure.set_os(true);
-        }
-        if opts.expose_kernel {
-            exposure.set_kernel(true);
-        }
-        if opts.expose_services {
-            exposure.set_services(true);
-        }
-        if opts.expose_disk_partitions {
-            exposure.set_disk_partitions(true);
-        }
-        if opts.expose_network_traffic {
-            exposure.set_network_traffic(true);
-        }
-        if opts.expose_updates {
-            exposure.set_updates(true);
-        }
-    }
-
-    if opts.no_redacted {
-        exposure.redacted = false;
-    }
-
-    if opts.net_listen {
-        exposure.set_listening_sockets(true);
-    }
-    if opts.net_traffic {
-        exposure.set_network_traffic(true);
-    }
-}
-
-#[cfg(all(feature = "web", feature = "config"))]
-fn apply_web_exposure_flags(
-    exposure: describe_me::Exposure,
-    opts: &Opts,
-    cfg: Option<&describe_me::DescribeConfig>,
-    allow_config_exposure: bool,
-) -> describe_me::Exposure {
-    let mut web_exposure = exposure;
-
-    if allow_config_exposure {
-        if let Some(cfg) = cfg {
-            if let Some(web_cfg) = cfg.web.as_ref() {
-                if let Some(web_exp) = web_cfg.exposure.as_ref() {
-                    web_exposure.merge(describe_me::Exposure::from(web_exp));
-                }
-            }
-        }
-    }
-
-    apply_web_flags(&mut web_exposure, opts);
-    web_exposure
-}
-
-#[cfg(all(feature = "web", not(feature = "config")))]
-fn apply_web_exposure_flags(
-    exposure: describe_me::Exposure,
-    opts: &Opts,
-    _allow_config_exposure: bool,
-) -> describe_me::Exposure {
-    let mut web_exposure = exposure;
-    apply_web_flags(&mut web_exposure, opts);
-    web_exposure
-}
-
-#[cfg(feature = "web")]
-fn apply_web_flags(exposure: &mut describe_me::Exposure, opts: &Opts) {
-    if opts.web_expose_all {
-        *exposure = describe_me::Exposure::all();
-    } else {
-        if opts.web_expose_hostname {
-            exposure.set_hostname(true);
-        }
-        if opts.web_expose_os {
-            exposure.set_os(true);
-        }
-        if opts.web_expose_kernel {
-            exposure.set_kernel(true);
-        }
-        if opts.web_expose_services {
-            exposure.set_services(true);
-        }
-        if opts.web_expose_disk_partitions {
-            exposure.set_disk_partitions(true);
-        }
-        if opts.web_expose_network_traffic {
-            exposure.set_network_traffic(true);
-        }
-        if opts.web_expose_updates {
-            exposure.set_updates(true);
-        }
-    }
-
-    if opts.no_redacted {
-        exposure.redacted = false;
-    }
-}
-
 fn env_flag_enabled(value: &str) -> bool {
     matches!(
         value.trim().to_ascii_lowercase().as_str(),
@@ -894,57 +521,8 @@ fn env_flag_enabled(value: &str) -> bool {
     )
 }
 
-#[cfg(feature = "web")]
-fn resolve_web_list(
-    cli_values: Option<&[String]>,
-    config_values: Option<&[String]>,
-    runtime_values: Option<&[String]>,
-) -> Vec<String> {
-    if let Some(values) = cli_values {
-        if !values.is_empty() {
-            return values.to_vec();
-        }
-    }
-    if let Some(values) = config_values {
-        if !values.is_empty() {
-            return values.to_vec();
-        }
-    }
-    if let Some(values) = runtime_values {
-        if !values.is_empty() {
-            return values.to_vec();
-        }
-    }
-    Vec::new()
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use clap::Parser;
-
-    #[test]
-    fn parses_expose_updates_flags() {
-        let opts = Opts::try_parse_from(["describe-me", "--expose-updates"]).unwrap();
-        assert!(opts.expose_updates);
-        assert!(!opts.web_expose_updates);
-
-        let opts = Opts::try_parse_from(["describe-me", "--web-expose-updates"]).unwrap();
-        assert!(!opts.expose_updates);
-        assert!(opts.web_expose_updates);
-    }
-
-    #[test]
-    fn parses_expose_network_traffic_flags() {
-        let opts = Opts::try_parse_from(["describe-me", "--expose-network-traffic"]).unwrap();
-        assert!(opts.expose_network_traffic);
-        assert!(!opts.web_expose_network_traffic);
-
-        let opts = Opts::try_parse_from(["describe-me", "--web-expose-network-traffic"]).unwrap();
-        assert!(!opts.expose_network_traffic);
-        assert!(opts.web_expose_network_traffic);
-    }
-
     #[cfg(feature = "serde")]
     #[test]
     fn summary_line_uses_updates_info() {
@@ -1005,19 +583,5 @@ mod tests {
         exposure.set_updates(true);
         let view = describe_me::SnapshotView::new(&snapshot, exposure);
         assert_eq!(super::summary_line(&view), "updates=? reboot=unknown");
-    }
-
-    #[test]
-    fn argon2_hash_uses_hardened_params() {
-        let hash =
-            super::hash_web_token("secret", super::TokenHashAlgorithm::Argon2id).expect("hash");
-        assert!(
-            hash.contains("m=131072"),
-            "expected Argon2 memory cost 131072, got {hash}"
-        );
-        assert!(
-            hash.contains("t=4"),
-            "expected Argon2 iteration count 4, got {hash}"
-        );
     }
 }
