@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anyhow::{anyhow, Context, Result};
 use argon2::password_hash::{PasswordHasher, SaltString};
 use argon2::{Algorithm, Argon2, Params, Version};
-use clap::{ArgAction, Parser, ValueEnum};
+use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 use rand_core::OsRng;
 
 #[derive(Parser, Debug)]
@@ -190,6 +190,9 @@ pub struct Opts {
     /// --check service=nginx.service:running[:warn|:crit]
     #[arg(long = "check", value_name = "EXPR", action = ArgAction::Append)]
     pub checks: Vec<String>,
+
+    #[command(subcommand)]
+    pub command: Option<CliCommand>,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -197,6 +200,33 @@ pub enum TokenHashAlgorithm {
     #[value(alias = "argon2")]
     Argon2id,
     Bcrypt,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum CliCommand {
+    /// Gère les métadonnées persistées (redb).
+    #[command(subcommand)]
+    Metadata(MetadataCommand),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum MetadataCommand {
+    /// Manipule la description du serveur stockée en base.
+    #[command(subcommand)]
+    Description(DescriptionCommand),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DescriptionCommand {
+    /// Affiche la description actuelle.
+    Show,
+    /// Définit une nouvelle description (texte libre).
+    Set {
+        #[arg(value_name = "TEXTE")]
+        text: String,
+    },
+    /// Supprime la description persistée.
+    Clear,
 }
 
 pub fn parse() -> Opts {
@@ -269,5 +299,35 @@ mod tests {
             hash.contains("t=4"),
             "expected Argon2 iteration count 4, got {hash}"
         );
+    }
+
+    #[test]
+    fn parses_metadata_description_set_command() {
+        let opts = Opts::try_parse_from([
+            "describe-me",
+            "metadata",
+            "description",
+            "set",
+            "Serveur FTP",
+        ])
+        .unwrap();
+        match opts.command {
+            Some(CliCommand::Metadata(MetadataCommand::Description(DescriptionCommand::Set {
+                text,
+            }))) => assert_eq!(text, "Serveur FTP"),
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_metadata_description_show_command() {
+        let opts =
+            Opts::try_parse_from(["describe-me", "metadata", "description", "show"]).unwrap();
+        assert!(matches!(
+            opts.command,
+            Some(CliCommand::Metadata(MetadataCommand::Description(
+                DescriptionCommand::Show
+            )))
+        ));
     }
 }
