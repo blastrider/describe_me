@@ -18,7 +18,10 @@ use serde::Serialize;
 
 #[cfg(feature = "web")]
 use allowlists::{resolve_web_list, CliListOrigin};
-use args::{hash_web_token, parse as parse_opts, read_token_from_stdin};
+use args::{
+    hash_web_token, parse as parse_opts, read_token_from_stdin, CliCommand, DescriptionCommand,
+    MetadataCommand,
+};
 use exposure_cfg::apply_cli_exposure_flags;
 #[cfg(feature = "web")]
 use exposure_cfg::apply_web_exposure_flags;
@@ -50,6 +53,54 @@ fn summary_line(view: &describe_me::SnapshotView) -> String {
     format!("updates={pending} reboot={reboot}")
 }
 
+fn handle_command(cmd: CliCommand) -> Result<()> {
+    match cmd {
+        CliCommand::Metadata(metadata) => handle_metadata_command(metadata),
+    }
+}
+
+fn handle_metadata_command(cmd: MetadataCommand) -> Result<()> {
+    match cmd {
+        MetadataCommand::Description(action) => handle_description_command(action),
+    }
+}
+
+fn handle_description_command(cmd: DescriptionCommand) -> Result<()> {
+    match cmd {
+        DescriptionCommand::Show => {
+            if let Some(desc) = describe_me::load_server_description()? {
+                println!("{desc}");
+            } else {
+                println!("(aucune description stockée)");
+            }
+        }
+        DescriptionCommand::Set { text } => {
+            describe_me::set_server_description(&text)?;
+            println!("Description enregistrée.");
+        }
+        DescriptionCommand::Clear => {
+            describe_me::clear_server_description()?;
+            println!("Description supprimée.");
+        }
+    }
+    Ok(())
+}
+
+fn print_description_block(desc: &str) {
+    if desc.contains('\n') {
+        println!("Description :");
+        for line in desc.lines() {
+            if line.is_empty() {
+                println!();
+            } else {
+                println!("  {line}");
+            }
+        }
+    } else {
+        println!("Description : {desc}");
+    }
+}
+
 #[cfg(unix)]
 fn ensure_not_root() -> Result<()> {
     if Uid::current().is_root() {
@@ -67,6 +118,10 @@ fn ensure_not_root() -> Result<()> {
 
 fn main() -> Result<()> {
     let mut opts = parse_opts();
+
+    if let Some(cmd) = opts.command.take() {
+        return handle_command(cmd);
+    }
 
     if opts.hash_web_token.is_some() || opts.hash_web_token_stdin {
         let token = if let Some(value) = opts.hash_web_token.take() {
@@ -381,6 +436,11 @@ fn main() -> Result<()> {
 
     if opts.summary {
         print_summary_line(&snapshot_view);
+    }
+
+    if let Some(desc) = snapshot_view.server_description.as_deref() {
+        print_description_block(desc);
+        println!();
     }
 
     // --- Mode non-JSON (comportement existant + snapshot JSON à la fin) ---
