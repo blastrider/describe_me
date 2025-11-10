@@ -35,7 +35,7 @@ async function connectSse() {
 
     if (response.status === 401) {
       const message = await readErrorMessage(response);
-      sessionStorage.removeItem('describe_me_token');
+      clearPersistedToken();
       currentToken = "";
       tokenInput.value = "";
       clearTokenCookie();
