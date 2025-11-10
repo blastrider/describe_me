@@ -48,7 +48,7 @@ use tracing::warn;
 
 use crate::application::exposure::Exposure;
 use crate::application::logging::LogEvent;
-use crate::application::metadata::set_server_description;
+use crate::application::metadata::{override_state_directory, set_server_description};
 use crate::domain::DescribeError;
 #[cfg(feature = "config")]
 use crate::domain::{DescribeConfig, WebSecurityConfig};
@@ -557,6 +557,15 @@ pub async fn serve_http<A: Into<SocketAddr>>(
     #[cfg(not(feature = "config"))]
     let updates_refresh_ttl = UPDATES_CACHE_SUCCESS_TTL;
     let updates_cache = UpdatesCache::new(updates_refresh_ttl, UPDATES_CACHE_FAILURE_RETRY);
+
+    #[cfg(feature = "config")]
+    if let Some(cfg) = config.as_ref() {
+        if let Some(runtime) = cfg.runtime.as_ref() {
+            if let Some(dir) = runtime.state_dir.as_deref() {
+                override_state_directory(dir);
+            }
+        }
+    }
 
     #[cfg(feature = "config")]
     let logo = LogoAsset::from_optional_path(
