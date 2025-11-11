@@ -72,6 +72,7 @@ use base64::Engine as _;
 use rand_core::{OsRng, RngCore};
 
 pub(crate) const TOKEN_COOKIE_NAME: &str = "describe_me_token";
+pub(crate) const SESSION_COOKIE_NAME: &str = "describe_me_session";
 const TOKEN_COOKIE_MAX_AGE: u32 = 7 * 24 * 3600;
 const UPDATES_CACHE_SUCCESS_TTL: Duration = Duration::from_secs(300);
 const UPDATES_CACHE_FAILURE_RETRY: Duration = Duration::from_secs(60);
@@ -108,7 +109,7 @@ const HEADER_CROSS_ORIGIN_EMBEDDER_POLICY: HeaderName =
 
 type AxumRequest = axum::extract::Request;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct WebAccess {
     /// Hash du jeton d'accès (Argon2id ou bcrypt).
     pub token: Option<String>,
@@ -120,6 +121,21 @@ pub struct WebAccess {
     pub trusted_proxies: Vec<String>,
     /// Paramètres TLS optionnels.
     pub tls: Option<WebTlsConfig>,
+    /// Force l'attribut Secure sur les cookies de session (désactivable en dev HTTP).
+    pub session_cookie_secure: bool,
+}
+
+impl Default for WebAccess {
+    fn default() -> Self {
+        Self {
+            token: None,
+            allow_ips: Vec::new(),
+            allow_origins: Vec::new(),
+            trusted_proxies: Vec::new(),
+            tls: None,
+            session_cookie_secure: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -139,6 +155,7 @@ struct AppState {
     shutdown: Arc<Notify>,
     updates_cache: UpdatesCache,
     logo: LogoAsset,
+    session_cookie_secure: bool,
 }
 
 #[derive(Clone)]
@@ -560,6 +577,7 @@ pub async fn serve_http<A: Into<SocketAddr>>(
 ) -> Result<(), DescribeError> {
     let origin_policy = OriginPolicy::from_allowlist(access.allow_origins.clone())?;
     let tls_settings = access.tls.clone();
+    let session_cookie_secure = access.session_cookie_secure;
     #[cfg(feature = "config")]
     let security_config: Option<WebSecurityConfig> = config
         .as_ref()
@@ -615,6 +633,7 @@ pub async fn serve_http<A: Into<SocketAddr>>(
         shutdown: shutdown_for_state,
         updates_cache,
         logo,
+        session_cookie_secure,
     };
 
     let router = Router::new()
@@ -762,7 +781,7 @@ async fn index(
     let session = guard.into_session();
     let mut response = Html(render_index(state.web_debug, csp_nonce.as_str())).into_response();
     if let Some(token) = session.session_cookie() {
-        set_session_cookie(response.headers_mut(), token);
+        set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
     }
     mark_response_no_store(response.headers_mut());
     response
@@ -781,7 +800,7 @@ async fn updates_page(
         let html = render_updates_page(None, Some(message), csp_nonce.as_str());
         let mut response = Html(html).into_response();
         if let Some(token) = cookie_token.as_deref() {
-            set_session_cookie(response.headers_mut(), token);
+            set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
         }
         return response;
     }
@@ -795,7 +814,7 @@ async fn updates_page(
     let html = render_updates_page(updates.as_ref(), None, csp_nonce.as_str());
     let mut response = Html(html).into_response();
     if let Some(token) = cookie_token.as_deref() {
-        set_session_cookie(response.headers_mut(), token);
+        set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
     }
     response
 }
@@ -916,16 +935,19 @@ async fn build_rustls_config(cfg: &WebTlsConfig) -> Result<RustlsConfig, Describ
         .map_err(|err| DescribeError::Config(format!("chargement TLS {cert}/{key}: {err}")))
 }
 
-pub(super) fn set_session_cookie(headers: &mut HeaderMap, value: &str) {
+pub(super) fn set_session_cookie(headers: &mut HeaderMap, value: &str, secure: bool) {
     if value.is_empty() {
         return;
     }
     use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
     let encoded = utf8_percent_encode(value, NON_ALPHANUMERIC).to_string();
-    let suffix = "; HttpOnly; Secure";
+    let mut suffix = String::from("; HttpOnly");
+    if secure {
+        suffix.push_str("; Secure");
+    }
     let cookie = format!(
         "{name}={value}; Path=/; Max-Age={max_age}; SameSite=Strict{suffix}",
-        name = TOKEN_COOKIE_NAME,
+        name = SESSION_COOKIE_NAME,
         value = encoded,
         max_age = TOKEN_COOKIE_MAX_AGE,
         suffix = suffix
@@ -935,11 +957,14 @@ pub(super) fn set_session_cookie(headers: &mut HeaderMap, value: &str) {
     }
 }
 
-pub(crate) fn clear_token_cookie(headers: &mut HeaderMap) {
-    let suffix = "; HttpOnly; Secure";
+pub(crate) fn clear_session_cookie(headers: &mut HeaderMap, secure: bool) {
+    let mut suffix = String::from("; HttpOnly");
+    if secure {
+        suffix.push_str("; Secure");
+    }
     let cookie = format!(
         "{name}=deleted; Path=/; Max-Age=0; SameSite=Strict{suffix}",
-        name = TOKEN_COOKIE_NAME,
+        name = SESSION_COOKIE_NAME,
         suffix = suffix
     );
     if let Ok(value) = HeaderValue::from_str(&cookie) {
@@ -1020,7 +1045,7 @@ mod tests {
     #[test]
     fn set_session_cookie_includes_http_only() {
         let mut headers = HeaderMap::new();
-        set_session_cookie(&mut headers, "sess:v1:test");
+        set_session_cookie(&mut headers, "sess:v1:test", true);
         let value = headers.get(SET_COOKIE).expect("set-cookie");
         let text = value.to_str().expect("utf8");
         assert!(
@@ -1034,9 +1059,9 @@ mod tests {
     }
 
     #[test]
-    fn clear_token_cookie_includes_http_only() {
+    fn clear_session_cookie_includes_http_only() {
         let mut headers = HeaderMap::new();
-        clear_token_cookie(&mut headers);
+        clear_session_cookie(&mut headers, true);
         let value = headers.get(SET_COOKIE).expect("set-cookie");
         let text = value.to_str().expect("utf8");
         assert!(
@@ -1048,21 +1073,48 @@ mod tests {
     #[test]
     fn session_cookies_include_secure() {
         let mut headers = HeaderMap::new();
-        set_session_cookie(&mut headers, "sess:v1:test");
+        set_session_cookie(&mut headers, "sess:v1:test", true);
         let value = headers.get(SET_COOKIE).expect("set-cookie");
         let text = value.to_str().expect("utf8");
         assert!(
             text.contains("; Secure"),
             "cookie missing Secure attribute: {text}"
         );
+    }
 
+    #[test]
+    fn session_cookie_secure_flag_can_be_disabled() {
         let mut headers = HeaderMap::new();
-        clear_token_cookie(&mut headers);
+        set_session_cookie(&mut headers, "sess:v1:test", false);
+        let value = headers.get(SET_COOKIE).expect("set-cookie");
+        let text = value.to_str().expect("utf8");
+        assert!(
+            !text.contains("; Secure"),
+            "insecure cookies should skip Secure: {text}"
+        );
+    }
+
+    #[test]
+    fn clear_session_cookie_includes_secure() {
+        let mut headers = HeaderMap::new();
+        clear_session_cookie(&mut headers, true);
         let value = headers.get(SET_COOKIE).expect("set-cookie");
         let text = value.to_str().expect("utf8");
         assert!(
             text.contains("; Secure"),
             "clear cookie missing Secure attribute: {text}"
+        );
+    }
+
+    #[test]
+    fn clear_session_cookie_respects_insecure_flag() {
+        let mut headers = HeaderMap::new();
+        clear_session_cookie(&mut headers, false);
+        let value = headers.get(SET_COOKIE).expect("set-cookie");
+        let text = value.to_str().expect("utf8");
+        assert!(
+            !text.contains("; Secure"),
+            "insecure clear cookie should skip Secure: {text}"
         );
     }
 
