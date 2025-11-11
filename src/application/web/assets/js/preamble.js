@@ -40,7 +40,6 @@ const clearChildren = (node) => {
 
 const createServiceEmpty = (message = "—") => createEl('div', 'service-empty', message);
 
-const pct = (used, total) => total > 0 ? Math.max(0, Math.min(100, (used/total)*100)) : 0;
 const num = (value) => {
   const n = Number(value);
   return Number.isFinite(n) ? n : 0;
