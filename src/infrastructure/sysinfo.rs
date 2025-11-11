@@ -57,6 +57,7 @@ pub(crate) fn gather() -> Result<SysinfoSnapshot, DescribeError> {
 use std::{
     collections::{HashMap, HashSet},
     fs,
+    process::Command,
 };
 /// Parse /proc/self/mountinfo → map: mount_point -> (maj:min, source)
 fn parse_mountinfo() -> HashMap<String, (String, String)> {
@@ -111,6 +112,88 @@ fn is_pseudo_fs(fs: Option<&str>) -> bool {
     )
 }
 
+struct BtrfsUsage {
+    data_total: u64,
+    data_used: u64,
+    unallocated: u64,
+}
+
+fn read_btrfs_usage(mount_point: &str) -> Option<BtrfsUsage> {
+    let output = Command::new("btrfs")
+        .args(["filesystem", "df", "-b", mount_point])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut data_total = 0u64;
+    let mut data_used = 0u64;
+    let mut unallocated = 0u64;
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("Unallocated:") {
+            if let Some(value) = parse_btrfs_unallocated_line(trimmed) {
+                unallocated = value;
+            }
+            continue;
+        }
+        if trimmed.starts_with("Data") {
+            if let Some((line_total, line_used)) = parse_btrfs_data_line(trimmed) {
+                data_total = data_total.saturating_add(line_total);
+                data_used = data_used.saturating_add(line_used);
+            }
+        }
+    }
+    if data_total == 0 {
+        None
+    } else {
+        Some(BtrfsUsage {
+            data_total,
+            data_used: data_used.min(data_total),
+            unallocated,
+        })
+    }
+}
+
+fn parse_btrfs_data_line(line: &str) -> Option<(u64, u64)> {
+    let mut total = None;
+    let mut used = None;
+    for token in line.split_whitespace() {
+        let clean = token.trim().trim_end_matches(',');
+        if total.is_none() {
+            if let Some(value) = clean.strip_prefix("total=") {
+                total = value.parse::<u64>().ok();
+                continue;
+            }
+        }
+        if used.is_none() {
+            if let Some(value) = clean.strip_prefix("used=") {
+                used = value.parse::<u64>().ok();
+            }
+        }
+    }
+    match (total, used) {
+        (Some(t), Some(u)) => Some((t, u)),
+        _ => None,
+    }
+}
+
+fn parse_btrfs_unallocated_line(line: &str) -> Option<u64> {
+    let value = line.split(':').nth(1)?.split_whitespace().next()?;
+    value.parse::<u64>().ok()
+}
+
+pub(crate) fn usage_percent_from_bytes(total_bytes: u64, available_bytes: u64) -> f64 {
+    if total_bytes == 0 {
+        return 0.0;
+    }
+    let total = total_bytes as f64;
+    let available = available_bytes.min(total_bytes) as f64;
+    let ratio = 1.0 - (available / total);
+    (ratio * 100.0).clamp(0.0, 100.0)
+}
 pub(crate) fn gather_disks() -> Result<DiskUsage, DescribeError> {
     let mut disks = Disks::new_with_refreshed_list();
     disks.refresh();
@@ -134,8 +217,20 @@ pub(crate) fn gather_disks() -> Result<DiskUsage, DescribeError> {
         let mount = d.mount_point().to_string_lossy().into_owned();
         let fs_type = d.file_system().to_str().map(|s| s.to_string());
 
-        let t = d.total_space();
-        let a = d.available_space();
+        let mut total_space = d.total_space();
+        let mut available_space = d.available_space();
+
+        if let Some("btrfs") = fs_type.as_deref() {
+            if let Some(stats) = read_btrfs_usage(&mount) {
+                let logical_total = stats
+                    .data_total
+                    .saturating_add(stats.unallocated)
+                    .max(total_space);
+                let used = stats.data_used.min(logical_total);
+                total_space = logical_total;
+                available_space = logical_total.saturating_sub(used);
+            }
+        }
 
         // Agrégat: ignorer pseudo-FS ET ne compter qu’UNE fois par device
         if !is_pseudo_fs(fs_type.as_deref()) {
@@ -162,8 +257,8 @@ pub(crate) fn gather_disks() -> Result<DiskUsage, DescribeError> {
 
             if let Some(key) = key {
                 if counted_devs.insert(key) {
-                    total = total.saturating_add(t);
-                    avail = avail.saturating_add(a);
+                    total = total.saturating_add(total_space);
+                    avail = avail.saturating_add(available_space);
                 }
             }
         }
@@ -171,12 +266,13 @@ pub(crate) fn gather_disks() -> Result<DiskUsage, DescribeError> {
         partitions.push(DiskPartition {
             mount_point: mount,
             fs_type,
-            total_bytes: t,
-            available_bytes: a,
+            total_bytes: total_space,
+            available_bytes: available_space,
         });
     }
 
     let used = total.saturating_sub(avail);
+    let used_pct = usage_percent_from_bytes(total, avail);
 
     debug!(
         partitions = partitions.len(),
@@ -184,6 +280,7 @@ pub(crate) fn gather_disks() -> Result<DiskUsage, DescribeError> {
         total_bytes = total,
         available_bytes = avail,
         used_bytes = used,
+        used_percent = used_pct,
         "disk_aggregate"
     );
 
@@ -244,5 +341,31 @@ mod tests {
             let text = String::from_utf8_lossy(&data);
             let _ = parse_mountinfo_for_tests(&text);
         }
+    }
+
+    #[test]
+    fn usage_percent_handles_regular_case() {
+        let pct = usage_percent_from_bytes(1_000, 250);
+        assert!((pct - 75.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn usage_percent_handles_zero_total() {
+        assert_eq!(usage_percent_from_bytes(0, 0), 0.0);
+    }
+
+    #[test]
+    fn parse_btrfs_data_line_extracts_values() {
+        let line = "Data, single: total=1073741824, used=536870912";
+        let parsed = parse_btrfs_data_line(line).expect("parsed");
+        assert_eq!(parsed.0, 1_073_741_824);
+        assert_eq!(parsed.1, 536_870_912);
+    }
+
+    #[test]
+    fn parse_btrfs_unallocated_line_extracts_value() {
+        let line = "Unallocated:             330677329920";
+        let value = parse_btrfs_unallocated_line(line).expect("value");
+        assert_eq!(value, 330_677_329_920);
     }
 }
