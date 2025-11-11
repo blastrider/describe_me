@@ -108,6 +108,6 @@ function hideTokenPrompt() {
   sensitiveNodes.forEach((node) => node.classList.remove('blurred'));
 }
 
-function clearTokenCookie() {
-  document.cookie = `${TOKEN_COOKIE_NAME}=; Max-Age=0; path=/; SameSite=Strict`;
+function clearSessionCookie() {
+  document.cookie = `${SESSION_COOKIE_NAME}=; Max-Age=0; path=/; SameSite=Strict`;
 }

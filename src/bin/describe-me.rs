@@ -300,6 +300,9 @@ fn main() -> Result<()> {
                 });
             }
         }
+        if web_cfg.dev_insecure_session_cookie {
+            web_access.session_cookie_secure = false;
+        }
     }
 
     #[cfg(feature = "web")]
@@ -337,6 +340,10 @@ fn main() -> Result<()> {
             config_trusted_proxies,
             web_trusted_proxy_source.runtime_slice(&opts.web_trusted_proxy),
         );
+
+        if opts.web_dev {
+            web_access.session_cookie_secure = false;
+        }
     }
 
     #[cfg(feature = "config")]

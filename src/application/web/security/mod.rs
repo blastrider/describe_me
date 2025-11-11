@@ -5,7 +5,7 @@ mod sse;
 
 pub(crate) use limits::GlobalPermit;
 
-use super::clear_token_cookie;
+use super::clear_session_cookie;
 use auth::{build_request, verify_token, AuthRequest, TokenVerifier};
 use limits::{enforce_rate_limits, ensure_not_blocked, SecurityPolicy, SecurityState};
 use session::SessionManager;
@@ -92,7 +92,7 @@ impl FromRequestParts<AppState> for AuthGuard {
         let route = WebRoute::from_path(parts.uri.path());
         match state.security.authorize(parts, route).await {
             Ok(session) => Ok(AuthGuard { session }),
-            Err(rejection) => Err(rejection.into_response()),
+            Err(rejection) => Err(rejection.into_response(state.session_cookie_secure)),
         }
     }
 }
@@ -398,7 +398,7 @@ impl SecurityRejection {
         Self::rate_limited(retry)
     }
 
-    fn into_response(self) -> Response {
+    fn into_response(self, secure_cookie: bool) -> Response {
         let mut response = (self.status, self.body).into_response();
         if let Some(delay) = self.retry_after {
             let jittered = jitter(delay);
@@ -408,7 +408,7 @@ impl SecurityRejection {
             }
         }
         if self.status == StatusCode::UNAUTHORIZED {
-            clear_token_cookie(response.headers_mut());
+            clear_session_cookie(response.headers_mut(), secure_cookie);
         }
         response
     }
@@ -551,6 +551,7 @@ mod tests {
             allow_origins: Vec::new(),
             trusted_proxies: Vec::new(),
             tls: None,
+            session_cookie_secure: true,
         }
     }
 
