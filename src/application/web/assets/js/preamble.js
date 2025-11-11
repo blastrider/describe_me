@@ -1,5 +1,6 @@
 const WEB_DEBUG = __WEB_DEBUG__;
 const TOKEN_COOKIE_NAME = "describe_me_token";
+const SESSION_COOKIE_NAME = "describe_me_session";
 const dot = document.getElementById('statusDot');
 const raw = document.getElementById('raw');
 const err = document.getElementById('error');
