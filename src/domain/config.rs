@@ -48,6 +48,8 @@ pub struct WebAccessConfig {
     pub updates_refresh_seconds: Option<u64>,
     /// Paramètres TLS optionnels (activent HTTPS natif).
     pub tls: Option<WebTlsOptions>,
+    /// Mode développement HTTP: autorise un cookie describe_me_session sans attribut Secure.
+    pub dev_insecure_session_cookie: bool,
 }
 
 /// Paramètres runtime supplémentaires (logging, CLI).
