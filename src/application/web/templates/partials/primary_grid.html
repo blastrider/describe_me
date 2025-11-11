@@ -1,43 +1,57 @@
 <div class="grid" data-draggable-zone>
-  <section class="card" id="descriptionCard">
-    <div class="card-header">
+  <section
+    class="card tile"
+    data-tags-editor="true"
+    data-description-endpoint="/api/description"
+    data-tags-endpoint="/api/tags"
+    data-server-id="default"
+  >
+    <div class="card-header tile-header">
       <h2>Description</h2>
-      <div class="card-actions">
-        <button type="button" class="link-button small" id="descriptionEdit">Modifier</button>
+      <div class="card-actions tile-actions">
+        <button type="button" class="link-button small edit">Modifier</button>
+        <button type="button" class="primary-button small save" hidden>Enregistrer</button>
+        <button type="button" class="link-button small cancel" hidden>Annuler</button>
       </div>
     </div>
-    <p id="descriptionEmpty" class="description-placeholder">Aucune description n'est définie pour ce serveur.</p>
-    <div id="descriptionText" class="description-text" style="display:none" aria-live="polite"></div>
-    <form id="descriptionForm" class="description-form" hidden>
-      <label for="descriptionInput" class="sr-only">Nouvelle description</label>
-      <textarea id="descriptionInput" name="description" rows="4" placeholder="Ex: Serveur FTP staging, contact ops@example.com"></textarea>
-      <div class="form-actions">
-        <button type="submit" class="primary-button" id="descriptionSave">Enregistrer</button>
-        <button type="button" class="link-button small" id="descriptionCancel">Annuler</button>
-      </div>
-      <p class="form-hint" id="descriptionHint" role="status" aria-live="polite"></p>
-    </form>
-    <div class="tags-block">
-      <div class="tags-block-header">
+    <div class="desc" aria-live="polite">
+      <p class="description-placeholder desc-empty" data-role="desc-empty">
+        Aucune description n'est définie pour ce serveur.
+      </p>
+      <p class="description-text desc-view" data-role="desc-view"></p>
+      <textarea
+        class="description-input desc-input"
+        data-role="desc-input"
+        rows="4"
+        placeholder="Ex: Serveur FTP staging, contact ops@example.com"
+        hidden
+      ></textarea>
+      <p class="form-hint desc-hint" data-role="desc-hint" role="status" aria-live="polite"></p>
+    </div>
+    <div class="tags-block tags" aria-live="polite">
+      <div class="tags-block-header tags-header">
         <h3>Tags</h3>
       </div>
-      <div class="tags-list" id="tagsList" role="list"></div>
-      <p id="tagsEmpty" class="tags-placeholder">Aucun tag défini.</p>
-      <form class="tags-form" id="tagsForm">
-        <label for="tagsInput" class="sr-only">Ajouter des tags</label>
+      <div class="tags-list" data-role="tag-list" role="list"></div>
+      <p class="tags-placeholder tags-empty" data-role="tag-empty">Aucun tag défini.</p>
+      <form class="tag-editor" data-role="tag-editor" hidden>
         <input
           type="text"
-          id="tagsInput"
+          class="tag-input"
+          data-role="tag-input"
           name="tags"
           placeholder="Ex: ubuntu, ftp"
           autocomplete="off"
+          aria-label="Ajouter des tags (séparés par des virgules ou espaces)"
         />
         <div class="tags-actions">
-          <button type="submit" class="primary-button small" id="tagsAdd">Ajouter</button>
-          <button type="button" class="link-button small" id="tagsClear">Tout effacer</button>
+          <button type="submit" class="primary-button small">Ajouter</button>
+          <button type="button" class="link-button small tag-clear" data-role="tag-clear">
+            Tout effacer
+          </button>
         </div>
       </form>
-      <p class="form-hint" id="tagsHint" role="status" aria-live="polite"></p>
+      <p class="form-hint tag-hint" data-role="tag-hint" role="status" aria-live="polite"></p>
     </div>
   </section>
 

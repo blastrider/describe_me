@@ -1,10 +1,10 @@
 use super::{
     limits::{SecurityPolicy, SecurityState},
-    session::{SessionCandidate, SessionError, SessionManager, SESSION_COOKIE_PREFIX},
+    session::{SessionCandidate, SessionError, SessionManager},
     IpMatcher, SecurityRejection, TokenKey, WebRoute,
 };
 use crate::application::logging::LogEvent;
-use crate::application::web::TOKEN_COOKIE_NAME;
+use crate::application::web::{SESSION_COOKIE_NAME, TOKEN_COOKIE_NAME};
 use argon2::{
     password_hash::{
         Error as PasswordHashError, PasswordHash, PasswordHashString, PasswordVerifier,
@@ -296,44 +296,69 @@ fn extract_credential(
         }
     }
 
+    let mut encoded_session_cookie = None;
+    let mut raw_cookie = None;
     if let Some(cookie_header) = parts.headers.get(COOKIE) {
         if let Ok(value) = cookie_header.to_str() {
             for pair in value.split(';') {
                 let mut kv = pair.trim().splitn(2, '=');
                 let name = kv.next().map(str::trim);
-                if name != Some(TOKEN_COOKIE_NAME) {
+                let Some(raw_value) = kv.next() else {
+                    continue;
+                };
+                let trimmed = raw_value.trim();
+                if trimmed.is_empty() {
                     continue;
                 }
-                if let Some(raw_value) = kv.next() {
-                    let trimmed = raw_value.trim();
-                    if trimmed.is_empty() {
-                        continue;
-                    }
-                    if sessions_enabled && trimmed.starts_with(SESSION_COOKIE_PREFIX) {
-                        match sessions.lookup(trimmed, now) {
-                            Ok(candidate) => {
-                                let token_key = candidate.token_key();
-                                return Ok((Credential::Session(candidate), token_key));
-                            }
-                            Err(SessionError::InvalidFormat) => {}
-                            Err(err) => {
-                                log_session_error_raw(&err, route, remote_ip, TokenKey::Anonymous);
-                                return Err(SecurityRejection::unauthorized(None));
-                            }
-                        }
-                    }
-                    let decoded = percent_decode_str(trimmed)
-                        .decode_utf8()
-                        .map(|cow| cow.into_owned())
-                        .unwrap_or_else(|_| trimmed.to_owned());
-                    if !decoded.is_empty() {
-                        return Ok((
-                            Credential::RawToken(decoded.clone()),
-                            TokenKey::from_value(&decoded),
-                        ));
-                    }
+                if sessions_enabled
+                    && encoded_session_cookie.is_none()
+                    && name == Some(SESSION_COOKIE_NAME)
+                {
+                    encoded_session_cookie = Some(trimmed.to_owned());
+                    continue;
+                }
+                if raw_cookie.is_none() && name == Some(TOKEN_COOKIE_NAME) {
+                    raw_cookie = Some(trimmed.to_owned());
                 }
             }
+        }
+    }
+
+    if let Some(encoded) = encoded_session_cookie {
+        let decoded = match percent_decode_str(&encoded).decode_utf8() {
+            Ok(value) => value.into_owned(),
+            Err(_) => {
+                log_session_error_raw(
+                    &SessionError::InvalidFormat,
+                    route,
+                    remote_ip,
+                    TokenKey::Anonymous,
+                );
+                return Err(SecurityRejection::unauthorized(None));
+            }
+        };
+        match sessions.lookup(&decoded, now) {
+            Ok(candidate) => {
+                let token_key = candidate.token_key();
+                return Ok((Credential::Session(candidate), token_key));
+            }
+            Err(err) => {
+                log_session_error_raw(&err, route, remote_ip, TokenKey::Anonymous);
+                return Err(SecurityRejection::unauthorized(None));
+            }
+        }
+    }
+
+    if let Some(raw_value) = raw_cookie {
+        let decoded = percent_decode_str(&raw_value)
+            .decode_utf8()
+            .map(|cow| cow.into_owned())
+            .unwrap_or_else(|_| raw_value);
+        if !decoded.is_empty() {
+            return Ok((
+                Credential::RawToken(decoded.clone()),
+                TokenKey::from_value(&decoded),
+            ));
         }
     }
 
@@ -495,6 +520,7 @@ mod tests {
         WebRoute,
     };
     use axum::http::{header::COOKIE, Request, StatusCode};
+    use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
     use std::net::{IpAddr, Ipv4Addr};
     use std::sync::OnceLock;
 
@@ -606,6 +632,45 @@ mod tests {
         )
         .await
         .expect("cookie token should be accepted");
+    }
+
+    #[tokio::test]
+    async fn verify_token_accepts_session_cookie() {
+        let state = SecurityState::new();
+        let policy = SecurityPolicy::default();
+        let sessions = SessionManager::new();
+
+        let token_key = TokenKey::from_value("secret");
+        let now = Instant::now();
+        let cookie_value = sessions.issue(token_key, now);
+        let encoded = utf8_percent_encode(&cookie_value, NON_ALPHANUMERIC).to_string();
+
+        let request = Request::builder().uri("/sse").body(()).unwrap();
+        let (mut parts, _) = request.into_parts();
+        parts.headers.insert(
+            COOKIE,
+            format!("{SESSION_COOKIE_NAME}={encoded}").parse().unwrap(),
+        );
+        parts
+            .extensions
+            .insert(ConnectInfo(std::net::SocketAddr::from((
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                4242,
+            ))));
+
+        let auth_request =
+            build_request(&[], &[], &sessions, true, &parts, WebRoute::Sse, now).unwrap();
+        let verifier = TokenVerifier::parse(cached_argon2()).expect("parse hash");
+        verify_token(
+            &state,
+            &policy,
+            Some(&verifier),
+            &sessions,
+            &auth_request,
+            now,
+        )
+        .await
+        .expect("session cookie should be accepted");
     }
 
     #[tokio::test]

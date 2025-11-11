@@ -1,5 +1,6 @@
 # Exemple de configuration HTTP destinée aux LAN / environnements de tests.
-# On laisse l'écoute en clair sur 0.0.0.0:8080 mais on restreint IP + Origin.
+# ⚠️ En production, active HTTPS via [web.tls] ou un reverse-proxy qui termine TLS.
+# Ce fichier force un cookie de session non Secure pour simplifier les tests locaux.
 
 [runtime]
 rust_log = "info,describe_me=debug"
@@ -30,7 +31,9 @@ redacted = true
 token = "$argon2id$v=19$m=131072,t=4,p=1$x1V+ijOhRvklcO5gr4NS8g$ZZ3Ra67H3ijudkXg0rxbKYrvCnZpsTvSAjzmd7vjvlY"
 allow_ips = ["127.0.0.1", "::1", "192.168.1.0/24"]
 allow_origins = ["http://localhost:8080", "http://192.168.1.36:8080"]
-logo_path = "/home/adm-max/Documents/rust-projects/describe_me/src/application/web/assets/logo.svg"
+logo_path = "/home/max/Documents/Projets/Rust/describe_me/src/application/web/assets/gen.svg"
+# Cookie describe_me_session sans Secure (dev HTTP uniquement) :
+dev_insecure_session_cookie = true
 
 [web.exposure]
 expose_hostname = true
@@ -47,6 +50,8 @@ redacted = true
 # [web.tls]
 # cert_path = "/etc/describe-me/certs/server.pem"
 # key_path = "/etc/describe-me/certs/server-key.pem"
+# Si vous terminez TLS via un proxy (Caddy/Nginx/Traefik), déclarez son origin exact
+# dans allow_origins et son IP dans trusted_proxies.
 
 [web.security]
 allowlist_multiplier = 2

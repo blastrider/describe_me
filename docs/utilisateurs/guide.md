@@ -154,6 +154,8 @@ openssl req -x509 -nodes -newkey rsa:4096 \
 chmod 600 ./certs/server-key.pem
 ```
 
+> ⚠️ Le cookie d’authentification `describe_me_session` est toujours émis en `HttpOnly; Secure`. Il n’est donc renvoyé par le navigateur qu’en HTTPS ou derrière un proxy qui termine TLS. Déclare `allow_origins`/`trusted_proxies` lorsque tu passes par Caddy/Nginx/Traefik. Pour un développement local en HTTP uniquement, active explicitement `--web-dev` (ou `web.dev_insecure_session_cookie = true`) afin de retirer `Secure` côté session — et désactive ce mode en production.
+
 6. Configuration TOML
 ---------------------
 
@@ -186,6 +188,8 @@ Autres variantes :
 
 - `src/examples/config_http.toml` — écoute HTTP (LAN).
 - `src/examples/config_tls.toml` — HTTPS complet (certificat/clé).
+
+> ⚠️ Besoin de tester en HTTP uniquement ? Ajoute `dev_insecure_session_cookie = true` dans `[web]` (ou lance `describe-me --web-dev …`). Ce réglage enlève l’attribut `Secure` de `describe_me_session` et doit rester réservé au développement.
 
 7. Utilisation comme bibliothèque
 ---------------------------------
@@ -234,6 +238,7 @@ async fn main() -> anyhow::Result<()> {
             allow_origins: vec![],
             trusted_proxies: vec![],
             tls: None,
+            session_cookie_secure: true,
         },
         describe_me::Exposure::all(),
     )
@@ -271,7 +276,7 @@ Autres outils : `cargo audit`, `cargo deny check`, `cargo crev verify --recursiv
 - **Rien pour les services ?** Compile avec `--features systemd` et utilise `--with-services`.
 - **`--net-listen` vide ?** Active la feature `net` et assure-toi d’avoir les droits.
 - **Healthcheck CI ?** Utilise `--check` et lis le code de sortie (0/1/2).
-- **HTTPS obligatoire ?** Ajoute `[web.tls]` ou place-le derrière un reverse-proxy.
+- **HTTPS obligatoire ?** Oui pour le cookie `describe_me_session` (`Secure`). Active `[web.tls]` ou termine TLS via ton proxy (avec `allow_origins`/`trusted_proxies`). En dernier recours dev-only : `--web-dev` / `web.dev_insecure_session_cookie = true`.
 
 Licence
 -------
