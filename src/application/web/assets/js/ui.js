@@ -3,6 +3,22 @@ const tagsEditorManager =
     ? new window.TagsEditorManager()
     : null;
 
+function getWidthFromBytes(totalBytes, availableBytes) {
+  if (typeof widthFromBytes === "function") {
+    return widthFromBytes(totalBytes, availableBytes);
+  }
+  const total = Number(totalBytes);
+  if (!Number.isFinite(total) || total <= 0) {
+    return "0.0%";
+  }
+  const rawAvailable = Number(availableBytes);
+  const available = Number.isFinite(rawAvailable) ? rawAvailable : 0;
+  const clampedAvailable = Math.min(Math.max(available, 0), total);
+  const pct = (1 - clampedAvailable / total) * 100;
+  const bounded = Math.min(Math.max(pct, 0), 100);
+  return `${bounded.toFixed(1)}%`;
+}
+
 function updateUI(data) {
   err.textContent = "";
 
@@ -113,7 +129,10 @@ function updateUI(data) {
 
   el('diskTotal').textContent = fmtBytes(total);
   el('diskAvail').textContent = fmtBytes(avail);
-  el('diskBar').style.width = pct(used, total).toFixed(1) + "%";
+  const diskBar = el('diskBar');
+  if (diskBar) {
+    diskBar.style.width = getWidthFromBytes(total, avail);
+  }
 
   const partitions = Array.isArray(du.partitions) ? du.partitions : [];
   const partitionsEl = el('partitions');
@@ -123,7 +142,6 @@ function updateUI(data) {
       partitions.forEach((p) => {
         const pt = num(p.total_bytes);
         const pa = num(p.available_bytes);
-        const usedPart = Math.max(0, Math.min(pt, pt - pa));
         const mountPoint = p.mount_point ? String(p.mount_point) : "?";
         const fsType = p.fs_type ? String(p.fs_type) : "—";
 
@@ -136,7 +154,7 @@ function updateUI(data) {
 
         const bar = createEl('div', 'bar');
         const span = document.createElement('span');
-        span.style.width = pct(usedPart, pt).toFixed(1) + "%";
+        span.style.width = getWidthFromBytes(pt, pa);
         bar.appendChild(span);
         partitionsEl.appendChild(bar);
       });
