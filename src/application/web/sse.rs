@@ -402,7 +402,7 @@ pub(super) async fn sse_stream(
     let mut response = sse.into_response();
     mark_response_no_store(response.headers_mut());
     if let Some(token) = cookie_token.as_deref() {
-        set_session_cookie(response.headers_mut(), token);
+        set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
     }
     response
 }
