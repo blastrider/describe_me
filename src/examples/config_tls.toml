@@ -17,7 +17,7 @@ allow_ips = ["127.0.0.1", "::1", "192.168.1.0/24"]
 allow_origins = ["https://192.168.1.36:8443"]
 trusted_proxies = ["192.168.1.10"]
 updates_refresh_seconds = 20
-logo_path = "/home/adm-max/Documents/rust-projects/describe_me/src/application/web/assets/gen.svg"
+logo_path = "/home/max/Documents/Projets/Rust/describe_me/src/application/web/assets/gen.svg"
 
 [web.tls]
 cert_path = "./certs/server.pem"
