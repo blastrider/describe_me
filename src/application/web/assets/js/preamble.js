@@ -14,22 +14,6 @@ const updatesList = document.getElementById('updatesList');
 const updatesToggle = document.getElementById('updatesDetailsToggle');
 const networkCard = document.getElementById('networkCard');
 const networkList = document.getElementById('networkList');
-const descriptionCard = document.getElementById('descriptionCard');
-const descriptionText = document.getElementById('descriptionText');
-const descriptionEmpty = document.getElementById('descriptionEmpty');
-const descriptionForm = document.getElementById('descriptionForm');
-const descriptionInput = document.getElementById('descriptionInput');
-const descriptionEdit = document.getElementById('descriptionEdit');
-const descriptionCancel = document.getElementById('descriptionCancel');
-const descriptionSave = document.getElementById('descriptionSave');
-const descriptionHint = document.getElementById('descriptionHint');
-const tagsList = document.getElementById('tagsList');
-const tagsEmpty = document.getElementById('tagsEmpty');
-const tagsForm = document.getElementById('tagsForm');
-const tagsInput = document.getElementById('tagsInput');
-const tagsClear = document.getElementById('tagsClear');
-const tagsHint = document.getElementById('tagsHint');
-
 const tokenOverlay = document.getElementById('tokenOverlay');
 const tokenForm = document.getElementById('tokenForm');
 const tokenInput = document.getElementById('tokenInput');
@@ -83,26 +67,6 @@ if (updatesToggle && updatesDetails) {
     updatesToggle.setAttribute('aria-expanded', (!collapsed).toString());
   });
 }
-if (descriptionForm && descriptionInput && descriptionEdit) {
-  descriptionForm.addEventListener('submit', (event) => {
-    event.preventDefault();
-    submitDescriptionForm();
-  });
-  descriptionEdit.addEventListener('click', () => openDescriptionEditor());
-  if (descriptionCancel) {
-    descriptionCancel.addEventListener('click', () => closeDescriptionEditor());
-  }
-}
-if (tagsForm && tagsInput) {
-  tagsForm.addEventListener('submit', (event) => {
-    event.preventDefault();
-    submitTagsAdd();
-  });
-}
-if (tagsClear) {
-  tagsClear.addEventListener('click', () => submitTagsClear());
-}
-
 const el = (id) => document.getElementById(id);
 const fmtBytes = (n) => {
   const units = ["o","Ko","Mo","Go","To","Po"]; let i = 0, x = Number(n)||0;
