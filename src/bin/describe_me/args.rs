@@ -64,6 +64,10 @@ pub struct Opts {
     #[arg(long = "web-debug", action = ArgAction::SetTrue)]
     pub web_debug: bool,
 
+    /// Mode dev HTTP (désactive Secure sur le cookie de session describe_me_session).
+    #[arg(long = "web-dev", action = ArgAction::SetTrue)]
+    pub web_dev: bool,
+
     /// Hash du jeton requis pour --web (Authorization: Bearer ou en-tête x-describe-me-token)
     #[arg(long = "web-token", value_name = "TOKEN")]
     pub web_token: Option<String>,
