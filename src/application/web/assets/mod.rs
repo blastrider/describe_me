@@ -5,6 +5,8 @@ pub const MAIN_JS: &str = concat!(
     "\n",
     include_str!("js/token.js"),
     "\n",
+    include_str!("js/tags-editor.js"),
+    "\n",
     include_str!("js/ui.js"),
     "\n",
     include_str!("js/sse.js"),
