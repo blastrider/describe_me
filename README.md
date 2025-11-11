@@ -30,7 +30,7 @@ cargo test --features "systemd config net web"
   --with-services
 ```
 
-Pour HTTPS, ajoutez un bloc `[web.tls]` (voir `src/examples/config_tls.toml`) et pointiez votre navigateur sur `https://host:port`. La variante `config_http.toml` reste adaptée aux LAN en clair.
+Pour HTTPS, ajoutez un bloc `[web.tls]` (voir `src/examples/config_tls.toml`) ou placez l’app derrière un reverse-proxy (Caddy/Nginx/Traefik) en renseignant `allow_origins` et `trusted_proxies`. Le cookie `describe_me_session` est `HttpOnly+Secure`, donc il n’est envoyé qu’en HTTPS ; pour un dev local en clair, utilisez explicitement `--web-dev` (ou `web.dev_insecure_session_cookie = true`) et gardez ce mode hors prod.
 
 ## Documentation
 
