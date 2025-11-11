@@ -38,7 +38,7 @@ async function connectSse() {
       clearPersistedToken();
       currentToken = "";
       tokenInput.value = "";
-      clearTokenCookie();
+      clearSessionCookie();
       showError(message || "Jeton requis pour accéder aux métriques.");
       showTokenPrompt(message || "Jeton requis pour accéder aux métriques.");
       return;
