@@ -1,0 +1,361 @@
+# Vagrantfile — multi-distros, factorisé
+VAGRANTFILE_API_VERSION = "2"
+
+# Boxes publics par défaut (VirtualBox).
+# - Debian/Ubuntu: images officielles.
+# - Fedora/Alma/Rocky/Arch: images "generic" (publiques) éprouvées pour VirtualBox.
+# Possibilité d'override: exporte BOX_DEBIAN, BOX_UBUNTU, BOX_FEDORA, BOX_ALMA, BOX_ROCKY, BOX_ARCH
+machines = {
+  "debian" => { box: ENV.fetch("BOX_DEBIAN", "debian/bookworm64"),           hostname: "describe-debian" },
+  "ubuntu" => { box: ENV.fetch("BOX_UBUNTU", "alvistack/ubuntu-24.04"),      hostname: "describe-ubuntu" },
+  "fedora" => { box: ENV.fetch("BOX_FEDORA", "onlyoffice/base-fedora42"),    hostname: "describe-fedora" },
+  "alma"   => { box: ENV.fetch("BOX_ALMA",   "generic/almalinux9"),          hostname: "describe-alma" },
+  "rocky"  => { box: ENV.fetch("BOX_ROCKY",  "generic/rocky9"),              hostname: "describe-rocky" },
+  "arch"   => { box: ENV.fetch("BOX_ARCH",   "justunsix/archlinux-nix-aur"), hostname: "describe-arch" }
+}
+
+BINARY = ENV['BINARY'] || "describe-me"   # change si nécessaire
+SYNC_HOST_DIR = ENV['SYNC_HOST_DIR'] || File.expand_path("../target", __dir__)
+SYNC_WORKSPACE_DIR = ENV['SYNC_WORKSPACE_DIR'] || File.expand_path("..", __dir__)
+raise "Répertoire workspace #{SYNC_WORKSPACE_DIR} introuvable" unless Dir.exist?(SYNC_WORKSPACE_DIR)
+
+Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
+  config.vm.box_check_update = false
+
+  machines.each do |name, meta|
+    config.vm.define name do |vm|
+      vm.vm.box = meta[:box]
+      vm.vm.hostname = meta[:hostname]
+
+      # map host ./target -> /vagrant/target (consistant pour tous) if exists
+      if Dir.exist?(SYNC_HOST_DIR)
+        vm.vm.synced_folder SYNC_HOST_DIR, "/vagrant/target", owner: "vagrant", group: "vagrant", mount_options: ["dmode=0755,fmode=0644"]
+      else
+        puts "[vagrant] dossier #{SYNC_HOST_DIR} absent — pas de binaire hôte; on pourra construire dans la VM."
+      end
+      # map repo root -> /workspace for optional in-guest build (GLIBC mismatch fallback)
+      vm.vm.synced_folder SYNC_WORKSPACE_DIR, "/workspace", owner: "vagrant", group: "vagrant", mount_options: ["dmode=0755,fmode=0644"]
+
+      # small memory for faster bringup, override as needed
+      vm.vm.provider "virtualbox" do |vb|
+        vb.memory = 1024
+        vb.cpus = 1
+      end
+
+      # single, shared provisioning script (idempotent)
+      # expose VM private IP to the script to craft allow_origins, CN, etc.
+      HOST_IP = "192.168.56.#{50 + machines.keys.to_a.index(name)}"
+      HOST_PORT_NAT = 18443 + machines.keys.to_a.index(name)
+      vm.vm.provision "shell", privileged: true, inline: <<-SHELL
+        set -euo pipefail
+        BINARY="#{BINARY}"
+        CUSTOM_BINARY_REL_PATH="#{ENV['BINARY_REL_PATH']}"
+        declare -a CANDIDATES=()
+        if [ -n "${CUSTOM_BINARY_REL_PATH}" ]; then
+          CANDIDATES+=("/vagrant/target/${CUSTOM_BINARY_REL_PATH}")
+        fi
+        # Prefer portable MUSL builds first
+        CANDIDATES+=("/vagrant/target/x86_64-unknown-linux-musl/release/${BINARY}")
+        CANDIDATES+=("/vagrant/target/x86_64-unknown-linux-musl/debug/${BINARY}")
+        CANDIDATES+=("/vagrant/target/release/${BINARY}")
+        CANDIDATES+=("/vagrant/target/debug/${BINARY}")
+        CANDIDATES+=("/vagrant/target/${BINARY}")
+
+        SRC=""
+        for candidate in "${CANDIDATES[@]}"; do
+          if [ -f "${candidate}" ]; then
+            SRC="${candidate}"
+            break
+          fi
+        done
+
+        DEST_DIR="/opt/describe_me"
+        BIN_PATH="${DEST_DIR}/${BINARY}"
+        CONFIG_DIR="/etc/describe_me"
+        CERT_DIR="${CONFIG_DIR}/certs"
+        CONFIG_FILE="${CONFIG_DIR}/config.toml"
+        SERVICE_USER="describe_me"
+        STATE_DIR="/var/lib/describe_me"
+        HOST_IP="#{HOST_IP}"
+        HOST_PORT_NAT="#{HOST_PORT_NAT}"
+        WEB_TOKEN_INPUT="#{ENV['WEB_TOKEN'] || ''}"
+        WEB_TOKEN_HASH_INPUT='#{ENV['WEB_TOKEN_HASH'] || ''}'
+        BUILD_IN_GUEST_INPUT="#{ENV['BUILD_IN_GUEST'] || ''}"
+        WORKSPACE="/workspace"
+        BUILD_FEATURES="cli web config systemd net"
+        PORT=8443
+        BIND_ADDR="0.0.0.0:${PORT}"
+        ORIGIN="https://${HOST_IP}:${PORT}"
+        ORIGIN_HOST="https://127.0.0.1:${HOST_PORT_NAT}"
+
+        echo "== provision: prepare runtime for ${BINARY} on $(cat /etc/os-release 2>/dev/null | grep '^PRETTY_NAME=' || echo unknown) =="
+
+        # info si aucun binaire fourni côté hôte; on essaiera de construire dans la VM
+        if [ -z "${SRC}" ]; then
+          echo "Aucun binaire trouvé dans /vagrant/target (candidats: ${CANDIDATES[*]})."
+          echo "Tentative de build dans la VM (rustup+cargo) si autorisé."
+        fi
+
+        # ensure systemd present
+        if ! command -v systemctl >/dev/null 2>&1; then
+          echo "systemd not found — this box is not suitable for systemd service provisioning"
+          exit 1
+        fi
+
+        # Prefer host-provided certs if openssl is absent or network restricted
+        HOST_CERTS_DIR="${WORKSPACE}/certs"
+        HOST_CERT_PEM="${HOST_CERTS_DIR}/server.pem"
+        HOST_CERT_KEY="${HOST_CERTS_DIR}/server-key.pem"
+
+        if [ ! -x "$(command -v openssl || true)" ]; then
+          if [ -f "${HOST_CERT_PEM}" ] && [ -f "${HOST_CERT_KEY}" ]; then
+            echo "openssl not found; using host-provided certificates from ${HOST_CERTS_DIR}"
+            mkdir -p "${CERT_DIR}"
+            cp -f "${HOST_CERT_PEM}"  "${CERT_DIR}/server.pem"
+            cp -f "${HOST_CERT_KEY}"  "${CERT_DIR}/server-key.pem"
+            chmod 0600 "${CERT_DIR}/server-key.pem" || true
+            chmod 0644 "${CERT_DIR}/server.pem" || true
+          else
+            echo "openssl missing — attempting to install"
+            if command -v apt-get >/dev/null 2>&1; then
+              apt-get update -y || true
+              DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openssl || true
+            elif command -v dnf >/dev/null 2>&1; then
+              dnf install -y openssl || true
+            elif command -v yum >/dev/null 2>&1; then
+              yum install -y openssl || true
+            elif command -v pacman >/dev/null 2>&1; then
+              pacman -Sy --noconfirm openssl || true
+            else
+              echo "package manager not recognised; please install openssl manually or provide certs under ${HOST_CERTS_DIR}"
+            fi
+          fi
+        fi
+
+        # create user/group if absent
+        if ! id -u "${SERVICE_USER}" >/dev/null 2>&1; then
+          if command -v useradd >/dev/null 2>&1; then
+            useradd --system --no-create-home --shell /usr/sbin/nologin "${SERVICE_USER}" || true
+          else
+            adduser --system --no-create-home --shell /usr/sbin/nologin "${SERVICE_USER}" || true
+          fi
+        fi
+
+        # deploy binary (may be replaced later if incompatible)
+        mkdir -p "${DEST_DIR}"
+        if [ -n "${SRC}" ]; then
+          cp -f "${SRC}" "${BIN_PATH}"
+          chmod 0755 "${BIN_PATH}"
+          chown -R "${SERVICE_USER}:${SERVICE_USER}" "${DEST_DIR}" || true
+        fi
+
+        # ensure state dir exists and is writable by service user
+        mkdir -p "${STATE_DIR}"
+        chown -R "${SERVICE_USER}:${SERVICE_USER}" "${STATE_DIR}" || true
+        chmod 0750 "${STATE_DIR}" || true
+
+        # config + certs
+        mkdir -p "${CERT_DIR}"
+        chown -R "${SERVICE_USER}:${SERVICE_USER}" "${CONFIG_DIR}" || true
+
+        # generate self-signed certs if missing (idempotent) — PEM names to match config_tls.toml
+        if [ ! -f "${CERT_DIR}/server.pem" ] || [ ! -f "${CERT_DIR}/server-key.pem" ]; then
+          echo "Generating self-signed TLS certs (dev) at ${CERT_DIR}"
+          CN="${HOST_IP}"
+          openssl req -x509 -nodes -days 365 \
+            -newkey rsa:2048 \
+            -keyout "${CERT_DIR}/server-key.pem" \
+            -out "${CERT_DIR}/server.pem" \
+            -subj "/CN=${CN}" \
+            >/dev/null 2>&1 || true
+          chmod 0600 "${CERT_DIR}/server-key.pem" || true
+          chmod 0644 "${CERT_DIR}/server.pem" || true
+          chown -R "${SERVICE_USER}:${SERVICE_USER}" "${CERT_DIR}" || true
+        fi
+
+        # ensure certs exist at this point (either copied from host or generated)
+        if [ ! -f "${CERT_DIR}/server.pem" ] || [ ! -f "${CERT_DIR}/server-key.pem" ]; then
+          echo "ERROR: TLS certificates not available."
+          echo "Provide certs in host ./certs (server.pem, server-key.pem) or ensure 'openssl' is installable in the guest."
+          exit 1
+        fi
+
+        # if binary missing or incompatible (e.g., GLIBC mismatch), optionally build in guest
+        ensure_binary() {
+          if [ -x "${BIN_PATH}" ] && "${BIN_PATH}" --help >/dev/null 2>&1; then
+            return 0
+          fi
+          case "${BUILD_IN_GUEST_INPUT}" in
+            ""|"1"|"true"|"yes"|"auto") ;;
+            *)
+              echo "Binary at ${BIN_PATH} not runnable (likely GLIBC mismatch)."
+              echo "Provide a MUSL build at target/x86_64-unknown-linux-musl/(release|debug)/${BINARY} or set BUILD_IN_GUEST=1 to compile inside the VM."
+              exit 1
+              ;;
+          esac
+          echo "Attempting in-guest build of ${BINARY} with features: ${BUILD_FEATURES}"
+          # install prerequisites + rustup
+          if command -v apt-get >/dev/null 2>&1; then
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -y
+            apt-get install -y --no-install-recommends curl ca-certificates build-essential pkg-config
+          elif command -v dnf >/dev/null 2>&1; then
+            dnf install -y curl gcc make pkgconf-pkg-config ca-certificates
+          elif command -v yum >/dev/null 2>&1; then
+            yum install -y curl gcc make pkgconfig ca-certificates || true
+          elif command -v pacman >/dev/null 2>&1; then
+            pacman -Sy --noconfirm curl base-devel ca-certificates
+          fi
+          if ! command -v cargo >/dev/null 2>&1; then
+            curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+            export PATH="$HOME/.cargo/bin:/root/.cargo/bin:$PATH"
+          else
+            export PATH="$HOME/.cargo/bin:/root/.cargo/bin:$PATH"
+          fi
+          if [ ! -d "${WORKSPACE}" ]; then
+            echo "Workspace directory ${WORKSPACE} not found (synced_folder missing?)."
+            exit 1
+          fi
+          TARGET_DIR="/opt/target"
+          mkdir -p "${TARGET_DIR}"
+          (cd "${WORKSPACE}" && CARGO_TARGET_DIR="${TARGET_DIR}" cargo build --release --features "${BUILD_FEATURES}")
+          cp -f "${TARGET_DIR}/release/${BINARY}" "${BIN_PATH}"
+          chmod 0755 "${BIN_PATH}"
+          chown -R "${SERVICE_USER}:${SERVICE_USER}" "${DEST_DIR}" || true
+        }
+        ensure_binary
+
+        # resolve token hash: prefer precomputed WEB_TOKEN_HASH, else hash WEB_TOKEN (default 'vagrant')
+        TOKEN_HASH="${WEB_TOKEN_HASH_INPUT}"
+        if [ -z "${TOKEN_HASH}" ]; then
+          TOKEN_SRC=${WEB_TOKEN_INPUT:-vagrant}
+          TOKEN_HASH="$(${BIN_PATH} --hash-web-token "${TOKEN_SRC}" 2>/dev/null || true)"
+        fi
+        if [ -z "${TOKEN_HASH}" ]; then
+          echo "ERROR: token hash is empty. Provide WEB_TOKEN_HASH=\"<argon2/bcrypt>\" or WEB_TOKEN=<secret> to generate one."
+          exit 1
+        fi
+
+        # full TLS config (modeled after src/examples/config_tls.toml)
+        cat > "${CONFIG_FILE}" <<-EOF
+        # Auto-generated by Vagrant provisioner — HTTPS config
+        [runtime]
+        rust_log = "warn"
+        allow_config_exposure = true
+        state_dir = "${STATE_DIR}"
+
+        [runtime.cli]
+        web = "${BIND_ADDR}"
+        with_services = true
+        web_expose_all = true
+
+        [web]
+        token = "${TOKEN_HASH}"
+        allow_ips = ["127.0.0.1", "::1", "192.168.56.0/24"]
+        allow_origins = ["${ORIGIN}", "${ORIGIN_HOST}"]
+        trusted_proxies = ["${HOST_IP}"]
+        updates_refresh_seconds = 20
+
+        [web.tls]
+        cert_path = "${CERT_DIR}/server.pem"
+        key_path  = "${CERT_DIR}/server-key.pem"
+
+        [web.exposure]
+        expose_hostname = true
+        expose_os = true
+        expose_kernel = true
+        expose_services = true
+        expose_disk_partitions = true
+        expose_listening_sockets = true
+        expose_network_traffic = true
+        expose_updates = true
+        redacted = true
+
+        [web.security]
+        allowlist_multiplier = 2
+        token_ip_affinity_limit = 2
+
+        [web.security.html]
+        window_seconds = 60
+        per_ip = 40
+        per_token = 12
+        global = 120
+
+        [web.security.sse]
+        window_seconds = 60
+        per_ip = 15
+        per_token = 10
+        max_active_per_ip = 2
+        max_active_per_token = 2
+        max_stream_seconds = 600
+        min_event_interval_ms = 500
+        max_payload_bytes = 98304
+        max_stream_bytes = 4194304
+        global = 40
+
+        [web.security.brute_force]
+        window_seconds = 600
+        threshold = 5
+        initial_backoff_seconds = 10
+        backoff_multiplier = 2.0
+        backoff_ceiling_seconds = 120
+        quarantine_seconds = 3600
+        token_failure_threshold = 12
+        token_ip_spread = 2
+        sse_min_retry_seconds = 2
+
+        [services]
+        include = ["cron.service", "sshd.service", "nginx.service", "docker.service"]
+
+        [exposure]
+        expose_hostname = true
+        expose_os = true
+        expose_kernel = true
+        expose_services = true
+        expose_disk_partitions = true
+        expose_listening_sockets = true
+        expose_network_traffic = true
+        expose_updates = true
+        redacted = true
+	EOF
+        chmod 0644 "${CONFIG_FILE}"
+        chown "${SERVICE_USER}:${SERVICE_USER}" "${CONFIG_FILE}" || true
+
+        # systemd unit
+        UNIT_PATH="/etc/systemd/system/describe_me.service"
+        cat > "${UNIT_PATH}" <<-UNIT
+        [Unit]
+        Description=describe_me — service
+        After=network.target
+
+        [Service]
+        Type=simple
+        User=${SERVICE_USER}
+        Group=${SERVICE_USER}
+        StateDirectory=describe_me
+        Environment=DESCRIBE_ME_STATE_DIR=${STATE_DIR}
+        ExecStart=${BIN_PATH} --config ${CONFIG_FILE}
+        WorkingDirectory=${DEST_DIR}
+        Restart=on-failure
+        RestartSec=5
+        LimitNOFILE=65536
+
+        [Install]
+        WantedBy=multi-user.target
+	UNIT
+
+        # reload & enable
+        systemctl daemon-reload
+        systemctl enable --now describe_me.service || (systemctl start describe_me.service || true)
+
+        echo "== provision done: ${BINARY} deployed as systemd service describe_me =="
+
+      SHELL
+
+      # bring up networks on fixed host-only IPs if wanted (optional)
+      vm.vm.network "private_network", ip: "192.168.56.#{50 + machines.keys.to_a.index(name)}"
+      # forward guest HTTPS port to unique host port per VM
+      vm.vm.network "forwarded_port", guest: 8443, host: (18443 + machines.keys.to_a.index(name)), protocol: "tcp", auto_correct: true
+    end
+  end
+end
