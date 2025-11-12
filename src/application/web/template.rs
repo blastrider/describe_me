@@ -124,6 +124,59 @@ pub(super) fn render_updates_page(
     })
 }
 
+#[allow(dead_code)]
+fn render_update_howto(_updates: Option<&UpdatesInfo>) -> String {
+    // Detect distribution via /etc/os-release; fallback to generic commands.
+    let os_release = std::fs::read_to_string("/etc/os-release").unwrap_or_default();
+    let lower = os_release.to_ascii_lowercase();
+
+    // List-only commands per distro (no upgrade)
+    let (title, commands): (&str, &str) =
+        if lower.contains("id=arch") || lower.contains("id_like=arch") {
+            ("Arch Linux", "pacman -Qu\n# ou: checkupdates\n")
+        } else if lower.contains("id=alpine") || lower.contains("id_like=alpine") {
+            (
+                "Alpine Linux",
+                "apk list -u\n# ou: apk upgrade -s --available\n",
+            )
+        } else if lower.contains("id=fedora")
+            || lower.contains("id_like=fedora")
+            || lower.contains("id=rocky")
+            || lower.contains("id=almalinux")
+            || lower.contains("id=rhel")
+            || lower.contains("id_like=rhel")
+        {
+            (
+                "Fedora/RHEL (dnf)",
+                "dnf -q check-update\n# ou: dnf update --assumeno\n",
+            )
+        } else if lower.contains("id=debian")
+            || lower.contains("id_like=debian")
+            || lower.contains("id=ubuntu")
+            || lower.contains("id_like=ubuntu")
+        {
+            (
+                "Debian/Ubuntu (apt)",
+                "apt list --upgradable\n# ou (simulation): apt-get -s upgrade\n",
+            )
+        } else {
+            (
+                "Mise à jour système",
+                "# Exemple (dnf)\ndnf -q check-update\n# Exemple (apt)\napt list --upgradable\n",
+            )
+        };
+
+    format!(
+        r#"<p class="muted">Exécuter ces commandes en SSH avec un compte administrateur.</p>
+<div style="background:#0b0e16;border:1px solid #222838;border-radius:8px;padding:12px">
+  <div style="color:#a8b3c3;font-size:13px;margin-bottom:6px">{title}</div>
+  <pre style="margin:0;color:#e6eef8"><code>{commands}</code></pre>
+</div>"#,
+        title = escape_html(title),
+        commands = commands,
+    )
+}
+
 fn render_updates_summary(updates: Option<&UpdatesInfo>) -> String {
     if let Some(info) = updates {
         let pending = info.pending;
