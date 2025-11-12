@@ -90,6 +90,32 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
 
         echo "== provision: prepare runtime for ${BINARY} on $(cat /etc/os-release 2>/dev/null | grep '^PRETTY_NAME=' || echo unknown) =="
 
+        # --- Network sanity: ensure default route uses NAT, not host-only -------
+        fix_default_route() {
+          # If default goes through 192.168.56.1 (VirtualBox host-only), switch to NAT (10.0.2.2)
+          if ip -4 route show default | grep -q "via 192.168.56.1"; then
+            HOSTONLY_DEV=$(ip -4 route show | awk '/^default .*via 192\.168\.56\.1/ {for(i=1;i<=NF;i++){if($i=="dev"){print $(i+1); exit}}}')
+            NAT_DEV=$(ip -4 addr show | awk '/inet 10\.0\.2\./ {print $NF; exit}')
+            if [ -z "${NAT_DEV}" ]; then
+              NAT_DEV=$(ip -4 route show | awk '/10\.0\.2\.0\/24/ {for(i=1;i<=NF;i++){if($i=="dev"){print $(i+1); exit}}}')
+            fi
+            echo "[net] switching default route to NAT via 10.0.2.2 dev ${NAT_DEV} (was ${HOSTONLY_DEV})"
+            ip -4 route del default via 192.168.56.1 dev "${HOSTONLY_DEV}" 2>/dev/null || true
+            if [ -n "${NAT_DEV}" ]; then
+              ip -4 route replace default via 10.0.2.2 dev "${NAT_DEV}" metric 100 || true
+            fi
+            # Persist with NetworkManager if available
+            if command -v nmcli >/dev/null 2>&1 && [ -n "${HOSTONLY_DEV}" ]; then
+              for UUID in $(nmcli -t -f UUID,DEVICE connection show | awk -F: -v dev="${HOSTONLY_DEV}" '$2==dev {print $1}'); do
+                nmcli connection modify "${UUID}" ipv4.never-default yes ipv6.never-default yes || true
+                nmcli connection down "${UUID}" || true
+                nmcli connection up   "${UUID}" || true
+              done
+            fi
+          fi
+        }
+        fix_default_route
+
         # info si aucun binaire fourni côté hôte; on essaiera de construire dans la VM
         if [ -z "${SRC}" ]; then
           echo "Aucun binaire trouvé dans /vagrant/target (candidats: ${CANDIDATES[*]})."
@@ -121,7 +147,7 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
               apt-get update -y || true
               DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openssl || true
             elif command -v dnf >/dev/null 2>&1; then
-              dnf install -y openssl || true
+            dnf install -y --setopt=ip_resolve=4 --setopt=timeout=60 openssl || true
             elif command -v yum >/dev/null 2>&1; then
               yum install -y openssl || true
             elif command -v pacman >/dev/null 2>&1; then
@@ -200,7 +226,7 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
             apt-get update -y
             apt-get install -y --no-install-recommends curl ca-certificates build-essential pkg-config
           elif command -v dnf >/dev/null 2>&1; then
-            dnf install -y curl gcc make pkgconf-pkg-config ca-certificates
+            dnf install -y --setopt=ip_resolve=4 --setopt=timeout=60 curl gcc make pkgconf-pkg-config ca-certificates
           elif command -v yum >/dev/null 2>&1; then
             yum install -y curl gcc make pkgconfig ca-certificates || true
           elif command -v pacman >/dev/null 2>&1; then

@@ -59,6 +59,12 @@ Dans tous les cas, place‑toi ici: `infras/`
 - Reprovisionner: `vagrant provision ubuntu`
 - Redémarrer + reprovisionner: `vagrant reload ubuntu --provision`
 
+Astuce: quelques cibles Make sont disponibles ici et redirigent vers la racine du repo:
+
+- `make fmt` — formatage (`cargo fmt`)
+- `make ci` — fmt-check, clippy, tests, doc, audit, deny, bench
+- `make release-complete` — build release toutes features
+
 ## Images utilisées (publiques, overridables)
 
 - Debian: `debian/bookworm64`
@@ -114,4 +120,3 @@ La configuration générée est calquée sur `src/examples/config_tls.toml` (HTT
 
 - Arrêt: `vagrant halt` (ou `vagrant halt <vm>`)
 - Destruction: `vagrant destroy -f` (ou par VM)
-
