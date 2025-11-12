@@ -38,6 +38,12 @@ Pour HTTPS, ajoutez un bloc `[web.tls]` (voir `src/examples/config_tls.toml`) ou
 - Architecture & internals : `docs/architecture.md`, `docs/application-layer.md`, `docs/web-security.md`, etc.
 - Exemples de configuration : `src/examples/config.toml`, `src/examples/config_http.toml`, `src/examples/config_tls.toml`
 - Packaging & service : `packaging/systemd/describe-me.service`
+- Environnement Vagrant multi‑distros (VMs + HTTPS + systemd) : `infras/README.md`
+
+## Compatibilité
+
+- Détection des mises à jour: validée sur Ubuntu, Debian et Fedora.
+- Autres systèmes pris en charge (best‑effort): Arch/Manjaro (pacman), Alpine (apk), FreeBSD (pkg).
 
 ## Support & contributions
 

@@ -37,6 +37,10 @@ Si la commande est absente ou retourne un code inattendu, le module tente le
 backend suivant (ex. `dnf` → `checkupdates` → `apk`). En cas d’échec total,
 `SystemSnapshot::updates` reste à `None` et aucune erreur n’est remontée.
 
+Compatibilité validée
+- Ubuntu/Debian: OK (APT)
+- Fedora: OK (DNF/DNF5)
+
 ## Consommation
 
 - **CLI** : `--summary` ajoute `updates=<N> reboot=<yes|no|unknown>` sur une
