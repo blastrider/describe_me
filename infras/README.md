@@ -1,6 +1,6 @@
 # Environnement Vagrant multi‑distros pour describe_me
 
-Ce répertoire fournit un `Vagrantfile` pour démarrer rapidement plusieurs VM Linux (Debian, Ubuntu, Fedora, Alma, Rocky, Arch) et y déployer `describe-me` en service systemd avec HTTPS.
+Ce répertoire fournit un `Vagrantfile` pour démarrer rapidement plusieurs VM Linux (Debian, Ubuntu, Fedora, Alma, Rocky) ainsi qu'une VM FreeBSD 14.1, et y déployer `describe-me` en service systemd avec HTTPS (sauf FreeBSD où le provisionnement est laissé manuel).
 
 ## Prérequis
 
@@ -10,10 +10,10 @@ Ce répertoire fournit un `Vagrantfile` pour démarrer rapidement plusieurs VM L
 
 ## Réseaux et ports
 
-- IP privée (host‑only): `192.168.56.50 + index` (Debian=50, Ubuntu=51, Fedora=52, Alma=53, Rocky=54, Arch=55)
+- IP privée (host‑only): `192.168.56.50 + index` (Debian=50, Ubuntu=51, Fedora=52, Alma=53, Rocky=54, FreeBSD=55)
 - NAT 8443 → hôte: `18443 + index`
-  - Debian: 18443, Ubuntu: 18444, Fedora: 18445, Alma: 18446, Rocky: 18447, Arch: 18448
-- Le service écoute sur `0.0.0.0:8443` dans chaque VM.
+  - Debian: 18443, Ubuntu: 18444, Fedora: 18445, Alma: 18446, Rocky: 18447, FreeBSD: 18448
+- Sur les VMs Linux, le service écoute sur `0.0.0.0:8443`; FreeBSD ne lance pas encore `describe-me`.
 
 Accès depuis l’hôte:
 
@@ -72,16 +72,19 @@ Astuce: quelques cibles Make sont disponibles ici et redirigent vers la racine d
 - Fedora: `onlyoffice/base-fedora42`
 - Alma: `generic/almalinux9`
 - Rocky: `generic/rocky9`
-- Arch: `justunsix/archlinux-nix-aur`
+- FreeBSD: `freebsd/FreeBSD-14.1-RELEASE` (version `2024.05.31`)
 
 Override possible via variables d’environnement avant `vagrant up`:
 
-- `BOX_DEBIAN`, `BOX_UBUNTU`, `BOX_FEDORA`, `BOX_ALMA`, `BOX_ROCKY`, `BOX_ARCH`
+- `BOX_DEBIAN`, `BOX_UBUNTU`, `BOX_FEDORA`, `BOX_ALMA`, `BOX_ROCKY`, `BOX_FREEBSD`, `BOX_FREEBSD_VERSION`
 
 Exemples:
 
 - `BOX_UBUNTU=ubuntu/noble64 vagrant up ubuntu`
 - `BOX_ALMA=bento/almalinux-9 vagrant up alma`
+- `BOX_FREEBSD=freebsd/FreeBSD-14.1-RELEASE BOX_FREEBSD_VERSION=2024.05.31 vagrant up freebsd`
+
+> FreeBSD: aucun provisioner automatique `describe_me` n'est exécuté pour le moment — l'OS utilise `rc.d` (pas systemd), donc la configuration/service reste manuelle pour l'instant.
 
 ## Variables utiles
 

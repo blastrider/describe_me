@@ -9,12 +9,28 @@ machines = {
   "debian" => { box: ENV.fetch("BOX_DEBIAN", "debian/bookworm64"),           hostname: "describe-debian" },
   "ubuntu" => { box: ENV.fetch("BOX_UBUNTU", "alvistack/ubuntu-24.04"),      hostname: "describe-ubuntu" },
   "fedora" => { box: ENV.fetch("BOX_FEDORA", "onlyoffice/base-fedora42"),    hostname: "describe-fedora" },
-  "alma"   => { box: ENV.fetch("BOX_ALMA",   "generic/almalinux9"),          hostname: "describe-alma" },
+  "alma"   => { box: ENV.fetch("BOX_ALMA",   "almalinux/9"),          hostname: "describe-alma" },
   "rocky"  => { box: ENV.fetch("BOX_ROCKY",  "generic/rocky9"),              hostname: "describe-rocky" },
-  "arch"   => { box: ENV.fetch("BOX_ARCH",   "justunsix/archlinux-nix-aur"), hostname: "describe-arch" }
+  "freebsd" => {
+    box: ENV.fetch("BOX_FREEBSD", "freebsd/FreeBSD-14.1-RELEASE"),
+    box_version: ENV.fetch("BOX_FREEBSD_VERSION", "2024.05.31"),
+    hostname: "describe-freebsd",
+    provision: :freebsd
+  }
 }
 
 BINARY = ENV['BINARY'] || "describe-me"   # change si nécessaire
+CPUS_ENV = ENV['VAGRANT_CPUS']&.strip
+CPUS = case CPUS_ENV
+       when nil, ""
+         2
+       when "2"
+         2
+       when "4"
+         4
+       else
+         raise "VAGRANT_CPUS doit valoir '2' ou '4' (reçu #{CPUS_ENV.inspect})"
+       end
 SYNC_HOST_DIR = ENV['SYNC_HOST_DIR'] || File.expand_path("../target", __dir__)
 SYNC_WORKSPACE_DIR = ENV['SYNC_WORKSPACE_DIR'] || File.expand_path("..", __dir__)
 raise "Répertoire workspace #{SYNC_WORKSPACE_DIR} introuvable" unless Dir.exist?(SYNC_WORKSPACE_DIR)
@@ -26,6 +42,8 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
     config.vm.define name do |vm|
       vm.vm.box = meta[:box]
       vm.vm.hostname = meta[:hostname]
+      vm.vm.box_version = meta[:box_version] if meta[:box_version]
+      provisioner = meta.fetch(:provision, :linux)
 
       # map host ./target -> /vagrant/target (consistant pour tous) if exists
       if Dir.exist?(SYNC_HOST_DIR)
@@ -39,14 +57,16 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
       # small memory for faster bringup, override as needed
       vm.vm.provider "virtualbox" do |vb|
         vb.memory = 1024
-        vb.cpus = 1
+        vb.cpus = CPUS
       end
 
       # single, shared provisioning script (idempotent)
       # expose VM private IP to the script to craft allow_origins, CN, etc.
       HOST_IP = "192.168.56.#{50 + machines.keys.to_a.index(name)}"
       HOST_PORT_NAT = 18443 + machines.keys.to_a.index(name)
-      vm.vm.provision "shell", privileged: true, inline: <<-SHELL
+      case provisioner
+      when :linux
+        vm.vm.provision "shell", privileged: true, inline: <<-SHELL
         set -euo pipefail
         BINARY="#{BINARY}"
         CUSTOM_BINARY_REL_PATH="#{ENV['BINARY_REL_PATH']}"
@@ -115,6 +135,24 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
           fi
         }
         fix_default_route
+
+        # On Rocky Linux, ensure firewalld allows TCP ${PORT}
+        if [ -f /etc/os-release ] && grep -q '^ID=rocky' /etc/os-release 2>/dev/null; then
+          echo "[firewalld] Configuring firewall to allow ${PORT}/tcp on Rocky Linux"
+          if ! command -v firewall-cmd >/dev/null 2>&1; then
+            if command -v dnf >/dev/null 2>&1; then
+              dnf install -y --setopt=ip_resolve=4 --setopt=timeout=60 firewalld || true
+            elif command -v yum >/dev/null 2>&1; then
+              yum install -y firewalld || true
+            fi
+          fi
+          # start/enable firewalld if available, then open the port
+          if command -v firewall-cmd >/dev/null 2>&1; then
+            systemctl enable --now firewalld || true
+            firewall-cmd --add-port=${PORT}/tcp --permanent || true
+            firewall-cmd --reload || true
+          fi
+        fi
 
         # info si aucun binaire fourni côté hôte; on essaiera de construire dans la VM
         if [ -z "${SRC}" ]; then
@@ -377,6 +415,15 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
         echo "== provision done: ${BINARY} deployed as systemd service describe_me =="
 
       SHELL
+      when :freebsd
+        # FreeBSD uses rc.d (no systemd); keep manual setup until the service is ported.
+        vm.vm.provision "shell", privileged: true, inline: <<-SHELL
+        set -euo pipefail
+        echo "== FreeBSD box provision =="
+        echo "Cette VM FreeBSD (#{meta[:box]} #{meta[:box_version] || 'latest'}) est disponible avec réseau configuré."
+        echo "Aucun provisionnement automatique describe_me n'est encore disponible sur FreeBSD."
+        SHELL
+      end
 
       # bring up networks on fixed host-only IPs if wanted (optional)
       vm.vm.network "private_network", ip: "192.168.56.#{50 + machines.keys.to_a.index(name)}"
