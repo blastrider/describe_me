@@ -4,7 +4,9 @@ CARGO ?= cargo
 FEATURES ?= --all-features
 MSRV ?= 1.90.0
 
-.PHONY: fmt fmt-check clippy test test-release doc audit deny bench ci msrv-build tools build-complete sbom supply-chain
+.PHONY: all deb fmt fmt-check clippy test test-release doc audit deny bench ci msrv-build tools build-complete sbom supply-chain
+
+all: deb
 
 release-complete:
 	$(CARGO) build --release --all-features
@@ -69,3 +71,9 @@ tools:
 			cargo install $$tool --locked; \
 		fi; \
 	done
+
+deb:
+	@if ! command -v cargo-deb >/dev/null 2>&1; then \
+		cargo install cargo-deb --locked; \
+	fi
+	cargo deb

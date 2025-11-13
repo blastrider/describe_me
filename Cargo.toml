@@ -12,6 +12,19 @@ categories = ["system", "command-line-utilities"]
 [package.metadata]
 msrv = "1.90.0"
 
+[package.metadata.deb]
+maintainer = "Maxime Guillemin <guimaxali@gmail.com>"
+depends = "$auto"
+section = "utils"
+priority = "optional"
+features = ["cli", "web", "config", "systemd", "net", "journald"]
+default-features = false
+assets = [
+    ["target/release/describe-me", "usr/bin/describe-me", "755"],
+    ["packaging/systemd/describe-me.service", "lib/systemd/system/describe-me.service", "644"]
+]
+maintainer-scripts = "packaging/debian"
+
 [lib]
 name = "describe_me"
 path = "src/lib.rs"

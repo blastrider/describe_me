@@ -34,6 +34,7 @@ Dans tous les cas, place‑toi ici: `infras/`
   - (Debian/Ubuntu) `sudo apt-get install -y musl-tools`
   - `cargo build --release --target x86_64-unknown-linux-musl --features "cli web config systemd net"`
   - Le provisioner prendra en priorité `target/x86_64-unknown-linux-musl/release/describe-me`.
+  - Pour Debian/Ubuntu: `cargo deb` génère un paquet sous `target/debian/describe-me_<version>_amd64.deb`; les VMs tenteront de l’installer automatiquement (plus rapide que la recompilation).
 
 - Option B — Laisser la VM compiler (fallback):
   - `BUILD_IN_GUEST=1 vagrant up` (ou `vagrant provision <vm>`)
