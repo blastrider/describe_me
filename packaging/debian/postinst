@@ -1,0 +1,11 @@
+#!/bin/sh
+set -e
+
+install -d -m 0750 -o root -g root /var/lib/describe-me >/dev/null 2>&1 || true
+
+if command -v systemctl >/dev/null 2>&1; then
+	systemctl daemon-reload || true
+	systemctl preset describe-me.service >/dev/null 2>&1 || true
+fi
+
+exit 0

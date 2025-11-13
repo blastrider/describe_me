@@ -1,0 +1,14 @@
+#!/bin/sh
+set -e
+
+action="$1"
+
+if command -v systemctl >/dev/null 2>&1; then
+	systemctl daemon-reload >/dev/null 2>&1 || true
+fi
+
+if [ "$action" = "purge" ]; then
+	rm -rf /var/lib/describe-me || true
+fi
+
+exit 0

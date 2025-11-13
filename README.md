@@ -38,6 +38,16 @@ cargo test --features "systemd config net web"
 
 Pour HTTPS, ajoutez un bloc `[web.tls]` (voir `src/examples/config_tls.toml`) ou placez l’app derrière un reverse-proxy (Caddy/Nginx/Traefik) en renseignant `allow_origins` et `trusted_proxies`. Le cookie `describe_me_session` est `HttpOnly+Secure`, donc il n’est envoyé qu’en HTTPS ; pour un dev local en clair, utilisez explicitement `--web-dev` (ou `web.dev_insecure_session_cookie = true`) et gardez ce mode hors prod.
 
+## Paquet Debian
+
+```bash
+make                    # installe cargo-deb si nécessaire et construit le binaire
+ls target/debian/*.deb  # ex: target/debian/describe-me_0.1.0_amd64.deb
+sudo dpkg -i target/debian/describe-me_0.1.0_amd64.deb
+```
+
+Le paquet embarque l’unité systemd durcie fournie dans `packaging/systemd/describe-me.service` et gère automatiquement le rechargement/preset du service lors de l’installation.
+
 ## Documentation
 
 - Guide utilisateur complet : `docs/utilisateurs/guide.md`
