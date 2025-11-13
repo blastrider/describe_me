@@ -4,6 +4,12 @@ Outil Rust minimaliste pour capturer l’état d’un serveur (CPU, RAM, disques
 
 ![describe_me logo](src/application/web/assets/gen.svg)
 
+[![CI](https://github.com/blastrider/describe_me/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/blastrider/describe_me/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/blastrider/describe_me)](./LICENSE)
+![MSRV](https://img.shields.io/badge/rustc-1.90%2B-informational?logo=rust)
+![Security](https://img.shields.io/badge/security-cargo--audit%20%7C%20cargo--deny-informational)
+![Platforms](https://img.shields.io/badge/platforms-Ubuntu%20%7C%20Debian%20%7C%20Fedora%20%7C%20Arch%20%7C%20Alpine%20%7C%20FreeBSD-blue)
+
 ## Points clés
 
 - **Snapshot complet** : hostname, OS, uptime, charge, disques, services, sockets, trafic réseau, mises à jour.
