@@ -1,0 +1,28 @@
+#!/bin/sh
+set -e
+
+action="$1"
+
+stop_service() {
+	if command -v systemctl >/dev/null 2>&1; then
+		systemctl stop describe-me.service >/dev/null 2>&1 || true
+	fi
+}
+
+disable_service() {
+	if command -v systemctl >/dev/null 2>&1; then
+		systemctl disable describe-me.service >/dev/null 2>&1 || true
+	fi
+}
+
+case "$action" in
+	remove)
+		stop_service
+		disable_service
+		;;
+	upgrade|deconfigure)
+		stop_service
+		;;
+esac
+
+exit 0

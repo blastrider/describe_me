@@ -107,6 +107,62 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
         BIND_ADDR="0.0.0.0:${PORT}"
         ORIGIN="https://${HOST_IP}:${PORT}"
         ORIGIN_HOST="https://127.0.0.1:${HOST_PORT_NAT}"
+        INSTALL_MODE="copy"
+        OS_ID=""
+        OS_ID_LIKE=""
+        if [ -f /etc/os-release ]; then
+          . /etc/os-release
+          OS_ID="${ID:-}"
+          OS_ID_LIKE="${ID_LIKE:-}"
+        fi
+
+        install_deb_if_available() {
+          local deb_family=0
+          case "${OS_ID}" in
+            debian|ubuntu) deb_family=1 ;;
+          esac
+          if [ "${deb_family}" -eq 0 ]; then
+            if printf '%s\n' "${OS_ID_LIKE}" | grep -qw debian 2>/dev/null; then
+              deb_family=1
+            fi
+          fi
+          if [ "${deb_family}" -ne 1 ]; then
+            return
+          fi
+          local target_dir="/vagrant/target/debian"
+          if [ ! -d "${target_dir}" ]; then
+            echo "[deb] ${target_dir} absent — skipping .deb install"
+            return
+          fi
+          local deb_file=""
+          for candidate in "${target_dir}"/describe-me_*_amd64.deb; do
+            if [ -f "${candidate}" ]; then
+              deb_file="${candidate}"
+            fi
+          done
+          if [ -z "${deb_file}" ]; then
+            echo "[deb] aucun paquet describe-me_*.deb trouvé dans ${target_dir}"
+            return
+          fi
+          echo "[deb] installation de ${deb_file}"
+          if dpkg -i "${deb_file}"; then
+            INSTALL_MODE="package"
+            BIN_PATH="/usr/bin/${BINARY}"
+            return
+          fi
+          echo "[deb] dpkg a retourné une erreur; tentative de résolution des dépendances"
+          if command -v apt-get >/dev/null 2>&1; then
+            apt-get update -y || true
+            apt-get install -f -y || true
+          fi
+          if dpkg -i "${deb_file}"; then
+            INSTALL_MODE="package"
+            BIN_PATH="/usr/bin/${BINARY}"
+            return
+          fi
+          echo "[deb] installation du paquet impossible; fallback manuel"
+        }
+        install_deb_if_available
 
         echo "== provision: prepare runtime for ${BINARY} on $(cat /etc/os-release 2>/dev/null | grep '^PRETTY_NAME=' || echo unknown) =="
 
@@ -207,11 +263,17 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
 
         # deploy binary (may be replaced later if incompatible)
         mkdir -p "${DEST_DIR}"
-        if [ -n "${SRC}" ]; then
-          cp -f "${SRC}" "${BIN_PATH}"
-          chmod 0755 "${BIN_PATH}"
-          chown -R "${SERVICE_USER}:${SERVICE_USER}" "${DEST_DIR}" || true
+        if [ "${INSTALL_MODE}" = "copy" ]; then
+          if [ -n "${SRC}" ]; then
+            cp -f "${SRC}" "${BIN_PATH}"
+            chmod 0755 "${BIN_PATH}"
+          else
+            echo "Aucun binaire fourni côté hôte; on basculera sur BUILD_IN_GUEST si nécessaire."
+          fi
+        else
+          echo "[deb] utilisation du binaire installé par paquet: ${BIN_PATH}"
         fi
+        chown -R "${SERVICE_USER}:${SERVICE_USER}" "${DEST_DIR}" || true
 
         # ensure state dir exists and is writable by service user
         mkdir -p "${STATE_DIR}"
@@ -246,6 +308,13 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
 
         # if binary missing or incompatible (e.g., GLIBC mismatch), optionally build in guest
         ensure_binary() {
+          if [ "${INSTALL_MODE}" = "package" ]; then
+            if [ -x "${BIN_PATH}" ] && "${BIN_PATH}" --help >/dev/null 2>&1; then
+              return 0
+            fi
+            echo "[deb] binaire attendu via paquet absent — fallback vers mode copie/build"
+            INSTALL_MODE="copy"
+          fi
           if [ -x "${BIN_PATH}" ] && "${BIN_PATH}" --help >/dev/null 2>&1; then
             return 0
           fi
