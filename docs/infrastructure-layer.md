@@ -41,8 +41,11 @@ de bord.
 
 ## `storage.rs`
 
-- Initialise la base `redb` (`metadata.redb`) via `MetadataStore` et la
-  table `server_metadata`.
+- Définit l’interface `MetadataBackend` et sa fabrique afin de découpler
+  complètement `MetadataStore` du moteur physique. `RedbBackend` reste
+  l’implémentation par défaut (fichier `metadata.redb`, table
+  `server_metadata`), mais un autre backend peut être injecté via
+  `set_metadata_backend_factory`.
 - Résout automatiquement le répertoire d’état en respectant (ordre de
   priorité) `DESCRIBE_ME_STATE_DIR`, la variable `STATE_DIRECTORY`
   exposée par systemd, la valeur `[runtime] state_dir` de la configuration,
@@ -51,7 +54,8 @@ de bord.
 - Fournit les primitives `set_description` / `get_description` /
   `clear_description` utilisées pour stocker la description libre du
   serveur, ainsi que `set_tags_raw` / `get_tags_raw` pour la liste de
-  tags normalisés.
+  tags normalisés. Les erreurs du backend sont remontées sous forme de
+  `DescribeError`.
 
 ## Approche commune
 

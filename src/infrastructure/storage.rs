@@ -1,8 +1,8 @@
 use std::env;
 use std::ffi::OsString;
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use redb::{Database, ReadableTable, TableDefinition, TableError};
 
@@ -17,18 +17,108 @@ static STATE_DIR_OVERRIDE: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
 #[cfg(test)]
 static STATE_DIR_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
+pub(crate) trait MetadataBackend: Send + Sync {
+    fn set_description(&self, text: &str) -> Result<(), DescribeError>;
+    fn get_description(&self) -> Result<Option<String>, DescribeError>;
+    fn clear_description(&self) -> Result<(), DescribeError>;
+    fn set_tags_raw(&self, payload: &str) -> Result<(), DescribeError>;
+    fn get_tags_raw(&self) -> Result<Option<String>, DescribeError>;
+    fn clear_tags(&self) -> Result<(), DescribeError>;
+}
+
+pub(crate) trait MetadataBackendFactory: Send + Sync {
+    fn open_default(&self) -> Result<Box<dyn MetadataBackend>, DescribeError>;
+}
+
 pub(crate) struct MetadataStore {
-    db: Database,
+    backend: Arc<dyn MetadataBackend>,
 }
 
 impl MetadataStore {
-    pub(crate) fn open_default() -> Result<Self, DescribeError> {
-        let path = metadata_db_path();
-        Self::open_at(path)
+    fn new(backend: Arc<dyn MetadataBackend>) -> Self {
+        Self { backend }
     }
 
-    pub(crate) fn open_at(path: impl AsRef<Path>) -> Result<Self, DescribeError> {
-        let path = path.as_ref();
+    pub(crate) fn open_default() -> Result<Self, DescribeError> {
+        Ok(Self::new(acquire_backend()?))
+    }
+
+    pub(crate) fn set_description(&self, text: &str) -> Result<(), DescribeError> {
+        self.backend.set_description(text)
+    }
+
+    pub(crate) fn get_description(&self) -> Result<Option<String>, DescribeError> {
+        self.backend.get_description()
+    }
+
+    pub(crate) fn clear_description(&self) -> Result<(), DescribeError> {
+        self.backend.clear_description()
+    }
+
+    pub(crate) fn set_tags_raw(&self, payload: &str) -> Result<(), DescribeError> {
+        self.backend.set_tags_raw(payload)
+    }
+
+    pub(crate) fn get_tags_raw(&self) -> Result<Option<String>, DescribeError> {
+        self.backend.get_tags_raw()
+    }
+
+    pub(crate) fn clear_tags(&self) -> Result<(), DescribeError> {
+        self.backend.clear_tags()
+    }
+}
+
+struct BackendRegistry {
+    factory: Box<dyn MetadataBackendFactory>,
+    backend: Option<Arc<dyn MetadataBackend>>,
+}
+
+impl BackendRegistry {
+    fn new() -> Self {
+        Self {
+            factory: default_backend_factory(),
+            backend: None,
+        }
+    }
+
+    fn acquire_backend(&mut self) -> Result<Arc<dyn MetadataBackend>, DescribeError> {
+        if let Some(current) = self.backend.as_ref() {
+            return Ok(Arc::clone(current));
+        }
+        let backend = self.factory.open_default()?;
+        let backend = Arc::from(backend);
+        self.backend = Some(Arc::clone(&backend));
+        Ok(backend)
+    }
+
+    fn set_factory(&mut self, factory: Box<dyn MetadataBackendFactory>) {
+        self.factory = factory;
+        self.backend = None;
+    }
+}
+
+fn backend_registry() -> &'static Mutex<BackendRegistry> {
+    static REGISTRY: OnceLock<Mutex<BackendRegistry>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(BackendRegistry::new()))
+}
+
+fn acquire_backend() -> Result<Arc<dyn MetadataBackend>, DescribeError> {
+    let mut guard = backend_registry()
+        .lock()
+        .expect("metadata backend registry mutex poisoned");
+    guard.acquire_backend()
+}
+
+fn default_backend_factory() -> Box<dyn MetadataBackendFactory> {
+    Box::new(RedbBackendFactory)
+}
+
+struct RedbBackendFactory;
+
+impl MetadataBackendFactory for RedbBackendFactory {
+    fn open_default(&self) -> Result<Box<dyn MetadataBackend>, DescribeError> {
+        let path = metadata_db_path();
+        let path = path.as_path();
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir).map_err(|err| {
                 DescribeError::System(format!(
@@ -42,10 +132,16 @@ impl MetadataStore {
         } else {
             Database::create(path).map_err(map_db_err)?
         };
-        Ok(Self { db })
+        Ok(Box::new(RedbBackend { db }))
     }
+}
 
-    pub(crate) fn set_description(&self, text: &str) -> Result<(), DescribeError> {
+struct RedbBackend {
+    db: Database,
+}
+
+impl MetadataBackend for RedbBackend {
+    fn set_description(&self, text: &str) -> Result<(), DescribeError> {
         let tx = self.db.begin_write().map_err(map_db_err)?;
         {
             let mut table = tx.open_table(METADATA_TABLE).map_err(map_db_err)?;
@@ -61,7 +157,7 @@ impl MetadataStore {
         Ok(())
     }
 
-    pub(crate) fn get_description(&self) -> Result<Option<String>, DescribeError> {
+    fn get_description(&self) -> Result<Option<String>, DescribeError> {
         let tx = self.db.begin_read().map_err(map_db_err)?;
         let table = match tx.open_table(METADATA_TABLE) {
             Ok(table) => table,
@@ -75,7 +171,7 @@ impl MetadataStore {
         Ok(value)
     }
 
-    pub(crate) fn clear_description(&self) -> Result<(), DescribeError> {
+    fn clear_description(&self) -> Result<(), DescribeError> {
         let tx = self.db.begin_write().map_err(map_db_err)?;
         match tx.open_table(METADATA_TABLE) {
             Ok(mut table) => {
@@ -90,7 +186,7 @@ impl MetadataStore {
         Ok(())
     }
 
-    pub(crate) fn set_tags_raw(&self, payload: &str) -> Result<(), DescribeError> {
+    fn set_tags_raw(&self, payload: &str) -> Result<(), DescribeError> {
         let tx = self.db.begin_write().map_err(map_db_err)?;
         {
             let mut table = tx.open_table(METADATA_TABLE).map_err(map_db_err)?;
@@ -104,7 +200,7 @@ impl MetadataStore {
         Ok(())
     }
 
-    pub(crate) fn get_tags_raw(&self) -> Result<Option<String>, DescribeError> {
+    fn get_tags_raw(&self) -> Result<Option<String>, DescribeError> {
         let tx = self.db.begin_read().map_err(map_db_err)?;
         let table = match tx.open_table(METADATA_TABLE) {
             Ok(table) => table,
@@ -118,7 +214,7 @@ impl MetadataStore {
         Ok(value)
     }
 
-    pub(crate) fn clear_tags(&self) -> Result<(), DescribeError> {
+    fn clear_tags(&self) -> Result<(), DescribeError> {
         let tx = self.db.begin_write().map_err(map_db_err)?;
         match tx.open_table(METADATA_TABLE) {
             Ok(mut table) => {
@@ -130,6 +226,20 @@ impl MetadataStore {
         tx.commit().map_err(map_db_err)?;
         Ok(())
     }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn set_metadata_backend_factory(factory: Box<dyn MetadataBackendFactory>) {
+    let lock = backend_registry();
+    let mut guard = lock
+        .lock()
+        .expect("metadata backend registry mutex poisoned");
+    guard.set_factory(factory);
+}
+
+#[cfg(test)]
+pub(crate) fn reset_metadata_backend_factory_for_tests() {
+    set_metadata_backend_factory(default_backend_factory());
 }
 
 pub(crate) fn metadata_db_path() -> PathBuf {
@@ -244,6 +354,7 @@ fn map_storage_err<E: std::fmt::Display>(err: E) -> DescribeError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
 
     #[test]
@@ -271,5 +382,100 @@ mod tests {
         let path = metadata_db_path();
         assert_eq!(path, custom);
         clear_state_dir_override_for_tests();
+    }
+
+    #[derive(Default)]
+    struct InMemoryState {
+        description: Option<String>,
+        tags: Option<String>,
+    }
+
+    #[derive(Clone)]
+    struct InMemoryBackend {
+        state: Arc<Mutex<InMemoryState>>,
+    }
+
+    impl MetadataBackend for InMemoryBackend {
+        fn set_description(&self, text: &str) -> Result<(), DescribeError> {
+            let mut guard = self.state.lock().unwrap();
+            guard.description = if text.trim().is_empty() {
+                None
+            } else {
+                Some(text.to_owned())
+            };
+            Ok(())
+        }
+
+        fn get_description(&self) -> Result<Option<String>, DescribeError> {
+            let guard = self.state.lock().unwrap();
+            Ok(guard.description.clone())
+        }
+
+        fn clear_description(&self) -> Result<(), DescribeError> {
+            let mut guard = self.state.lock().unwrap();
+            guard.description = None;
+            Ok(())
+        }
+
+        fn set_tags_raw(&self, payload: &str) -> Result<(), DescribeError> {
+            let mut guard = self.state.lock().unwrap();
+            guard.tags = if payload.is_empty() {
+                None
+            } else {
+                Some(payload.to_owned())
+            };
+            Ok(())
+        }
+
+        fn get_tags_raw(&self) -> Result<Option<String>, DescribeError> {
+            let guard = self.state.lock().unwrap();
+            Ok(guard.tags.clone())
+        }
+
+        fn clear_tags(&self) -> Result<(), DescribeError> {
+            let mut guard = self.state.lock().unwrap();
+            guard.tags = None;
+            Ok(())
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct InMemoryFactory {
+        state: Arc<Mutex<InMemoryState>>,
+    }
+
+    impl MetadataBackendFactory for InMemoryFactory {
+        fn open_default(&self) -> Result<Box<dyn MetadataBackend>, DescribeError> {
+            Ok(Box::new(InMemoryBackend {
+                state: Arc::clone(&self.state),
+            }))
+        }
+    }
+
+    #[test]
+    fn metadata_backend_can_be_overridden() {
+        let _guard = state_dir_test_lock();
+        reset_metadata_backend_factory_for_tests();
+        set_metadata_backend_factory(Box::new(InMemoryFactory::default()));
+
+        let store = MetadataStore::open_default().expect("open");
+        store
+            .set_description("backend override")
+            .expect("set description");
+        let description = store.get_description().expect("get description");
+        assert_eq!(description.as_deref(), Some("backend override"));
+
+        store
+            .set_tags_raw("prod\nweb")
+            .expect("set tags raw override");
+        assert_eq!(
+            store.get_tags_raw().expect("get tags raw").as_deref(),
+            Some("prod\nweb")
+        );
+
+        store.clear_description().expect("clear description");
+        assert!(store.get_description().expect("get description").is_none());
+
+        reset_metadata_backend_factory_for_tests();
     }
 }

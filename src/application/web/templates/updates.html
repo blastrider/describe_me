@@ -11,6 +11,7 @@ __INLINE_CSS__
   </style>
 </head>
 <body>
+  <canvas id="backgroundGridCanvas" aria-hidden="true"></canvas>
   <header>
     <h1>Détails des mises à jour</h1>
     <a class="link-button" href="/">← Retour au tableau de bord</a>
@@ -27,5 +28,8 @@ __INLINE_CSS__
     </section>
   </main>
   <div class="footer">describe_me • affichage ponctuel (pas d'auto-refresh)</div>
+  <script nonce="__CSP_NONCE__">
+__BACKGROUND_CANVAS_JS__
+  </script>
 </body>
 </html>
