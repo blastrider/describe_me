@@ -44,7 +44,7 @@
   margin-top: 12px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 .description-form[hidden] {
   display: none;
@@ -85,7 +85,10 @@
 .tags-block {
   margin-top: 14px;
   border-top: 1px solid #2a3147;
-  padding-top: 12px;
+  padding-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 .tags-block-header h3 {
   margin: 0 0 8px;
@@ -101,10 +104,9 @@
   min-height: 24px;
 }
 .tags-form {
-  margin-top: 10px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 .tags-form input {
   border-radius: 8px;
@@ -113,6 +115,9 @@
   color: inherit;
   font: inherit;
   padding: 8px 10px;
+}
+.tags-form[hidden] {
+  display: none;
 }
 .tags-form input:focus {
   outline: 2px solid #3ad29f88;
