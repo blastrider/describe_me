@@ -1,3 +1,5 @@
+pub const BACKGROUND_CANVAS_JS: &str = include_str!("js/background-grid.js");
+
 pub const MAIN_JS: &str = concat!(
     include_str!("js/preamble.js"),
     "\n",
