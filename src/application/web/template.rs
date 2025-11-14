@@ -1,4 +1,4 @@
-use super::assets::MAIN_JS;
+use super::assets::{BACKGROUND_CANVAS_JS, MAIN_JS};
 use crate::domain::{UpdatePackage, UpdatesInfo};
 
 const INDEX_HTML_TEMPLATE: &str = include_str!("templates/index.html");
@@ -82,10 +82,12 @@ pub(super) fn render_index(web_debug: bool, csp_nonce: &str) -> String {
         + HEADER_SECTION.len()
         + TOKEN_OVERLAY.len()
         + FOOTER_SECTION.len()
+        + BACKGROUND_CANVAS_JS.len()
         + csp_nonce.len() * 2;
 
     fill_template(INDEX_HTML_TEMPLATE, extra_capacity, |key| match key {
         "INLINE_CSS" => Some(INDEX_CSS),
+        "BACKGROUND_CANVAS_JS" => Some(BACKGROUND_CANVAS_JS),
         "MAIN_JS" => Some(main_js.as_str()),
         "WEB_DEBUG" => Some(debug_flag),
         "CSP_NONCE" => Some(csp_nonce),
@@ -112,6 +114,7 @@ pub(super) fn render_updates_page(
         + summary_html.len()
         + details_html.len()
         + message_html.len()
+        + BACKGROUND_CANVAS_JS.len()
         + csp_nonce.len();
 
     fill_template(UPDATES_HTML_TEMPLATE, extra_capacity, |key| match key {
@@ -120,6 +123,7 @@ pub(super) fn render_updates_page(
         "SUMMARY" => Some(summary_html.as_str()),
         "DETAILS" => Some(details_html.as_str()),
         "MESSAGE" => Some(message_html.as_str()),
+        "BACKGROUND_CANVAS_JS" => Some(BACKGROUND_CANVAS_JS),
         _ => None,
     })
 }

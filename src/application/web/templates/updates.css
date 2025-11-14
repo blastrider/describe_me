@@ -32,22 +32,46 @@ body::after {
 body::before {
   z-index: -2;
   background-image:
-    radial-gradient(circle at 20% 15%, rgba(58, 210, 159, 0.12), transparent 55%),
-    radial-gradient(circle at 80% 0%, rgba(255, 107, 107, 0.12), transparent 58%),
-    linear-gradient(135deg, var(--bg-wave-1), var(--bg-wave-2) 45%, var(--bg-wave-highlight));
-  background-size: 160% 160%, 180% 180%, 200% 200%;
-  background-position: 0% 40%, 60% 20%, 50% 50%;
-  animation: waveGradient 24s ease-in-out infinite alternate;
-  filter: blur(0.5px);
+    radial-gradient(circle at 18% 20%, rgba(58, 210, 159, 0.2), transparent 60%),
+    radial-gradient(ellipse at 78% 0%, rgba(92, 146, 255, 0.25), transparent 58%),
+    linear-gradient(130deg, var(--bg-wave-1), var(--bg-wave-2) 42%, var(--bg-wave-highlight));
+  background-size: 140% 140%, 200% 200%, 160% 160%;
+  background-position: 0% 45%, 65% 20%, 50% 50%;
+  background-repeat: no-repeat;
+  background-attachment: fixed;
+  animation: waveGradient 32s ease-in-out infinite alternate;
+  filter: saturate(1.05);
 }
 body::after {
   z-index: -1;
   background-image:
-    repeating-linear-gradient(120deg, var(--bg-grid) 0 4px, transparent 4px 16px),
-    repeating-linear-gradient(60deg, rgba(255, 255, 255, 0.02) 0 2px, transparent 2px 12px);
-  opacity: 0.8;
-  mix-blend-mode: soft-light;
-  animation: wavePatternDrift 30s linear infinite;
+    linear-gradient(90deg, rgba(255, 255, 255, 0.08) 1px, transparent 1px),
+    linear-gradient(0deg, rgba(255, 255, 255, 0.08) 1px, transparent 1px),
+    radial-gradient(circle at 30% 20%, rgba(58, 210, 159, 0.25), transparent 65%);
+  background-size: 34px 34px, 34px 34px, 220% 220%;
+  background-position: 0% 0%, 0% 0%, 45% 60%;
+  background-repeat: repeat, repeat, no-repeat;
+  background-attachment: fixed;
+  opacity: 0.55;
+  mix-blend-mode: screen;
+  animation: wavePatternDrift 30s ease-in-out infinite;
+  transform-origin: center;
+  filter: drop-shadow(0 0 14px rgba(58, 210, 159, 0.15));
+}
+#backgroundGridCanvas {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  display: block;
+  pointer-events: none;
+  z-index: -3;
+  opacity: 0.6;
+}
+body.has-bg-canvas::before,
+body.has-bg-canvas::after {
+  opacity: 0;
+  transition: opacity 0.6s ease;
 }
 header {
   padding: 18px 24px; border-bottom: 1px solid #222838;
@@ -95,19 +119,28 @@ h2 { margin: 0 0 12px; font-size: 18px; color: var(--muted); }
 .footer { padding: 18px 24px 24px; text-align: center; color: var(--muted); font-size: 13px; }
 @keyframes waveGradient {
   0% {
-    background-position: 0% 40%, 60% 20%, 20% 40%;
+    background-position: 0% 45%, 65% 20%, 50% 60%;
   }
   50% {
-    background-position: 40% 60%, 40% 80%, 50% 60%;
+    background-position: 25% 65%, 55% 40%, 45% 55%;
   }
   100% {
-    background-position: 100% 30%, 20% 60%, 80% 50%;
+    background-position: 60% 35%, 35% 70%, 55% 40%;
   }
 }
 @keyframes wavePatternDrift {
-  0% { transform: translate3d(0%, 0%, 0); }
-  50% { transform: translate3d(-3%, -2%, 0); }
-  100% { transform: translate3d(-6%, -4%, 0); }
+  0% {
+    background-position: 0% 0%, 0% 0%, 45% 60%;
+    transform: perspective(1300px) rotateX(72deg) rotateZ(-10deg) scale(1.2);
+  }
+  50% {
+    background-position: 6% -4%, -4% 6%, 55% 50%;
+    transform: perspective(1300px) rotateX(75deg) rotateZ(-8deg) scale(1.25);
+  }
+  100% {
+    background-position: -4% -8%, -8% -4%, 65% 42%;
+    transform: perspective(1300px) rotateX(78deg) rotateZ(-12deg) scale(1.3);
+  }
 }
 @media (prefers-color-scheme: light) {
   :root {

@@ -11,11 +11,15 @@ __INLINE_CSS__
   </style>
 </head>
 <body>
+  <canvas id="backgroundGridCanvas" aria-hidden="true"></canvas>
   __HEADER__
   __MAIN_CONTENT__
   __TOKEN_OVERLAY__
   __FOOTER__
 
+  <script nonce="__CSP_NONCE__">
+__BACKGROUND_CANVAS_JS__
+  </script>
   <script nonce="__CSP_NONCE__">
 __MAIN_JS__
   </script>

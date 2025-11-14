@@ -5,6 +5,7 @@ body {
   font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, sans-serif;
   position: relative;
   overflow-x: hidden;
+  min-height: 100vh;
 }
 body::before,
 body::after {
@@ -16,22 +17,46 @@ body::after {
 body::before {
   z-index: -2;
   background-image:
-    radial-gradient(circle at 20% 15%, rgba(58, 210, 159, 0.12), transparent 55%),
-    radial-gradient(circle at 80% 0%, rgba(255, 107, 107, 0.12), transparent 58%),
-    linear-gradient(135deg, var(--bg-wave-1), var(--bg-wave-2) 45%, var(--bg-wave-highlight));
-  background-size: 160% 160%, 180% 180%, 200% 200%;
-  background-position: 0% 40%, 60% 20%, 50% 50%;
-  animation: waveGradient 24s ease-in-out infinite alternate;
-  filter: blur(0.5px);
+    radial-gradient(circle at 18% 20%, rgba(58, 210, 159, 0.2), transparent 60%),
+    radial-gradient(ellipse at 78% 0%, rgba(92, 146, 255, 0.25), transparent 58%),
+    linear-gradient(130deg, var(--bg-wave-1), var(--bg-wave-2) 42%, var(--bg-wave-highlight));
+  background-size: 140% 140%, 200% 200%, 160% 160%;
+  background-position: 0% 45%, 65% 20%, 50% 50%;
+  background-repeat: no-repeat;
+  background-attachment: fixed;
+  animation: waveGradient 32s ease-in-out infinite alternate;
+  filter: saturate(1.05);
 }
 body::after {
   z-index: -1;
   background-image:
-    repeating-linear-gradient(120deg, var(--bg-grid) 0 4px, transparent 4px 16px),
-    repeating-linear-gradient(60deg, rgba(255, 255, 255, 0.02) 0 2px, transparent 2px 12px);
-  opacity: 0.8;
-  mix-blend-mode: soft-light;
-  animation: wavePatternDrift 30s linear infinite;
+    linear-gradient(90deg, rgba(255, 255, 255, 0.08) 1px, transparent 1px),
+    linear-gradient(0deg, rgba(255, 255, 255, 0.08) 1px, transparent 1px),
+    radial-gradient(circle at 30% 20%, rgba(58, 210, 159, 0.25), transparent 65%);
+  background-size: 34px 34px, 34px 34px, 220% 220%;
+  background-position: 0% 0%, 0% 0%, 45% 60%;
+  background-repeat: repeat, repeat, no-repeat;
+  background-attachment: fixed;
+  opacity: 0.55;
+  mix-blend-mode: screen;
+  animation: wavePatternDrift 30s ease-in-out infinite;
+  transform-origin: center;
+  filter: drop-shadow(0 0 14px rgba(58, 210, 159, 0.15));
+}
+#backgroundGridCanvas {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  display: block;
+  pointer-events: none;
+  z-index: -3;
+  opacity: 0.6;
+}
+body.has-bg-canvas::before,
+body.has-bg-canvas::after {
+  opacity: 0;
+  transition: opacity 0.6s ease;
 }
 .sr-only {
   position: absolute;
