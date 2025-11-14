@@ -2,7 +2,13 @@ name: CI
 
 on:
   push:
+    branches:
+      - main
+      - integration
   pull_request:
+    branches:
+      - main
+      - integration
 
 jobs:
   build-test:
@@ -45,6 +51,17 @@ jobs:
 
       - name: benches compile (no-run)
         run: cargo bench --no-run --all-features
+      - name: Build Debian package
+        if: matrix.toolchain == 'stable'
+        run: |
+          cargo install cargo-deb --locked || true
+          cargo deb
+      - name: Upload Debian artifact
+        if: matrix.toolchain == 'stable'
+        uses: actions/upload-artifact@v4
+        with:
+          name: describe-me-deb
+          path: target/debian/*.deb
 
   # supply-chain:
   #   runs-on: ubuntu-latest

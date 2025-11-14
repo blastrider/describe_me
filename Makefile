@@ -4,7 +4,14 @@ CARGO ?= cargo
 FEATURES ?= --all-features
 MSRV ?= 1.90.0
 
-.PHONY: all deb fmt fmt-check clippy test test-release doc audit deny bench ci msrv-build tools build-complete sbom supply-chain
+RELEASE_SIGN_TAG ?= 0
+RELEASE_HELPER ?= cargo run --quiet --manifest-path scripts/release-helper/Cargo.toml --
+RELEASE_SIGN_FLAG :=
+ifneq ($(RELEASE_SIGN_TAG),0)
+RELEASE_SIGN_FLAG := --sign-tag
+endif
+
+.PHONY: all deb fmt fmt-check clippy test test-release doc audit deny bench ci msrv-build tools build-complete sbom supply-chain release-patch release-minor release-major
 
 all: deb
 
@@ -77,3 +84,12 @@ deb:
 		cargo install cargo-deb --locked; \
 	fi
 	cargo deb
+
+release-patch:
+	$(RELEASE_HELPER) patch $(RELEASE_SIGN_FLAG)
+
+release-minor:
+	$(RELEASE_HELPER) minor $(RELEASE_SIGN_FLAG)
+
+release-major:
+	$(RELEASE_HELPER) major $(RELEASE_SIGN_FLAG)
