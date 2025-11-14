@@ -1,0 +1,59 @@
+name: Publish Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release
+
+      - name: Build release binary
+        run: cargo build --release --all-features
+
+      - name: Build Debian package
+        run: |
+          cargo install cargo-deb --locked || true
+          cargo deb
+
+      - name: Prepare release notes
+        run: |
+          ver="${GITHUB_REF#refs/tags/v}"
+          {
+            printf "## v%s\n\n" "$ver"
+            awk -v ver="$ver" '
+              $0 ~ "^## v" ver {found=1; next}
+              /^## / && found {exit}
+              found {print}
+            ' CHANGELOG.md
+          } > release-notes.md
+          if [ "$(wc -l < release-notes.md)" -le 2 ]; then
+            printf "## v%s\n\nConsultez CHANGELOG.md pour les détails de cette version.\n" "$ver" > release-notes.md
+          fi
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: describe_me ${{ github.ref_name }}
+          body_path: release-notes.md
+          files: |
+            target/release/describe-me
+            target/debian/*.deb
