@@ -2,6 +2,13 @@
 
 - Ajoutez vos changements ici.
 
+## v0.1.3 - 2025-11-14
+
+- Ajout d'un utilitaire `scripts/release-helper` + cibles `make release-{patch,minor,major}` pour incrémenter SemVer, mettre à jour `CHANGELOG.md`, commiter et tagger automatiquement.
+- Nouveaux documents (README / release.md) décrivant le workflow d'intégration, l'utilisation de `cargo release` et la publication automatique des tags.
+- Ajout d'un template de Pull Request rappelant les vérifications (CI, artefacts `.deb`, release-helper).
+- Revue complète de la CI : job disponible sur `integration`, construction/archivage du paquet `.deb`, workflow `Publish Release` déclenché sur les tags `v*`.
+
 ## v0.1.2 - 2025-11-14
 
 - Ajoutez vos changements ici.
@@ -19,4 +26,3 @@
 - Collecte des mises à jour : exécution des commandes système via un wrapper sécurisé (env nettoyé, umask 077, timeout, logs de durée/status) avec arrêt forcé en cas de dépassement.
 - Chaîne supply-chain renforcée : job GitHub Actions dédié (`supply-chain`), intégration `cargo crev`, génération et publication du SBOM CycloneDX, recommandations de signature GPG/cosign.
 - Résilience parsing : proptests ciblant `/proc/net`, `apt/dnf/apk`, `/proc/self/mountinfo`, et nouveaux fuzzers `cargo-fuzz` sur les parseurs sensibles.
-
