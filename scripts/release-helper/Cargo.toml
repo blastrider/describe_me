@@ -1,0 +1,8 @@
+[package]
+name = "release-helper"
+version = "0.1.0"
+edition = "2021"
+authors = ["describe_me maintainers"]
+description = "Release utilities used by describe_me"
+license = "Apache-2.0"
+publish = false

@@ -65,6 +65,13 @@ Le paquet embarque l’unité systemd durcie fournie dans `packaging/systemd/des
 
 Questions / PRs bienvenues via GitHub. Merci de respecter la MSRV (1.90) et d’exécuter `cargo fmt && cargo clippy -- -D warnings` avant toute contribution.
 
+### Workflow de release & intégration
+
+- Utilisez `make release-<patch|minor|major>` pour préparer un tag (bump SemVer + `CHANGELOG`). Ajoutez `RELEASE_SIGN_TAG=1` pour forcer la signature GPG du tag, ou `--dry-run` pour vérifier sans modifier les fichiers.
+- Le helper génère le commit `release vX.Y.Z` sur `integration`. Ensuite : tests (`make ci`), génération SBOM (`make sbom`), publication (`cargo publish`/`cargo release <level> --execute`) si nécessaire.
+- Fusionnez `integration` → `main` uniquement lorsque les jobs CI (incluant la construction `.deb`) sont verts, puis poussez `main` et les tags (`git push origin main --tags`).
+- Détails exhaustifs et checklist dans [`release.md`](./release.md).
+
 ## Licence
 
 Apache-2.0 — voir `LICENSE`.
