@@ -1,16 +1,25 @@
 @keyframes waveGradient {
   0% {
-    background-position: 0% 40%, 60% 20%, 20% 40%;
+    background-position: 0% 45%, 65% 20%, 50% 60%;
   }
   50% {
-    background-position: 40% 60%, 40% 80%, 50% 60%;
+    background-position: 25% 65%, 55% 40%, 45% 55%;
   }
   100% {
-    background-position: 100% 30%, 20% 60%, 80% 50%;
+    background-position: 60% 35%, 35% 70%, 55% 40%;
   }
 }
 @keyframes wavePatternDrift {
-  0% { transform: translate3d(0%, 0%, 0); }
-  50% { transform: translate3d(-3%, -2%, 0); }
-  100% { transform: translate3d(-6%, -4%, 0); }
+  0% {
+    background-position: 0% 0%, 0% 0%, 45% 60%;
+    transform: perspective(1300px) rotateX(72deg) rotateZ(-10deg) scale(1.2);
+  }
+  50% {
+    background-position: 6% -4%, -4% 6%, 55% 50%;
+    transform: perspective(1300px) rotateX(75deg) rotateZ(-8deg) scale(1.25);
+  }
+  100% {
+    background-position: -4% -8%, -8% -4%, 65% 42%;
+    transform: perspective(1300px) rotateX(78deg) rotateZ(-12deg) scale(1.3);
+  }
 }
