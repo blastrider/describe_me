@@ -51,12 +51,13 @@ La couche `application` compose les services de `domain` et
     la description libre via redb, afin que le bloc « Description » de l’interface
     web puisse être édité en direct.
 - `metadata.rs`
-  - Wrappe `infrastructure::storage::MetadataStore` (redb) et expose
+  - Wrappe `infrastructure::storage::MetadataStore`, lui-même branché sur un
+    `MetadataBackend` injectable (implémentation `redb` par défaut), et expose
     `set_server_description`, `load_server_description` et
     `clear_server_description`.
   - `capture_snapshot_with_view` enrichit `SnapshotView.server_description`
-    avec la valeur persistée, en journalisant les erreurs redb sans
-    casser la capture principale.
+    avec la valeur persistée, en journalisant proprement les erreurs du backend
+    sans casser la capture principale.
   - Le répertoire de stockage (`metadata.redb`) peut être écrasé via
     `override_state_directory` (utilisé automatiquement si `[runtime] state_dir`
     est défini dans la configuration TOML).
@@ -64,6 +65,9 @@ La couche `application` compose les services de `domain` et
     `remove_server_tags`, `load_server_tags`) afin que la CLI et l’interface web
     puissent afficher et modifier les labels normalisés d’un serveur. L’UI web
     embarque désormais un formulaire (AJAX) pour ajouter/retirer/vider ces tags.
+  - L’implémentation du backend peut être remplacée au démarrage (ex:
+    MariaDB/Postgres/MongoDB) via `storage::set_metadata_backend_factory`
+    pour réutiliser exactement la même API applicative.
 
 - `net.rs` (feature `net`)
   - `net_listen()` : expose les sockets TCP/UDP en écoute via
