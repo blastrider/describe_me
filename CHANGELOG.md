@@ -1,5 +1,9 @@
 ## Unreleased
 
+- Ajoutez vos changements ici.
+
+## v0.1.1 - 2025-11-14
+
 - Refus explicite d'exécuter `describe-me` en root (UID 0) côté CLI.
 - Ajout d'une unité systemd durcie (`packaging/systemd/describe-me.service`) avec confinement maximal (DynamicUser, NoNewPrivileges, capabilities vidées, sandbox).
 - Mode web : le jeton n'est plus accepté dans la query-string (`?token=`), uniquement via les en-têtes `Authorization: Bearer` ou `x-describe-me-token`, avec comparaison en temps constant et nouvelle UI de saisie.
@@ -11,3 +15,4 @@
 - Collecte des mises à jour : exécution des commandes système via un wrapper sécurisé (env nettoyé, umask 077, timeout, logs de durée/status) avec arrêt forcé en cas de dépassement.
 - Chaîne supply-chain renforcée : job GitHub Actions dédié (`supply-chain`), intégration `cargo crev`, génération et publication du SBOM CycloneDX, recommandations de signature GPG/cosign.
 - Résilience parsing : proptests ciblant `/proc/net`, `apt/dnf/apk`, `/proc/self/mountinfo`, et nouveaux fuzzers `cargo-fuzz` sur les parseurs sensibles.
+
