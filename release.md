@@ -60,3 +60,9 @@
 - [ ] `cargo release`/`cargo publish` déclenché si nécessaire.  
 - [ ] `integration` → `main` fusionné et poussé.  
 - [ ] Tags `vX.Y.Z` poussés (`git push origin --tags`).  
+
+## Publication GitHub (Release + assets)
+
+- Chaque tag `v*` poussé déclenche le workflow GitHub Actions **Publish Release** (`.github/workflows/release.yml`).  
+- Il reconstruit le binaire `target/release/describe-me`, produit le `.deb`, extrait les notes depuis `CHANGELOG.md`, puis crée la fiche Release officielle (section "Releases" sur GitHub) et y joint les artefacts.  
+- Vérifiez que le tag public et le contenu de `CHANGELOG.md` correspondent à la version publiée avant de pousser : la fiche GitHub est générée automatiquement à partir de ces données.  
