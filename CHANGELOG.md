@@ -1,5 +1,20 @@
 ## Unreleased
 
+- Ajoutez vos changements ici.
+
+## v0.1.3 - 2025-11-14
+
+- Ajout d'un utilitaire `scripts/release-helper` + cibles `make release-{patch,minor,major}` pour incrémenter SemVer, mettre à jour `CHANGELOG.md`, commiter et tagger automatiquement.
+- Nouveaux documents (README / release.md) décrivant le workflow d'intégration, l'utilisation de `cargo release` et la publication automatique des tags.
+- Ajout d'un template de Pull Request rappelant les vérifications (CI, artefacts `.deb`, release-helper).
+- Revue complète de la CI : job disponible sur `integration`, construction/archivage du paquet `.deb`, workflow `Publish Release` déclenché sur les tags `v*`.
+
+## v0.1.2 - 2025-11-14
+
+- Ajoutez vos changements ici.
+
+## v0.1.1 - 2025-11-14
+
 - Refus explicite d'exécuter `describe-me` en root (UID 0) côté CLI.
 - Ajout d'une unité systemd durcie (`packaging/systemd/describe-me.service`) avec confinement maximal (DynamicUser, NoNewPrivileges, capabilities vidées, sandbox).
 - Mode web : le jeton n'est plus accepté dans la query-string (`?token=`), uniquement via les en-têtes `Authorization: Bearer` ou `x-describe-me-token`, avec comparaison en temps constant et nouvelle UI de saisie.
