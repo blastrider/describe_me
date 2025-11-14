@@ -1,4 +1,5 @@
 /target
+/scripts/release-helper/target
 /snapshot
 /certs
 /infras/.vagrant
