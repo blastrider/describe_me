@@ -1,6 +1,6 @@
 [package]
 name = "describe_me"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 license = "Apache-2.0"
 description = "Décrit rapidement un serveur (CPU, RAM, OS, uptime, services…), pour admins système."

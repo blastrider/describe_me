@@ -2,6 +2,10 @@
 
 - Ajoutez vos changements ici.
 
+## v0.1.2 - 2025-11-14
+
+- Ajoutez vos changements ici.
+
 ## v0.1.1 - 2025-11-14
 
 - Refus explicite d'exécuter `describe-me` en root (UID 0) côté CLI.
