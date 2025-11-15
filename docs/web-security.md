@@ -43,6 +43,7 @@ permet de refuser une configuration contenant un hash invalide.
 
 - `describe_me_token` reste un identifiant “brut” géré côté navigateur (localStorage / sessionStorage). Il n’est jamais remplacé par le serveur pour éviter d’écraser la valeur saisie par l’utilisateur.
 - `describe_me_session` transporte la session rotative émise par `SessionManager`. Ce cookie est `HttpOnly; SameSite=Strict; Secure` et n’est visible que par le backend. Les routes `/` et `/sse` réémettent une nouvelle session valide à chaque réponse, tandis que `SecurityRejection` ne supprime que cette valeur.
+- La durée de vie par défaut est de 3 minutes. Elle peut être ajustée (60 s à 1 h) via `web.security.session_ttl_seconds = 600` dans le fichier de configuration pour réduire ou augmenter la fréquence de reconnexion.
 
 Comme `describe_me_session` est `Secure`, le navigateur ne le renvoie que via HTTPS. Active `[web.tls]` ou termine TLS via Caddy/Nginx/Traefik en déclarant les origines autorisées (`allow_origins`) et les proxies de confiance (`trusted_proxies`). Un mode dev existe (`--web-dev` côté CLI ou `web.dev_insecure_session_cookie = true` dans la config) pour retirer `Secure` lors des tests en HTTP; il doit rester désactivé en production.
 
