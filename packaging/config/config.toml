@@ -1,0 +1,95 @@
+# Configuration installée via le paquet Debian (`/etc/describe_me/config.toml`).
+# Basée sur `src/examples/config_tls.toml` : HTTPS natif, limites SSE/HTML,
+# filtrage des services et exposition fine des champs sensibles.
+#
+# Étapes recommandées :
+#   1. Générez l'empreinte Argon2/bcrypt de votre jeton :
+#        describe-me --hash-web-token 'SecretTrèsFort'
+#   2. Placez vos certificats dans `/etc/describe_me/certs/` (PEM).
+#   3. Ajustez les allowlists (IP/origins/proxies) et la liste des services.
+#   4. Lancez `describe-me --config /etc/describe_me/config.toml --web`
+#      ou adaptez votre unité systemd pour pointer vers ce fichier.
+
+[runtime]
+rust_log = "warn,describe_me=info"
+state_dir = "/var/lib/describe-me"
+allow_config_exposure = true
+
+[runtime.cli]
+web = "0.0.0.0:8443"
+with_services = true
+web_expose_all = true
+web_allow_ip = ["127.0.0.1", "::1", "192.168.0.0/16"]
+web_allow_origin = ["https://127.0.0.1:8443", "https://localhost:8443"]
+
+[services]
+include = ["cron.service", "sshd.service", "nginx.service", "docker.service"]
+
+[exposure]
+expose_hostname = true
+expose_os = true
+expose_kernel = true
+expose_services = true
+expose_disk_partitions = true
+expose_listening_sockets = true
+expose_network_traffic = true
+expose_updates = true
+redacted = true
+
+[web]
+# IMPORTANT : remplacez la valeur ci-dessous par votre propre empreinte Argon2/bcrypt.
+# Utilisez `describe-me --hash-web-token 'mon-super-secret'` pour la générer.
+token = "$argon2id$v=19$m=131072,t=4,p=1$x1V+ijOhRvklcO5gr4NS8g$ZZ3Ra67H3ijudkXg0rxbKYrvCnZpsTvSAjzmd7vjvlY"
+allow_ips = ["127.0.0.1", "::1", "192.168.0.0/16"]
+allow_origins = ["https://127.0.0.1:8443", "https://localhost:8443"]
+trusted_proxies = ["192.168.0.1"]
+updates_refresh_seconds = 20
+
+[web.tls]
+cert_path = "/etc/describe_me/certs/server.pem"
+key_path = "/etc/describe_me/certs/server-key.pem"
+
+[web.exposure]
+expose_hostname = true
+expose_os = true
+expose_kernel = true
+expose_services = true
+expose_disk_partitions = true
+expose_listening_sockets = true
+expose_network_traffic = true
+expose_updates = true
+redacted = true
+
+[web.security]
+allowlist_multiplier = 2
+token_ip_affinity_limit = 2
+session_ttl_seconds = 600  # Durée de validité des cookies de session (en secondes).
+
+[web.security.html]
+window_seconds = 60
+per_ip = 40
+per_token = 12
+global = 120
+
+[web.security.sse]
+window_seconds = 60
+per_ip = 15
+per_token = 10
+max_active_per_ip = 2
+max_active_per_token = 2
+max_stream_seconds = 600
+min_event_interval_ms = 500
+max_payload_bytes = 98304
+max_stream_bytes = 4194304
+global = 40
+
+[web.security.brute_force]
+window_seconds = 600
+threshold = 5
+initial_backoff_seconds = 10
+backoff_multiplier = 2.0
+backoff_ceiling_seconds = 120
+quarantine_seconds = 3600
+token_failure_threshold = 12
+token_ip_spread = 2
+sse_min_retry_seconds = 2

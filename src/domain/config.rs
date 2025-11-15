@@ -167,6 +167,8 @@ pub struct WebSecurityConfig {
     pub token_ip_affinity_limit: u32,
     /// Politique anti-bruteforce (authentification, tokens).
     pub brute_force: BruteForceConfig,
+    /// Durée de vie maximale (en secondes) des cookies de session émis par le serveur web.
+    pub session_ttl_seconds: Option<u64>,
 }
 
 impl Default for WebSecurityConfig {
@@ -177,6 +179,7 @@ impl Default for WebSecurityConfig {
             allowlist_multiplier: 2,
             token_ip_affinity_limit: 2,
             brute_force: BruteForceConfig::default(),
+            session_ttl_seconds: None,
         }
     }
 }
