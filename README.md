@@ -53,6 +53,7 @@ Le paquet embarque l’unité systemd durcie fournie dans `packaging/systemd/des
 - Guide utilisateur complet : `docs/utilisateurs/guide.md`
 - Architecture & internals : `docs/architecture.md`, `docs/application-layer.md`, `docs/web-security.md`, etc.
 - Exemples de configuration : `src/examples/config.toml`, `src/examples/config_http.toml`, `src/examples/config_tls.toml`
+- Gabarit complet documenté : `docs/config.reference.toml`
 - Packaging & service : `packaging/systemd/describe-me.service`
 - Environnement Vagrant multi‑distros (VMs + HTTPS + systemd) : `infras/README.md`
 

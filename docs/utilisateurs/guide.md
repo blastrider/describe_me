@@ -188,6 +188,7 @@ Autres variantes :
 
 - `src/examples/config_http.toml` — écoute HTTP (LAN).
 - `src/examples/config_tls.toml` — HTTPS complet (certificat/clé).
+- `docs/config.reference.toml` — toutes les options documentées à personnaliser.
 
 > ⚠️ Besoin de tester en HTTP uniquement ? Ajoute `dev_insecure_session_cookie = true` dans `[web]` (ou lance `describe-me --web-dev …`). Ce réglage enlève l’attribut `Secure` de `describe_me_session` et doit rester réservé au développement.
 

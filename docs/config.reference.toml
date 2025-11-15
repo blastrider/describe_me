@@ -1,0 +1,129 @@
+# Fichier de référence pour `describe_me --config <chemin>`
+# ------------------------------------------------------------------------------
+# Ce gabarit expose toutes les sections disponibles avec des commentaires pour
+# indiquer comment les personnaliser. Supprimez ou commentez les blocs inutiles.
+
+[runtime]
+# Valeur RUST_LOG appliquée au démarrage si la variable d'environnement est vide.
+rust_log = "info,describe_me=info"
+
+# Répertoire persistant pour metadata.redb (tags + description serveur).
+# Commentez pour utiliser le répertoire par défaut (systemd/XDG).
+state_dir = "/var/lib/describe-me"
+
+# Autorise la configuration à manipuler expose-* / web-expose-* (sinon CLI uniquement).
+allow_config_exposure = true
+
+[runtime.cli]
+# Adresse/port par défaut de `--web`, laisser vide pour désactiver via config.
+web = "0.0.0.0:8080"
+
+# Active `--with-services` par défaut.
+with_services = true
+
+# Active `--web-expose-all` par défaut pour la partie web.
+web_expose_all = false
+
+# Valeurs utilisées si aucun `--web-allow-ip`, `--web-allow-origin` ou
+# `--web-trusted-proxy` n'est fourni côté CLI.
+web_allow_ip = ["127.0.0.1", "::1", "192.168.0.0/24"]
+web_allow_origin = ["https://admin.example.com"]
+web_trusted_proxy = ["192.168.0.1"]
+
+[services]
+# Liste blanche des unités systemd affichées lorsque --with-services est actif.
+include = ["sshd.service", "nginx.service", "docker.service"]
+
+[exposure]
+# Contrôle fin des champs sensibles dans la sortie CLI/JSON.
+expose_hostname = true
+expose_os = true
+expose_kernel = true
+expose_services = true
+expose_disk_partitions = true
+expose_listening_sockets = true
+expose_network_traffic = true
+expose_updates = true
+# Lorsque `redacted = true`, les champs désactivés renvoient des valeurs masquées.
+redacted = true
+
+[web]
+# Hash Argon2id/bcrypt généré avec `describe-me --hash-web-token 'secret'`.
+token = "$argon2id$..."  # ← remplacez par votre empreinte.
+
+# IP ou réseaux autorisés (même si le jeton est valide).
+allow_ips = ["127.0.0.1", "::1", "192.168.0.0/24"]
+
+# Origins CORS autorisées (schéma + host + port exacts).
+allow_origins = ["https://192.168.0.50:8443"]
+
+# Proxys de confiance dont on accepte l'en-tête X-Forwarded-For.
+trusted_proxies = ["192.168.0.1"]
+
+# Logo SVG personnalisé (chemin absolu) exposé via /assets/logo.svg.
+logo_path = "/etc/describe-me/logo.svg"
+
+# Intervalle en secondes pour rafraîchir le cache "Mises à jour".
+updates_refresh_seconds = 20
+
+# A utiliser uniquement en dev HTTP (retire l'attribut Secure du cookie session).
+dev_insecure_session_cookie = false
+
+[web.tls]
+# Active HTTPS natif lorsque les chemins pointent vers des PEM valides.
+cert_path = "/etc/describe-me/certs/server.pem"
+key_path = "/etc/describe-me/certs/server-key.pem"
+
+[web.exposure]
+# Contrôle des champs sensibles côté dashboard/SSE.
+expose_hostname = true
+expose_os = true
+expose_kernel = true
+expose_services = true
+expose_disk_partitions = true
+expose_listening_sockets = true
+expose_network_traffic = true
+expose_updates = true
+redacted = true
+
+[web.security]
+# Multiplicateur appliqué aux limites quand l'IP figure dans allow_ips.
+allowlist_multiplier = 2
+
+# Nombre maximal d'IP distinctes par token (affinité IP/token).
+token_ip_affinity_limit = 2
+
+# Durée de validité du cookie de session (en secondes). Min 60, max 3600.
+session_ttl_seconds = 600
+
+[web.security.html]
+# Rate limiting pour la route HTML `/`.
+window_seconds = 60
+per_ip = 40
+per_token = 12
+global = 120
+
+[web.security.sse]
+# Rate limiting pour la route SSE `/sse`.
+window_seconds = 60
+per_ip = 15
+per_token = 10
+max_active_per_ip = 2
+max_active_per_token = 2
+max_stream_seconds = 600
+min_event_interval_ms = 500
+max_payload_bytes = 98304
+max_stream_bytes = 4194304
+global = 40
+
+[web.security.brute_force]
+# Politique anti-bruteforce (authentification/token).
+window_seconds = 600
+threshold = 5
+initial_backoff_seconds = 10
+backoff_multiplier = 2.0
+backoff_ceiling_seconds = 120
+quarantine_seconds = 3600
+token_failure_threshold = 12
+token_ip_spread = 2
+sse_min_retry_seconds = 2
