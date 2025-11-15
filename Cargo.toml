@@ -21,9 +21,11 @@ features = ["cli", "web", "config", "systemd", "net", "journald"]
 default-features = false
 assets = [
     ["target/release/describe-me", "usr/bin/describe-me", "755"],
-    ["packaging/systemd/describe-me.service", "lib/systemd/system/describe-me.service", "644"]
+    ["packaging/systemd/describe-me.service", "lib/systemd/system/describe-me.service", "644"],
+    ["packaging/config/config.toml", "etc/describe_me/config.toml", "644"]
 ]
 maintainer-scripts = "packaging/debian"
+conf-files = ["/etc/describe_me/config.toml"]
 
 [lib]
 name = "describe_me"

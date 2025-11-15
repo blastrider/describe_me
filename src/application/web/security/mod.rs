@@ -167,8 +167,18 @@ impl WebSecurity {
             .unwrap_or_else(SecurityPolicy::default);
         #[cfg(not(feature = "config"))]
         let policy = SecurityPolicy::default();
+        #[cfg(feature = "config")]
+        let session_ttl_override = override_cfg
+            .as_ref()
+            .and_then(|cfg| cfg.session_ttl_seconds)
+            .map(Duration::from_secs);
+        #[cfg(not(feature = "config"))]
+        let session_ttl_override: Option<Duration> = None;
 
         let state = Arc::new(SecurityState::new());
+        let sessions = session_ttl_override
+            .map(SessionManager::with_ttl)
+            .unwrap_or_else(SessionManager::new);
 
         Ok(Self {
             token,
@@ -176,7 +186,7 @@ impl WebSecurity {
             trusted_proxies: trusted,
             policy,
             state,
-            sessions: SessionManager::new(),
+            sessions,
         })
     }
 
@@ -539,6 +549,8 @@ impl IpMatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "config")]
+    use crate::domain::WebSecurityConfig;
     use axum::extract::ConnectInfo;
     use axum::http::Request;
     use std::net::{IpAddr, Ipv4Addr};
@@ -607,6 +619,28 @@ mod tests {
         }
 
         assert_eq!(ok, 10);
+    }
+
+    #[cfg(feature = "config")]
+    fn security_with_session_ttl(secs: u64) -> WebSecurity {
+        let cfg = WebSecurityConfig {
+            session_ttl_seconds: Some(secs),
+            ..WebSecurityConfig::default()
+        };
+        WebSecurity::build(make_access(None), Some(cfg)).expect("build security")
+    }
+
+    #[cfg(feature = "config")]
+    #[test]
+    fn session_ttl_override_is_clamped() {
+        let normal = security_with_session_ttl(900);
+        assert_eq!(normal.sessions.ttl_for_tests(), Duration::from_secs(900));
+
+        let low = security_with_session_ttl(10);
+        assert_eq!(low.sessions.ttl_for_tests(), Duration::from_secs(60));
+
+        let high = security_with_session_ttl(7200);
+        assert_eq!(high.sessions.ttl_for_tests(), Duration::from_secs(3600));
     }
 
     #[tokio::test]

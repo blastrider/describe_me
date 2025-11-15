@@ -164,6 +164,14 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
         }
         install_deb_if_available
 
+        if [ "${INSTALL_MODE}" = "copy" ] && command -v dpkg >/dev/null 2>&1; then
+          if dpkg -s "${BINARY}" >/dev/null 2>&1; then
+            echo "[deb] removing half-installed package ${BINARY} to unblock apt"
+            dpkg -r "${BINARY}" >/dev/null 2>&1 || true
+            dpkg -P "${BINARY}" >/dev/null 2>&1 || true
+          fi
+        fi
+
         echo "== provision: prepare runtime for ${BINARY} on $(cat /etc/os-release 2>/dev/null | grep '^PRETTY_NAME=' || echo unknown) =="
 
         # --- Network sanity: ensure default route uses NAT, not host-only -------

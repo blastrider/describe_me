@@ -8,23 +8,32 @@ use std::{
     time::{Duration, Instant},
 };
 
-const SESSION_TTL: Duration = Duration::from_secs(180);
-const REPLAY_TTL: Duration = Duration::from_secs(120);
-const CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
 pub(super) const SESSION_COOKIE_PREFIX: &str = "sess:v1:";
+const SESSION_TTL_DEFAULT: Duration = Duration::from_secs(180);
+const SESSION_TTL_MIN: Duration = Duration::from_secs(60);
+const SESSION_TTL_MAX: Duration = Duration::from_secs(3600);
+const REPLAY_TTL_DEFAULT: Duration = Duration::from_secs(120);
+const CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone)]
 pub(super) struct SessionManager {
     inner: Arc<Mutex<SessionStore>>,
+    session_ttl: Duration,
+    replay_ttl: Duration,
 }
 
 impl SessionManager {
     pub(super) fn new() -> Self {
+        Self::with_ttl(SESSION_TTL_DEFAULT)
+    }
+
+    pub(super) fn with_ttl(session_ttl: Duration) -> Self {
+        let ttl = clamp_session_ttl(session_ttl);
+        let replay = std::cmp::min(REPLAY_TTL_DEFAULT, ttl);
         Self {
-            inner: Arc::new(Mutex::new(SessionStore {
-                entries: HashMap::new(),
-                last_cleanup: Instant::now(),
-            })),
+            inner: Arc::new(Mutex::new(SessionStore::new())),
+            session_ttl: ttl,
+            replay_ttl: replay,
         }
     }
 
@@ -45,7 +54,7 @@ impl SessionManager {
             id.clone(),
             SessionEntry {
                 token,
-                expires_at: now.checked_add(SESSION_TTL).unwrap_or(now),
+                expires_at: now.checked_add(self.session_ttl).unwrap_or(now),
                 used: false,
             },
         );
@@ -96,11 +105,16 @@ impl SessionManager {
                     return Err(SessionError::Replay);
                 }
                 entry.used = true;
-                entry.expires_at = now.checked_add(REPLAY_TTL).unwrap_or(now);
+                entry.expires_at = now.checked_add(self.replay_ttl).unwrap_or(now);
                 Ok(())
             }
             None => Err(SessionError::Unknown),
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn ttl_for_tests(&self) -> Duration {
+        self.session_ttl
     }
 }
 
@@ -111,6 +125,13 @@ struct SessionStore {
 }
 
 impl SessionStore {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            last_cleanup: Instant::now(),
+        }
+    }
+
     fn cleanup(&mut self, now: Instant) {
         if now.duration_since(self.last_cleanup) < CLEANUP_INTERVAL {
             return;
@@ -149,4 +170,14 @@ pub(super) enum SessionError {
     Unknown,
     Expired,
     Replay,
+}
+
+fn clamp_session_ttl(ttl: Duration) -> Duration {
+    if ttl < SESSION_TTL_MIN {
+        SESSION_TTL_MIN
+    } else if ttl > SESSION_TTL_MAX {
+        SESSION_TTL_MAX
+    } else {
+        ttl
+    }
 }
