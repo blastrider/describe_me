@@ -17,6 +17,9 @@ use nix::unistd::Uid;
 use serde::Serialize;
 use std::time::Duration;
 
+const PLUGIN_DIR: &str = "/usr/lib/describe_me/plugins/";
+const PLUGIN_BINARY_PREFIX: &str = "describe-me-plugin-";
+
 #[cfg(feature = "web")]
 use allowlists::{resolve_web_list, CliListOrigin};
 use args::{
@@ -134,13 +137,26 @@ fn handle_tags_command(cmd: TagsCommand) -> Result<()> {
 }
 
 fn run_plugin(cmd: PluginRunCommand) -> Result<()> {
-    if cmd.cmd.trim().is_empty() {
-        bail!("--cmd doit référencer un binaire plugin valide.");
-    }
+    validate_plugin_name(&cmd.name)?;
     let timeout = Duration::from_secs(cmd.timeout_secs.max(1));
-    let output = describe_me::run_ad_hoc_plugin(&cmd.cmd, &cmd.args, timeout)?;
+    let binary = format!("{PLUGIN_DIR}{PLUGIN_BINARY_PREFIX}{}", cmd.name);
+    let output = describe_me::run_ad_hoc_plugin(&binary, &cmd.name, &cmd.args, timeout)?;
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
+}
+
+fn validate_plugin_name(name: &str) -> Result<()> {
+    if name.trim().is_empty() {
+        bail!("Le nom du plugin ne peut pas être vide.");
+    }
+    if name
+        .chars()
+        .all(|c| matches!(c, 'a'..='z' | '0'..='9' | '-' | '_'))
+    {
+        Ok(())
+    } else {
+        bail!("Le nom du plugin doit uniquement contenir [a-z0-9_-].");
+    }
 }
 
 fn print_description_block(desc: &str) {
@@ -729,5 +745,18 @@ mod tests {
         exposure.set_updates(true);
         let view = describe_me::SnapshotView::new(&snapshot, exposure);
         assert_eq!(super::summary_line(&view), "updates=? reboot=unknown");
+    }
+
+    #[test]
+    fn validates_plugin_name_rules() {
+        super::validate_plugin_name("certificates").unwrap();
+        super::validate_plugin_name("inventory_v2").unwrap();
+    }
+
+    #[test]
+    fn rejects_invalid_plugin_names() {
+        assert!(super::validate_plugin_name("").is_err());
+        assert!(super::validate_plugin_name("Bad/Name").is_err());
+        assert!(super::validate_plugin_name("UPPERCASE").is_err());
     }
 }
