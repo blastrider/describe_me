@@ -7,3 +7,4 @@ publish = false
 
 [dependencies]
 describe_me_plugin_sdk = { path = "../../describe_me_plugin_sdk" }
+serde_json = "1.0"
