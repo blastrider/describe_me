@@ -1,6 +1,8 @@
 use crate::SharedSlice;
+use describe_me_plugin_sdk::PluginOutput;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -45,6 +47,8 @@ pub struct SystemSnapshot {
     pub network_traffic: Option<SharedSlice<crate::domain::NetworkInterfaceTraffic>>,
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub updates: Option<UpdatesInfo>,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub extensions: Option<BTreeMap<String, PluginOutput>>,
 }
 
 #[derive(Debug, Clone, Copy)]
