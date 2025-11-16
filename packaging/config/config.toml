@@ -28,7 +28,8 @@ include = ["cron.service", "sshd.service", "nginx.service", "docker.service"]
 [extensions]
 [[extensions.plugins]]
 name = "certificates-demo"
-cmd = "/usr/bin/describe-me-plugin-certificates"
+path = "/usr/lib/describe_me/plugins/describe-me-plugin-certificates"
+sha256 = "<fingerprinted value>"
 args = ["--probe", "/etc/ssl/certs", "--probe", "/etc/describe_me/certs"]
 timeout_secs = 10
 
