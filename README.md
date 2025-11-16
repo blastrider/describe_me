@@ -15,6 +15,7 @@ Outil Rust minimaliste pour capturer l’état d’un serveur (CPU, RAM, disques
 - **Snapshot complet** : hostname, OS, uptime, charge, disques, services, sockets, trafic réseau, mises à jour.
 - **CLI & Healthchecks** : sortie JSON lisible, `--check` (Nagios/Icinga), filtres config TOML.
 - **Mode Web** : UI SSE auto-hébergée, rate limiting, jetons Argon2/bcrypt, HTTPS natif via `[web.tls]`.
+- **Extensions/plugins** : SDK `describe_me_plugin_sdk`, commande `describe-me plugin run`, exécution automatique configurable.
 - **Bibliothèque** : API stable (`SystemSnapshot`, `disk_usage`, `serve_http`) pour intégrer la collecte dans vos outils.
 
 ## Démarrage rapide
@@ -37,6 +38,23 @@ cargo test --features "systemd config net web"
 ```
 
 Pour HTTPS, ajoutez un bloc `[web.tls]` (voir `src/examples/config_tls.toml`) ou placez l’app derrière un reverse-proxy (Caddy/Nginx/Traefik) en renseignant `allow_origins` et `trusted_proxies`. Le cookie `describe_me_session` est `HttpOnly+Secure`, donc il n’est envoyé qu’en HTTPS ; pour un dev local en clair, utilisez explicitement `--web-dev` (ou `web.dev_insecure_session_cookie = true`) et gardez ce mode hors prod.
+
+## Extensions & plugins
+
+- Crate dédiée : [`describe_me_plugin_sdk`](./describe_me_plugin_sdk) expose `Plugin`, `PluginOutput` (carte triée JSON) et la macro `describe_me_plugin_main!(MyPlugin)` qui instancie le collecteur, appelle `collect()` et sérialise le résultat sur stdout.
+- Sous-commande CLI : `describe-me plugin run --cmd /chemin/vers/plugin --arg foo --timeout 5` lance un plugin arbitraire, affiche la sortie prettifiée et signale clairement les erreurs (exit code ≠ 0, JSON invalide, timeout).
+- Intégration automatique : ajoutez un bloc `[extensions]` dans votre config TOML pour exécuter des collecteurs à chaque snapshot. Les résultats sont exposés sous `extensions.<plugin>` dans le JSON et dans la tuile dédiée de l’UI web (activez `expose_extensions` côté CLI ou config).
+
+```toml
+[extensions]
+[[extensions.plugins]]
+name = "certificates-demo"
+cmd = "/usr/local/bin/describe-me-plugin-certificates"
+args = ["--probe", "/etc/describe_me/certs"]
+timeout_secs = 10
+```
+
+- Exemple complet : `plugin-examples/certificates` parcourt un répertoire de PEM et renvoie des stats simples via le SDK.
 
 ## Paquet Debian
 
