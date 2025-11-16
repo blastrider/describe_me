@@ -163,7 +163,7 @@ fn join_stream(handle: Option<thread::JoinHandle<io::Result<Vec<u8>>>>) -> io::R
     if let Some(join_handle) = handle {
         join_handle
             .join()
-            .map_err(|_| io::Error::new(io::ErrorKind::Other, "reader thread panicked"))?
+            .map_err(|_| io::Error::other("reader thread panicked"))?
     } else {
         Ok(Vec::new())
     }
