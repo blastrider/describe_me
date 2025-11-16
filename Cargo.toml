@@ -69,6 +69,7 @@ percent-encoding = "2.3"
 base64 = "0.22"
 axum-server = { version = "0.7", features = ["tls-rustls"], optional = true }
 redb = "1.5"
+describe_me_plugin_sdk = { path = "describe_me_plugin_sdk" }
 
 [dev-dependencies]
 proptest = "1.5"

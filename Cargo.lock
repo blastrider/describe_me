@@ -572,6 +572,7 @@ dependencies = [
  "bcrypt",
  "clap",
  "criterion",
+ "describe_me_plugin_sdk",
  "fastrand",
  "futures-util",
  "nix",
@@ -591,6 +592,15 @@ dependencies = [
  "tracing",
  "tracing-journald",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "describe_me_plugin_sdk"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]
