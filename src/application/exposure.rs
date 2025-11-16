@@ -1,4 +1,4 @@
-#[cfg(all(feature = "systemd", feature = "serde"))]
+#[cfg(feature = "serde")]
 use std::collections::BTreeMap;
 
 #[cfg(all(feature = "systemd", feature = "serde"))]
@@ -9,6 +9,8 @@ use crate::domain::{DiskPartition, SystemSnapshot, UpdatesInfo};
 use crate::domain::{ListeningSocket, NetworkInterfaceTraffic};
 #[cfg(feature = "serde")]
 use crate::SharedSlice;
+#[cfg(feature = "serde")]
+use describe_me_plugin_sdk::PluginOutput;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 struct ExposureFlags(u16);
@@ -22,6 +24,7 @@ impl ExposureFlags {
     const SOCKETS: Self = Self(1 << 5);
     const UPDATES: Self = Self(1 << 6);
     const NETWORK: Self = Self(1 << 7);
+    const EXTENSIONS: Self = Self(1 << 8);
     const ALL: Self = Self(
         Self::HOSTNAME.0
             | Self::OS.0
@@ -30,7 +33,8 @@ impl ExposureFlags {
             | Self::DISK.0
             | Self::SOCKETS.0
             | Self::UPDATES.0
-            | Self::NETWORK.0,
+            | Self::NETWORK.0
+            | Self::EXTENSIONS.0,
     );
 
     const fn empty() -> Self {
@@ -174,6 +178,14 @@ impl Exposure {
     pub fn set_network_traffic(&mut self, value: bool) {
         self.flags.set(ExposureFlags::NETWORK, value);
     }
+
+    pub fn extensions(&self) -> bool {
+        self.flags.contains(ExposureFlags::EXTENSIONS)
+    }
+
+    pub fn set_extensions(&mut self, value: bool) {
+        self.flags.set(ExposureFlags::EXTENSIONS, value);
+    }
 }
 
 #[cfg(feature = "config")]
@@ -188,6 +200,7 @@ impl From<&crate::domain::ExposureConfig> for Exposure {
         exposure.set_listening_sockets(cfg.expose_listening_sockets);
         exposure.set_updates(cfg.expose_updates);
         exposure.set_network_traffic(cfg.expose_network_traffic);
+        exposure.set_extensions(cfg.expose_extensions);
         exposure.redacted = cfg.redacted;
         exposure
     }
@@ -238,6 +251,8 @@ pub struct SnapshotView {
     #[cfg(feature = "net")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub network_traffic: Option<SharedSlice<NetworkInterfaceTraffic>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<BTreeMap<String, PluginOutput>>,
 }
 
 #[cfg(feature = "serde")]
@@ -301,6 +316,11 @@ impl SnapshotView {
             #[cfg(feature = "net")]
             network_traffic: if exposure.network_traffic() {
                 snapshot.network_traffic.clone()
+            } else {
+                None
+            },
+            extensions: if exposure.extensions() {
+                snapshot.extensions.clone()
             } else {
                 None
             },
@@ -455,6 +475,7 @@ mod tests {
                     reboot_required: true,
                     packages: None,
                 }),
+                extensions: None,
             };
             let view = SnapshotView::new(&snapshot, exposure);
             assert!(view.updates.is_none());
@@ -492,6 +513,7 @@ mod tests {
                 reboot_required: false,
                 packages: None,
             }),
+            extensions: None,
         };
 
         let mut exposure = Exposure::default();
