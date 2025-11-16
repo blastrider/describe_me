@@ -42,17 +42,21 @@ Pour HTTPS, ajoutez un bloc `[web.tls]` (voir `src/examples/config_tls.toml`) ou
 ## Extensions & plugins
 
 - Crate dédiée : [`describe_me_plugin_sdk`](./describe_me_plugin_sdk) expose `Plugin`, `PluginOutput` (carte triée JSON) et la macro `describe_me_plugin_main!(MyPlugin)` qui instancie le collecteur, appelle `collect()` et sérialise le résultat sur stdout.
-- Sous-commande CLI : `describe-me plugin run --cmd /chemin/vers/plugin --arg foo --timeout 5` lance un plugin arbitraire, affiche la sortie prettifiée et signale clairement les erreurs (exit code ≠ 0, JSON invalide, timeout).
+- Sous-commande CLI : `describe-me plugin run --name certificates --arg foo --timeout 5` n’exécute que les binaires whitelistes `/usr/lib/describe_me/plugins/describe-me-plugin-<nom>`, affiche la sortie prettifiée et signale clairement les erreurs (exit code ≠ 0, JSON invalide, timeout).
 - Intégration automatique : ajoutez un bloc `[extensions]` dans votre config TOML pour exécuter des collecteurs à chaque snapshot. Les résultats sont exposés sous `extensions.<plugin>` dans le JSON et dans la tuile dédiée de l’UI web (activez `expose_extensions` côté CLI ou config).
+- Guide complet : [`docs/plugins.md`](./docs/plugins.md) détaille la création d’un nouveau module (SDK, installation, hash, configuration).
 
 ```toml
 [extensions]
 [[extensions.plugins]]
 name = "certificates-demo"
-cmd = "/usr/bin/describe-me-plugin-certificates"
+path = "/usr/lib/describe_me/plugins/describe-me-plugin-certificates"
+sha256 = "<fingerprinted value>"
 args = ["--probe", "/etc/ssl/certs", "--probe", "/etc/describe_me/certs"]
 timeout_secs = 10
 ```
+
+- Les plugins doivent résider sous `/usr/lib/describe_me/plugins/`, être épinglés par un `sha256` vérifié avant chaque exécution et refuseront tout lancement hors protocole (`DESCRIBE_ME_HOST=describe_me`, `DESCRIBE_ME_PLUGIN_PROTO=v1`, jeton non vide). Toute divergence (chemin, hash, SHA, env) empêche le spawn du processus.
 
 - Exemple complet : `plugin-examples/certificates` parcourt un répertoire de PEM et renvoie des stats simples via le SDK.
 
