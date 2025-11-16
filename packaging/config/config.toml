@@ -25,6 +25,13 @@ web_allow_origin = ["https://127.0.0.1:8443", "https://localhost:8443"]
 [services]
 include = ["cron.service", "sshd.service", "nginx.service", "docker.service"]
 
+[extensions]
+[[extensions.plugins]]
+name = "certificates-demo"
+cmd = "/usr/local/bin/describe-me-plugin-certificates"
+args = ["--probe", "/etc/describe_me/certs"]
+timeout_secs = 10
+
 [exposure]
 expose_hostname = true
 expose_os = true
@@ -34,6 +41,7 @@ expose_disk_partitions = true
 expose_listening_sockets = true
 expose_network_traffic = true
 expose_updates = true
+expose_extensions = true
 redacted = true
 
 [web]
@@ -58,6 +66,7 @@ expose_disk_partitions = true
 expose_listening_sockets = true
 expose_network_traffic = true
 expose_updates = true
+expose_extensions = true
 redacted = true
 
 [web.security]
