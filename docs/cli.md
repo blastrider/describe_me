@@ -104,16 +104,21 @@ liste directement depuis le navigateur (mêmes validations côté API).
 
 ## Plugins externes
 
-- Créez un plugin via la crate `describe_me_plugin_sdk` (trait `Plugin`, type `PluginOutput`, macro `describe_me_plugin_main!`) puis exécutez-le à la demande avec `describe-me plugin run --cmd /chemin/vers/plugin --arg foo --timeout 5`.
+- Créez un plugin via la crate `describe_me_plugin_sdk` (trait `Plugin`, type `PluginOutput`, macro `describe_me_plugin_main!`) puis exécutez-le à la demande avec `describe-me plugin run --name certificates --arg foo --timeout 5`. Cette commande ne peut lancer que des binaires whitelistes (`/usr/lib/describe_me/plugins/describe-me-plugin-<nom>`) et force la poignée de main d’environnement (`DESCRIBE_ME_*`).
 - Listez des plugins à exécuter automatiquement en ajoutant :
 
 ```toml
 [extensions]
 [[extensions.plugins]]
 name = "certificates-demo"
-cmd = "/usr/bin/describe-me-plugin-certificates"
+path = "/usr/lib/describe_me/plugins/describe-me-plugin-certificates"
+sha256 = "<fingerprinted value>"
 args = ["--probe", "/etc/ssl/certs", "--probe", "/etc/describe_me/certs"]
 timeout_secs = 10
 ```
+
+Tous les plugins doivent vivre sous `/usr/lib/describe_me/plugins/`, être épinglés via `sha256` (64 hexa) et ne produisent de sortie valide que lorsqu’ils détectent `DESCRIBE_ME_HOST=describe_me`, `DESCRIBE_ME_PLUGIN_PROTO=v1` et un jeton non vide. Toute divergence (chemin, hash, poignée de main) annule l’exécution et logue `LogEvent::PluginError`.
+
+> Consultez [`docs/plugins.md`](./plugins.md) pour un tutoriel complet (SDK, packaging, calcul du hash).
 
 Chaque plugin est exécuté séquentiellement avec un timeout configurable. La sortie JSON est désérialisée dans `PluginOutput` et publiée sous `extensions.<nom>` dans `SnapshotView`, l’API et l’UI web (activer `expose_extensions`/`web_expose_extensions` pour rendre les données visibles). Les erreurs sont loguées (`LogEvent::PluginError`) mais n’interrompent pas la capture principale.
