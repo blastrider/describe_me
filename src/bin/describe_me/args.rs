@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anyhow::{anyhow, Context, Result};
 use argon2::password_hash::{PasswordHasher, SaltString};
 use argon2::{Algorithm, Argon2, Params, Version};
-use clap::{ArgAction, Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use rand_core::OsRng;
 
 #[derive(Parser, Debug)]
@@ -144,6 +144,10 @@ pub struct Opts {
     #[arg(long = "expose-updates", action = ArgAction::SetTrue)]
     pub expose_updates: bool,
 
+    /// Expose les résultats des extensions/plugins
+    #[arg(long = "expose-extensions", action = ArgAction::SetTrue)]
+    pub expose_extensions: bool,
+
     /// Désactive le mode redacted (versions OS/noyau tronquées par défaut).
     #[arg(long = "no-redacted", action = ArgAction::SetTrue)]
     pub no_redacted: bool,
@@ -180,6 +184,10 @@ pub struct Opts {
     #[arg(long = "web-expose-updates", action = ArgAction::SetTrue)]
     pub web_expose_updates: bool,
 
+    /// Expose les extensions/plugins côté --web
+    #[arg(long = "web-expose-extensions", action = ArgAction::SetTrue)]
+    pub web_expose_extensions: bool,
+
     /// Active tous les détails sensibles pour --web
     #[arg(long = "web-expose-all", action = ArgAction::SetTrue)]
     pub web_expose_all: bool,
@@ -211,6 +219,9 @@ pub enum CliCommand {
     /// Gère les métadonnées persistées (redb).
     #[command(subcommand)]
     Metadata(MetadataCommand),
+    /// Outils autour des plugins/collecteurs externes.
+    #[command(subcommand)]
+    Plugin(PluginCommand),
 }
 
 #[derive(Debug, Subcommand)]
@@ -257,6 +268,25 @@ pub enum TagsCommand {
     },
     /// Supprime tous les tags.
     Clear,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum PluginCommand {
+    /// Lance un plugin externe et affiche sa sortie JSON.
+    Run(PluginRunCommand),
+}
+
+#[derive(Debug, Args)]
+pub struct PluginRunCommand {
+    /// Binaire du plugin (chemin absolu ou résolu via PATH).
+    #[arg(long = "cmd", value_name = "PATH")]
+    pub cmd: String,
+    /// Arguments transmis au plugin (répéter --arg pour plusieurs valeurs).
+    #[arg(long = "arg", value_name = "ARG", action = ArgAction::Append)]
+    pub args: Vec<String>,
+    /// Timeout maximum (secondes) avant d'interrompre le plugin.
+    #[arg(long = "timeout", value_name = "SECS", default_value_t = 10)]
+    pub timeout_secs: u64,
 }
 
 pub fn parse() -> Opts {
@@ -319,6 +349,17 @@ mod tests {
     }
 
     #[test]
+    fn parses_expose_extensions_flags() {
+        let opts = Opts::try_parse_from(["describe-me", "--expose-extensions"]).unwrap();
+        assert!(opts.expose_extensions);
+        assert!(!opts.web_expose_extensions);
+
+        let opts = Opts::try_parse_from(["describe-me", "--web-expose-extensions"]).unwrap();
+        assert!(!opts.expose_extensions);
+        assert!(opts.web_expose_extensions);
+    }
+
+    #[test]
     fn argon2_hash_uses_hardened_params() {
         let hash = hash_web_token("secret", TokenHashAlgorithm::Argon2id).expect("hash");
         assert!(
@@ -369,6 +410,30 @@ mod tests {
         match opts.command {
             Some(CliCommand::Metadata(MetadataCommand::Tags(TagsCommand::Set { tags }))) => {
                 assert_eq!(tags, vec!["ubuntu", "ftp"]);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_plugin_run_command() {
+        let opts = Opts::try_parse_from([
+            "describe-me",
+            "plugin",
+            "run",
+            "--cmd",
+            "/usr/local/bin/demo",
+            "--arg",
+            "foo",
+            "--timeout",
+            "7",
+        ])
+        .unwrap();
+        match opts.command {
+            Some(CliCommand::Plugin(PluginCommand::Run(run))) => {
+                assert_eq!(run.cmd, "/usr/local/bin/demo");
+                assert_eq!(run.args, vec!["foo"]);
+                assert_eq!(run.timeout_secs, 7);
             }
             other => panic!("unexpected command: {other:?}"),
         }
