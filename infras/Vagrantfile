@@ -111,7 +111,7 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
 
         DEST_DIR="/opt/describe_me"
         BIN_PATH="${DEST_DIR}/${BINARY}"
-        PLUGIN_BIN_PATH="/usr/bin/${PLUGIN_NAME}"
+        PLUGIN_BIN_PATH="/usr/lib/describe_me/plugins/${PLUGIN_NAME}"
         CONFIG_DIR="/etc/describe_me"
         CERT_DIR="${CONFIG_DIR}/certs"
         CONFIG_FILE="${CONFIG_DIR}/config.toml"
@@ -292,6 +292,7 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
 
         # deploy binary (may be replaced later if incompatible)
         mkdir -p "${DEST_DIR}"
+        mkdir -p "$(dirname "${PLUGIN_BIN_PATH}")"
         if [ "${INSTALL_MODE}" = "copy" ]; then
           if [ -n "${SRC}" ]; then
             cp -f "${SRC}" "${BIN_PATH}"
