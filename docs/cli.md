@@ -19,6 +19,7 @@ inventaire réseau et serveur web SSE.
 | `--web-token`, `--web-allow-ip` | Sécurisation du mode web (hash Argon2id/bcrypt + allowlist IP, voir `docs/web-security.md`) |
 | `--hash-web-token`, `--hash-web-token-stdin` | Helper pour générer une empreinte (Argon2id par défaut) |
 | `--expose-*`, `--no-redacted`, `--expose-all` | Contrôle fin des champs sensibles (hostname, services, partitions, sockets, updates) |
+| `--expose-extensions`, `--web-expose-extensions` | Active l’exposition des résultats des plugins (CLI / mode web) |
 | `--web-expose-*`, `--web-expose-all` | Variante pour l’interface SSE                      |
 
 La CLI refuse explicitement de tourner en root (`ensure_not_root`).
@@ -32,6 +33,7 @@ un fichier TOML (`DescribeConfig`). Il peut définir :
 - Filtrage des services (`services.include`).
 - Paramètres SSE (`web.security`, `web.allow_ips`, `web.exposure`).
 - Exposition JSON (`exposure`, y compris `expose_updates` pour la tuile des mises à jour).
+- Extensions/collecteurs externes (`extensions.plugins`, `exposure.expose_extensions`, `web.exposure.expose_extensions`).
 
 > **Note :** `web.token` attend désormais une empreinte Argon2id/bcrypt. Utilisez
 > `describe-me --hash-web-token 'secret'` pour produire une valeur compatible.
@@ -99,3 +101,19 @@ Les tags sont normalisés (minuscules, tirets) et affichés dans la sortie CLI a
 que dans l’interface web pour faciliter le regroupement des machines. Le tableau
 de bord web dispose également d’un champ « Tags » pour ajouter/supprimer/vider la
 liste directement depuis le navigateur (mêmes validations côté API).
+
+## Plugins externes
+
+- Créez un plugin via la crate `describe_me_plugin_sdk` (trait `Plugin`, type `PluginOutput`, macro `describe_me_plugin_main!`) puis exécutez-le à la demande avec `describe-me plugin run --cmd /chemin/vers/plugin --arg foo --timeout 5`.
+- Listez des plugins à exécuter automatiquement en ajoutant :
+
+```toml
+[extensions]
+[[extensions.plugins]]
+name = "certificates-demo"
+cmd = "/usr/local/bin/describe-me-plugin-certificates"
+args = ["--probe", "/etc/describe_me/certs"]
+timeout_secs = 10
+```
+
+Chaque plugin est exécuté séquentiellement avec un timeout configurable. La sortie JSON est désérialisée dans `PluginOutput` et publiée sous `extensions.<nom>` dans `SnapshotView`, l’API et l’UI web (activer `expose_extensions`/`web_expose_extensions` pour rendre les données visibles). Les erreurs sont loguées (`LogEvent::PluginError`) mais n’interrompent pas la capture principale.
