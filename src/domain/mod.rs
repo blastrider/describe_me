@@ -5,8 +5,9 @@ pub mod model;
 
 #[cfg(feature = "config")]
 pub use config::{
-    BruteForceConfig, CliDefaults, DescribeConfig, ExposureConfig, RouteLimitConfig, RuntimeConfig,
-    ServiceSelection, SseLimitConfig, WebAccessConfig, WebSecurityConfig,
+    BruteForceConfig, CliDefaults, DescribeConfig, ExposureConfig, ExtensionsConfig,
+    PluginDefinition, RouteLimitConfig, RuntimeConfig, ServiceSelection, SseLimitConfig,
+    WebAccessConfig, WebSecurityConfig,
 };
 pub use error::DescribeError;
 pub use model::{
