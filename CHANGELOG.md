@@ -5,6 +5,7 @@
 - Intégration « extensions » : configuration `[extensions.plugins]`, exécution automatique lors des snapshots, données namespacées sous `extensions.<plugin>` (CLI, JSON, web) avec exposition contrôlée par `expose_extensions`.
 - UI web : carte « Extensions » listant les collecteurs configurés, mise à jour SSE et sérialisation côté API.
 - Fourniture d'un exemple de plugin dans `plugin-examples/certificates`.
+- La cible `make` construit désormais automatiquement les plugins déclarés (ex: certificats) et les artefacts sont intégrés au paquet Debian/Vagrant (copie dans `/usr/bin` + configuration extensions).
 
 ## v0.1.3 - 2025-11-14
 
