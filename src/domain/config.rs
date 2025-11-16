@@ -14,6 +14,8 @@ pub struct DescribeConfig {
     pub exposure: Option<ExposureConfig>,
     /// Paramètres runtime (logging, valeurs par défaut CLI).
     pub runtime: Option<RuntimeConfig>,
+    /// Plugins/collecteurs additionnels à exécuter sur chaque snapshot.
+    pub extensions: Option<ExtensionsConfig>,
 }
 
 /// Sélection des services (liste blanche simple).
@@ -86,6 +88,30 @@ pub struct CliDefaults {
     pub web_trusted_proxy: Vec<String>,
 }
 
+/// Configuration des collecteurs externes.
+#[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "serde", derive(Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct ExtensionsConfig {
+    /// Liste des plugins exécutés à chaque snapshot.
+    pub plugins: Vec<PluginDefinition>,
+}
+
+/// Plugin externe lancé durant les captures.
+#[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "serde", derive(Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct PluginDefinition {
+    /// Nom stable affiché côté UI/JSON (namespacing).
+    pub name: String,
+    /// Binaire à lancer (chemin absolu/PATH).
+    pub cmd: String,
+    /// Arguments optionnels transmis au binaire.
+    pub args: Vec<String>,
+    /// Timeout (secondes) avant de tuer le processus.
+    pub timeout_secs: Option<u64>,
+}
+
 /// Contrôle fin des champs JSON sensibles.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Deserialize))]
@@ -107,6 +133,8 @@ pub struct ExposureConfig {
     pub expose_network_traffic: bool,
     /// Autoriser l'exposition des informations de mises à jour.
     pub expose_updates: bool,
+    /// Autoriser l'exposition des extensions/plugins.
+    pub expose_extensions: bool,
     /// Fournir des valeurs masquées (versions tronquées) lorsque l'exposition complète est désactivée.
     #[cfg_attr(feature = "serde", serde(default = "ExposureConfig::default_redacted"))]
     pub redacted: bool,
@@ -129,6 +157,7 @@ impl Default for ExposureConfig {
             expose_listening_sockets: false,
             expose_network_traffic: false,
             expose_updates: false,
+            expose_extensions: false,
             redacted: true,
         }
     }
@@ -149,6 +178,19 @@ mod tests {
         let cfg: ExposureConfig =
             toml::from_str("expose_updates = true").expect("deserialize exposure");
         assert!(cfg.expose_updates);
+    }
+
+    #[test]
+    fn expose_extensions_defaults_to_false() {
+        let cfg: ExposureConfig = toml::from_str("").expect("deserialize default exposure");
+        assert!(!cfg.expose_extensions);
+    }
+
+    #[test]
+    fn expose_extensions_can_be_enabled() {
+        let cfg: ExposureConfig =
+            toml::from_str("expose_extensions = true").expect("deserialize exposure");
+        assert!(cfg.expose_extensions);
     }
 }
 
