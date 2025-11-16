@@ -111,8 +111,8 @@ liste directement depuis le navigateur (mêmes validations côté API).
 [extensions]
 [[extensions.plugins]]
 name = "certificates-demo"
-cmd = "/usr/local/bin/describe-me-plugin-certificates"
-args = ["--probe", "/etc/describe_me/certs"]
+cmd = "/usr/bin/describe-me-plugin-certificates"
+args = ["--probe", "/etc/ssl/certs", "--probe", "/etc/describe_me/certs"]
 timeout_secs = 10
 ```
 
