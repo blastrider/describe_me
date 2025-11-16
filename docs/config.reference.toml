@@ -41,9 +41,9 @@ include = ["sshd.service", "nginx.service", "docker.service"]
 # Nom affiché dans la sortie JSON/web (namespacing: extensions.<name>.*).
 name = "certificates-demo"
 # Binaire (absolu ou résolu via PATH) à lancer.
-cmd = "/usr/local/bin/describe-me-plugin-certificates"
+cmd = "/usr/bin/describe-me-plugin-certificates"
 # Arguments optionnels transmis au plugin.
-args = ["--probe", "/etc/describe_me/certs"]
+args = ["--probe", "/etc/ssl/certs", "--probe", "/etc/describe_me/certs"]
 # Timeout en secondes (>=1). Par défaut 10s si omis.
 timeout_secs = 10
 
