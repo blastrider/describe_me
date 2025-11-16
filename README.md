@@ -49,8 +49,8 @@ Pour HTTPS, ajoutez un bloc `[web.tls]` (voir `src/examples/config_tls.toml`) ou
 [extensions]
 [[extensions.plugins]]
 name = "certificates-demo"
-cmd = "/usr/local/bin/describe-me-plugin-certificates"
-args = ["--probe", "/etc/describe_me/certs"]
+cmd = "/usr/bin/describe-me-plugin-certificates"
+args = ["--probe", "/etc/ssl/certs", "--probe", "/etc/describe_me/certs"]
 timeout_secs = 10
 ```
 
