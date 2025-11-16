@@ -85,6 +85,9 @@ fn apply_cli_flags(exposure: &mut describe_me::Exposure, opts: &Opts) {
         if opts.expose_updates {
             exposure.set_updates(true);
         }
+        if opts.expose_extensions {
+            exposure.set_extensions(true);
+        }
     }
 
     if opts.no_redacted {
@@ -124,6 +127,9 @@ fn apply_web_flags(exposure: &mut describe_me::Exposure, opts: &Opts) {
         }
         if opts.web_expose_updates {
             exposure.set_updates(true);
+        }
+        if opts.web_expose_extensions {
+            exposure.set_extensions(true);
         }
     }
 

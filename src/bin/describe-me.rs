@@ -15,12 +15,16 @@ use describe_me::LogEvent;
 use nix::unistd::Uid;
 #[cfg(feature = "cli")]
 use serde::Serialize;
+use std::time::Duration;
+
+const PLUGIN_DIR: &str = "/usr/lib/describe_me/plugins/";
+const PLUGIN_BINARY_PREFIX: &str = "describe-me-plugin-";
 
 #[cfg(feature = "web")]
 use allowlists::{resolve_web_list, CliListOrigin};
 use args::{
     hash_web_token, parse as parse_opts, read_token_from_stdin, CliCommand, DescriptionCommand,
-    MetadataCommand, TagsCommand,
+    MetadataCommand, PluginCommand, PluginRunCommand, TagsCommand,
 };
 use exposure_cfg::apply_cli_exposure_flags;
 #[cfg(feature = "web")]
@@ -56,6 +60,7 @@ fn summary_line(view: &describe_me::SnapshotView) -> String {
 fn handle_command(cmd: CliCommand) -> Result<()> {
     match cmd {
         CliCommand::Metadata(metadata) => handle_metadata_command(metadata),
+        CliCommand::Plugin(plugin) => handle_plugin_command(plugin),
     }
 }
 
@@ -63,6 +68,12 @@ fn handle_metadata_command(cmd: MetadataCommand) -> Result<()> {
     match cmd {
         MetadataCommand::Description(action) => handle_description_command(action),
         MetadataCommand::Tags(action) => handle_tags_command(action),
+    }
+}
+
+fn handle_plugin_command(cmd: PluginCommand) -> Result<()> {
+    match cmd {
+        PluginCommand::Run(run) => run_plugin(run),
     }
 }
 
@@ -123,6 +134,29 @@ fn handle_tags_command(cmd: TagsCommand) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn run_plugin(cmd: PluginRunCommand) -> Result<()> {
+    validate_plugin_name(&cmd.name)?;
+    let timeout = Duration::from_secs(cmd.timeout_secs.max(1));
+    let binary = format!("{PLUGIN_DIR}{PLUGIN_BINARY_PREFIX}{}", cmd.name);
+    let output = describe_me::run_ad_hoc_plugin(&binary, &cmd.name, &cmd.args, timeout)?;
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+fn validate_plugin_name(name: &str) -> Result<()> {
+    if name.trim().is_empty() {
+        bail!("Le nom du plugin ne peut pas être vide.");
+    }
+    if name
+        .chars()
+        .all(|c| matches!(c, 'a'..='z' | '0'..='9' | '-' | '_'))
+    {
+        Ok(())
+    } else {
+        bail!("Le nom du plugin doit uniquement contenir [a-z0-9_-].");
+    }
 }
 
 fn print_description_block(desc: &str) {
@@ -675,6 +709,7 @@ mod tests {
                 reboot_required: true,
                 packages: None,
             }),
+            extensions: None,
         };
         let mut exposure = describe_me::Exposure::default();
         exposure.set_updates(true);
@@ -704,10 +739,24 @@ mod tests {
             #[cfg(feature = "net")]
             network_traffic: None,
             updates: None,
+            extensions: None,
         };
         let mut exposure = describe_me::Exposure::default();
         exposure.set_updates(true);
         let view = describe_me::SnapshotView::new(&snapshot, exposure);
         assert_eq!(super::summary_line(&view), "updates=? reboot=unknown");
+    }
+
+    #[test]
+    fn validates_plugin_name_rules() {
+        super::validate_plugin_name("certificates").unwrap();
+        super::validate_plugin_name("inventory_v2").unwrap();
+    }
+
+    #[test]
+    fn rejects_invalid_plugin_names() {
+        assert!(super::validate_plugin_name("").is_err());
+        assert!(super::validate_plugin_name("Bad/Name").is_err());
+        assert!(super::validate_plugin_name("UPPERCASE").is_err());
     }
 }

@@ -34,6 +34,21 @@ web_trusted_proxy = ["192.168.0.1"]
 # Liste blanche des unités systemd affichées lorsque --with-services est actif.
 include = ["sshd.service", "nginx.service", "docker.service"]
 
+[extensions]
+# Plugins/collecteurs externes exécutés à chaque snapshot. Chaque élément est un
+# tableau de la forme [[extensions.plugins]].
+[[extensions.plugins]]
+# Nom affiché dans la sortie JSON/web (namespacing: extensions.<name>.*).
+name = "certificates-demo"
+# Binaire autorisé (chemin absolu sous /usr/lib/describe_me/plugins/).
+path = "/usr/lib/describe_me/plugins/describe-me-plugin-certificates"
+# Empreinte SHA-256 épinglée (64 hexa). Tout mismatch bloque l'exécution.
+sha256 = "<fingerprinted value>"
+# Arguments optionnels transmis au plugin.
+args = ["--probe", "/etc/ssl/certs", "--probe", "/etc/describe_me/certs"]
+# Timeout en secondes (>=1). Par défaut 10s si omis.
+timeout_secs = 10
+
 [exposure]
 # Contrôle fin des champs sensibles dans la sortie CLI/JSON.
 expose_hostname = true
@@ -44,6 +59,8 @@ expose_disk_partitions = true
 expose_listening_sockets = true
 expose_network_traffic = true
 expose_updates = true
+# Expose les extensions/plugins (désactivé par défaut si non défini).
+expose_extensions = true
 # Lorsque `redacted = true`, les champs désactivés renvoient des valeurs masquées.
 redacted = true
 
@@ -84,6 +101,7 @@ expose_disk_partitions = true
 expose_listening_sockets = true
 expose_network_traffic = true
 expose_updates = true
+expose_extensions = true
 redacted = true
 
 [web.security]

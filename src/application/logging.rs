@@ -121,6 +121,11 @@ pub enum LogEvent<'a> {
         token: Option<Cow<'a, str>>,
         detail: Option<Cow<'a, str>>,
     },
+    PluginError {
+        plugin: Cow<'a, str>,
+        command: Cow<'a, str>,
+        error: Cow<'a, str>,
+    },
 }
 
 impl LogEvent<'_> {
@@ -301,6 +306,21 @@ impl LogEvent<'_> {
                     ip,
                     token,
                     detail
+                );
+            }
+            LogEvent::PluginError {
+                plugin,
+                command,
+                error,
+            } => {
+                warn!(
+                    plugin = plugin.as_ref(),
+                    command = command.as_ref(),
+                    error = error.as_ref(),
+                    "plugin_error plugin={} command={} error={}",
+                    plugin,
+                    command,
+                    error
                 );
             }
         }

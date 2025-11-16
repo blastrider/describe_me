@@ -111,6 +111,7 @@ impl SystemSnapshot {
             #[cfg(feature = "net")]
             network_traffic,
             updates,
+            extensions: None,
         };
 
         let duration = started_at.elapsed();
@@ -168,6 +169,15 @@ pub fn capture_snapshot_with_view(
         let services_mut = snapshot.services_running.make_mut();
         let filtered = filter_services(std::mem::take(services_mut), cfg);
         *services_mut = filtered;
+    }
+
+    #[cfg(feature = "config")]
+    if let Some(cfg) = _cfg {
+        let (extensions_map, failures) = extensions::execute_configured_plugins(cfg);
+        if !extensions_map.is_empty() {
+            snapshot.extensions = Some(extensions_map);
+        }
+        extensions::log_failures(&failures);
     }
 
     let mut view = SnapshotView::new(&snapshot, exposure);
@@ -266,5 +276,6 @@ pub mod web;
 pub mod health;
 
 pub mod exposure;
+pub mod extensions;
 pub mod logging;
 pub mod metadata;

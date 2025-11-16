@@ -31,6 +31,7 @@ allow = [
   "Unicode-3.0",
   "Zlib",
 ]
+unused-allowed-license = "allow"
 
 # Si un crate est réellement sans licence et que tu veux le tolérer temporairement,
 # utilise `clarify` pour le déclarer explicitement (clé 'clarify' + entrées).

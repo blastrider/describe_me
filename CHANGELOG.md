@@ -1,6 +1,11 @@
 ## Unreleased
 
-- Ajoutez vos changements ici.
+- Ajout d'un SDK `describe_me_plugin_sdk` (trait `Plugin`, macro `describe_me_plugin_main!`) pour écrire des collecteurs externes sérialisant un `PluginOutput` déterministe.
+- Nouvelle commande `describe-me plugin run --name <plugin> [--arg ...] [--timeout <s>]` qui résout automatiquement `/usr/lib/describe_me/plugins/describe-me-plugin-<nom>`, épingle les binaires par SHA-256, gère les erreurs (exit code, timeout, JSON invalide) et affiche la sortie formatée.
+- Intégration « extensions » : configuration `[extensions.plugins]`, exécution automatique lors des snapshots, données namespacées sous `extensions.<plugin>` (CLI, JSON, web) avec exposition contrôlée par `expose_extensions`.
+- UI web : carte « Extensions » listant les collecteurs configurés, mise à jour SSE et sérialisation côté API.
+- Fourniture d'un exemple de plugin dans `plugin-examples/certificates`.
+- La cible `make` construit désormais automatiquement les plugins déclarés (ex: certificats) et les artefacts sont intégrés au paquet Debian/Vagrant (copie dans `/usr/bin` + configuration extensions).
 
 ## v0.1.3 - 2025-11-14
 
