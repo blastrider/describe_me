@@ -11,12 +11,25 @@ ifneq ($(RELEASE_SIGN_TAG),0)
 RELEASE_SIGN_FLAG := --sign-tag
 endif
 
-.PHONY: all deb fmt fmt-check clippy test test-release doc audit deny bench ci msrv-build tools build-complete sbom supply-chain release-patch release-minor release-major
+.PHONY: all deb fmt fmt-check clippy test test-release doc audit deny bench ci msrv-build tools build-complete sbom supply-chain release-patch release-minor release-major build-plugins
 
 all: deb
 
+PLUGIN_MANIFESTS := plugin-examples/certificates/Cargo.toml
+
+build-plugins:
+	@if [ -n "$(strip $(PLUGIN_MANIFESTS))" ]; then \
+		for manifest in $(PLUGIN_MANIFESTS); do \
+			echo "[plugin] building $$manifest"; \
+			$(CARGO) build --release --manifest-path $$manifest; \
+		done; \
+	else \
+		echo "[plugin] no plugin manifests configured"; \
+	fi
+
 release-complete:
 	$(CARGO) build --release --all-features
+	$(MAKE) build-plugins
 
 fmt:
 	$(CARGO) fmt
@@ -67,7 +80,7 @@ supply-chain: audit deny
 bench:
 	$(CARGO) bench --no-run $(FEATURES)
 
-ci: fmt-check clippy test test-release doc audit deny bench
+ci: fmt-check clippy test test-release doc audit deny bench build-plugins
 
 msrv-build:
 	cargo +$(MSRV) build -Z unstable-options
@@ -79,7 +92,7 @@ tools:
 		fi; \
 	done
 
-deb:
+deb: build-plugins
 	@if ! command -v cargo-deb >/dev/null 2>&1; then \
 		cargo install cargo-deb --locked; \
 	fi
