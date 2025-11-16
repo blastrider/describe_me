@@ -19,6 +19,36 @@ function getWidthFromBytes(totalBytes, availableBytes) {
   return `${bounded.toFixed(1)}%`;
 }
 
+function formatExtensionValue(value) {
+  if (value === null || typeof value === "undefined") {
+    return "—";
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return value.toString();
+  }
+  try {
+    return JSON.stringify(value);
+  } catch (err) {
+    return String(value);
+  }
+}
+
+function extensionEntries(payload) {
+  if (
+    payload &&
+    typeof payload === "object" &&
+    !Array.isArray(payload)
+  ) {
+    return Object.entries(payload).map(
+      ([key, value]) => `${key}: ${formatExtensionValue(value)}`
+    );
+  }
+  return [formatExtensionValue(payload)];
+}
+
 function updateUI(data) {
   err.textContent = "";
 
@@ -199,6 +229,50 @@ function updateUI(data) {
     } else {
       networkCard.style.display = "none";
       networkList.appendChild(createServiceEmpty());
+    }
+  }
+
+  const extensionsCard = document.getElementById('extensionsCard');
+  const extensionsList = document.getElementById('extensionsList');
+  if (extensionsCard && extensionsList) {
+    const rawExtensions = data.extensions;
+    const hasField = Object.prototype.hasOwnProperty.call(data, 'extensions');
+    clearChildren(extensionsList);
+    if (
+      rawExtensions &&
+      typeof rawExtensions === 'object' &&
+      !Array.isArray(rawExtensions)
+    ) {
+      const entries = Object.entries(rawExtensions);
+      if (entries.length > 0) {
+        extensionsCard.style.display = 'block';
+        const fragment = document.createDocumentFragment();
+        entries
+          .sort(([aName], [bName]) => aName.localeCompare(bName))
+          .forEach(([pluginName, payload]) => {
+            const row = createEl('div', 'service-row');
+            row.appendChild(createEl('span', 'dot service-dot ok'));
+            const details = document.createElement('div');
+            details.appendChild(createEl('div', 'service-name', pluginName));
+            const values = extensionEntries(payload);
+            details.appendChild(createEl('div', 'service-meta', values.join(' • ')));
+            row.appendChild(details);
+            fragment.appendChild(row);
+          });
+        extensionsList.appendChild(fragment);
+      } else if (hasField) {
+        extensionsCard.style.display = 'block';
+        extensionsList.appendChild(createServiceEmpty('Aucune extension active'));
+      } else {
+        extensionsCard.style.display = 'none';
+        extensionsList.appendChild(createServiceEmpty());
+      }
+    } else if (hasField) {
+      extensionsCard.style.display = 'block';
+      extensionsList.appendChild(createServiceEmpty('Aucune donnée extension'));
+    } else {
+      extensionsCard.style.display = 'none';
+      extensionsList.appendChild(createServiceEmpty());
     }
   }
 
