@@ -15,12 +15,13 @@ use describe_me::LogEvent;
 use nix::unistd::Uid;
 #[cfg(feature = "cli")]
 use serde::Serialize;
+use std::time::Duration;
 
 #[cfg(feature = "web")]
 use allowlists::{resolve_web_list, CliListOrigin};
 use args::{
     hash_web_token, parse as parse_opts, read_token_from_stdin, CliCommand, DescriptionCommand,
-    MetadataCommand, TagsCommand,
+    MetadataCommand, PluginCommand, PluginRunCommand, TagsCommand,
 };
 use exposure_cfg::apply_cli_exposure_flags;
 #[cfg(feature = "web")]
@@ -56,6 +57,7 @@ fn summary_line(view: &describe_me::SnapshotView) -> String {
 fn handle_command(cmd: CliCommand) -> Result<()> {
     match cmd {
         CliCommand::Metadata(metadata) => handle_metadata_command(metadata),
+        CliCommand::Plugin(plugin) => handle_plugin_command(plugin),
     }
 }
 
@@ -63,6 +65,12 @@ fn handle_metadata_command(cmd: MetadataCommand) -> Result<()> {
     match cmd {
         MetadataCommand::Description(action) => handle_description_command(action),
         MetadataCommand::Tags(action) => handle_tags_command(action),
+    }
+}
+
+fn handle_plugin_command(cmd: PluginCommand) -> Result<()> {
+    match cmd {
+        PluginCommand::Run(run) => run_plugin(run),
     }
 }
 
@@ -122,6 +130,16 @@ fn handle_tags_command(cmd: TagsCommand) -> Result<()> {
             println!("Tags supprimés.");
         }
     }
+    Ok(())
+}
+
+fn run_plugin(cmd: PluginRunCommand) -> Result<()> {
+    if cmd.cmd.trim().is_empty() {
+        bail!("--cmd doit référencer un binaire plugin valide.");
+    }
+    let timeout = Duration::from_secs(cmd.timeout_secs.max(1));
+    let output = describe_me::run_ad_hoc_plugin(&cmd.cmd, &cmd.args, timeout)?;
+    println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
 }
 
@@ -675,6 +693,7 @@ mod tests {
                 reboot_required: true,
                 packages: None,
             }),
+            extensions: None,
         };
         let mut exposure = describe_me::Exposure::default();
         exposure.set_updates(true);
@@ -704,6 +723,7 @@ mod tests {
             #[cfg(feature = "net")]
             network_traffic: None,
             updates: None,
+            extensions: None,
         };
         let mut exposure = describe_me::Exposure::default();
         exposure.set_updates(true);
