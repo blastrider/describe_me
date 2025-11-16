@@ -1,12 +1,21 @@
 use describe_me_plugin_sdk::PluginOutput;
+use sha2::{Digest, Sha256};
 use std::borrow::Cow;
+#[cfg(feature = "config")]
 use std::collections::BTreeMap;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
+use std::fs::File;
 use std::io::{self, Read};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 use thiserror::Error;
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
+const PLUGIN_ROOT: &str = "/usr/lib/describe_me/plugins/";
 
 use crate::application::logging::LogEvent;
 #[cfg(feature = "config")]
@@ -17,6 +26,7 @@ pub struct PluginProcess<'a> {
     pub command: &'a OsStr,
     pub args: &'a [String],
     pub timeout: Duration,
+    pub env: Vec<(OsString, OsString)>,
 }
 
 #[derive(Debug, Error)]
@@ -59,6 +69,16 @@ pub enum PluginExecutionError {
         #[source]
         source: serde_json::Error,
     },
+    #[error("validation {path}: {message}")]
+    Validation { path: String, message: String },
+    #[error("lecture binaire {path}: {source}")]
+    BinaryIo {
+        path: String,
+        #[source]
+        source: io::Error,
+    },
+    #[error("empreinte SHA-256 invalide (attendue {expected}, calculée {actual})")]
+    ValidationFailed { expected: String, actual: String },
 }
 
 #[cfg_attr(test, derive(Debug, PartialEq, Eq))]
@@ -66,6 +86,7 @@ pub struct PluginFailure {
     pub name: String,
     pub command: String,
     pub error: String,
+    pub logged: bool,
 }
 
 pub fn execute_process(spec: &PluginProcess<'_>) -> Result<PluginOutput, PluginExecutionError> {
@@ -75,6 +96,10 @@ pub fn execute_process(spec: &PluginProcess<'_>) -> Result<PluginOutput, PluginE
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+
+    for (key, value) in &spec.env {
+        command.env(key, value);
+    }
 
     let mut child = command
         .spawn()
@@ -194,21 +219,39 @@ fn run_extensions(cfg: &ExtensionsConfig) -> (BTreeMap<String, PluginOutput>, Ve
 
     for plugin in &cfg.plugins {
         let timeout = Duration::from_secs(plugin.timeout_secs.unwrap_or(10).max(1));
-        let spec = PluginProcess {
-            command: OsStr::new(&plugin.cmd),
-            args: &plugin.args,
+        match prepare_plugin_process(
+            &plugin.path,
+            &plugin.name,
+            &plugin.args,
             timeout,
-        };
-        match execute_process(&spec) {
-            Ok(output) => {
-                outputs.insert(plugin.name.clone(), output);
-            }
+            Some(plugin.sha256.as_str()),
+        ) {
+            Ok(spec) => match execute_process(&spec) {
+                Ok(output) => {
+                    outputs.insert(plugin.name.clone(), output);
+                }
+                Err(err) => {
+                    failures.push(PluginFailure {
+                        name: plugin.name.clone(),
+                        command: plugin.path.clone(),
+                        error: err.to_string(),
+                        logged: false,
+                    });
+                }
+            },
             Err(err) => {
-                failures.push(PluginFailure {
+                let mut failure = PluginFailure {
                     name: plugin.name.clone(),
-                    command: plugin.cmd.clone(),
+                    command: plugin.path.clone(),
                     error: err.to_string(),
-                });
+                    logged: false,
+                };
+                if is_prelaunch_error(&err) {
+                    emit_plugin_failure(&failure);
+                    failure.logged = true;
+                    sleep_bruteforce_jitter();
+                }
+                failures.push(failure);
             }
         }
     }
@@ -218,26 +261,179 @@ fn run_extensions(cfg: &ExtensionsConfig) -> (BTreeMap<String, PluginOutput>, Ve
 
 pub fn log_failures(failures: &[PluginFailure]) {
     for failure in failures {
-        LogEvent::PluginError {
-            plugin: Cow::Owned(failure.name.clone()),
-            command: Cow::Owned(failure.command.clone()),
-            error: Cow::Owned(failure.error.clone()),
+        if failure.logged {
+            continue;
         }
-        .emit();
+        emit_plugin_failure(failure);
     }
 }
 
+fn emit_plugin_failure(failure: &PluginFailure) {
+    LogEvent::PluginError {
+        plugin: Cow::Owned(failure.name.clone()),
+        command: Cow::Owned(failure.command.clone()),
+        error: Cow::Owned(failure.error.clone()),
+    }
+    .emit();
+}
+
 pub fn run_ad_hoc_plugin(
-    command: &str,
+    binary_path: &str,
+    plugin_name: &str,
     args: &[String],
     timeout: Duration,
 ) -> Result<PluginOutput, PluginExecutionError> {
-    let spec = PluginProcess {
-        command: OsStr::new(command),
+    match prepare_plugin_process(binary_path, plugin_name, args, timeout, None) {
+        Ok(spec) => execute_process(&spec),
+        Err(err) => {
+            if is_prelaunch_error(&err) {
+                sleep_bruteforce_jitter();
+            }
+            Err(err)
+        }
+    }
+}
+
+fn prepare_plugin_process<'a>(
+    binary_path: &'a str,
+    plugin_name: &'a str,
+    args: &'a [String],
+    timeout: Duration,
+    expected_sha256: Option<&'a str>,
+) -> Result<PluginProcess<'a>, PluginExecutionError> {
+    let path = Path::new(binary_path);
+    ensure_plugin_path_allowed(path)?;
+    ensure_plugin_file_allowed(path)?;
+    if let Some(expected) = expected_sha256 {
+        verify_plugin_signature(path, expected)?;
+    }
+    Ok(PluginProcess {
+        command: OsStr::new(binary_path),
         args,
         timeout,
-    };
-    execute_process(&spec)
+        env: build_plugin_env(plugin_name),
+    })
+}
+
+fn ensure_plugin_path_allowed(path: &Path) -> Result<(), PluginExecutionError> {
+    let path_str = path.display().to_string();
+    if !path.is_absolute() {
+        return Err(PluginExecutionError::Validation {
+            path: path_str,
+            message: "le chemin doit être absolu".into(),
+        });
+    }
+    if !path.starts_with(PLUGIN_ROOT) {
+        return Err(PluginExecutionError::Validation {
+            path: path_str,
+            message: format!("le chemin doit commencer par {PLUGIN_ROOT}"),
+        });
+    }
+    Ok(())
+}
+
+fn ensure_plugin_file_allowed(path: &Path) -> Result<(), PluginExecutionError> {
+    let path_str = path.display().to_string();
+    let metadata = std::fs::metadata(path).map_err(|source| PluginExecutionError::BinaryIo {
+        path: path_str.clone(),
+        source,
+    })?;
+    if !metadata.is_file() {
+        return Err(PluginExecutionError::Validation {
+            path: path_str,
+            message: "le binaire doit être un fichier régulier".into(),
+        });
+    }
+    #[cfg(unix)]
+    {
+        let mode = metadata.permissions().mode();
+        if mode & 0o111 == 0 {
+            return Err(PluginExecutionError::Validation {
+                path: path_str,
+                message: "permis d'exécution manquants".into(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn build_plugin_env(plugin_name: &str) -> Vec<(OsString, OsString)> {
+    let token = generate_plugin_token();
+    vec![
+        (
+            OsString::from("DESCRIBE_ME_HOST"),
+            OsString::from("describe_me"),
+        ),
+        (
+            OsString::from("DESCRIBE_ME_PLUGIN_NAME"),
+            OsString::from(plugin_name),
+        ),
+        (
+            OsString::from("DESCRIBE_ME_PLUGIN_PROTO"),
+            OsString::from("v1"),
+        ),
+        (
+            OsString::from("DESCRIBE_ME_PLUGIN_TOKEN"),
+            OsString::from(token),
+        ),
+    ]
+}
+
+fn generate_plugin_token() -> String {
+    let mut bytes = [0u8; 16];
+    fastrand::fill(&mut bytes);
+    hex::encode(bytes)
+}
+
+fn verify_plugin_signature(path: &Path, expected_hex: &str) -> Result<(), PluginExecutionError> {
+    let expected = expected_hex.trim();
+    if expected.is_empty() {
+        return Err(PluginExecutionError::Validation {
+            path: path.display().to_string(),
+            message: "empreinte SHA-256 manquante".into(),
+        });
+    }
+    let expected_norm = expected.to_ascii_lowercase();
+    let mut file = File::open(path).map_err(|source| PluginExecutionError::BinaryIo {
+        path: path.display().to_string(),
+        source,
+    })?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 8192];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|source| PluginExecutionError::BinaryIo {
+                path: path.display().to_string(),
+                source,
+            })?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let actual = hex::encode(hasher.finalize());
+    if actual != expected_norm {
+        return Err(PluginExecutionError::ValidationFailed {
+            expected: expected_norm,
+            actual,
+        });
+    }
+    Ok(())
+}
+
+fn sleep_bruteforce_jitter() {
+    let delay = fastrand::u64(100..=500);
+    thread::sleep(Duration::from_millis(delay));
+}
+
+fn is_prelaunch_error(error: &PluginExecutionError) -> bool {
+    matches!(
+        error,
+        PluginExecutionError::Validation { .. }
+            | PluginExecutionError::BinaryIo { .. }
+            | PluginExecutionError::ValidationFailed { .. }
+    )
 }
 
 #[cfg(test)]
@@ -267,8 +463,35 @@ mod tests {
             command: script_path.as_os_str(),
             args: &[],
             timeout: Duration::from_millis(100),
+            env: Vec::new(),
         };
         let err = execute_process(&spec).unwrap_err();
         assert!(matches!(err, PluginExecutionError::Timeout { .. }));
+    }
+
+    #[test]
+    fn verify_plugin_signature_detects_match() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("bin");
+        let mut file = File::create(&path).unwrap();
+        file.write_all(b"ok").unwrap();
+        drop(file);
+
+        let mut hasher = Sha256::new();
+        hasher.update(b"ok");
+        let expected = hex::encode(hasher.finalize());
+        verify_plugin_signature(&path, &expected).unwrap();
+    }
+
+    #[test]
+    fn verify_plugin_signature_detects_mismatch() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("bin");
+        let mut file = File::create(&path).unwrap();
+        file.write_all(b"ko").unwrap();
+        drop(file);
+
+        let err = verify_plugin_signature(&path, "aaaaaaaa").unwrap_err();
+        assert!(matches!(err, PluginExecutionError::ValidationFailed { .. }));
     }
 }
