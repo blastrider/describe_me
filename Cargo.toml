@@ -21,6 +21,7 @@ features = ["cli", "web", "config", "systemd", "net", "journald"]
 default-features = false
 assets = [
     ["target/release/describe-me", "usr/bin/describe-me", "755"],
+    ["target/release/describe-me-plugin-certificates", "usr/bin/describe-me-plugin-certificates", "755"],
     ["packaging/systemd/describe-me.service", "lib/systemd/system/describe-me.service", "644"],
     ["packaging/config/config.toml", "etc/describe_me/config.toml", "644"]
 ]
@@ -69,7 +70,7 @@ percent-encoding = "2.3"
 base64 = "0.22"
 axum-server = { version = "0.7", features = ["tls-rustls"], optional = true }
 redb = "1.5"
-describe_me_plugin_sdk = { path = "describe_me_plugin_sdk" }
+describe_me_plugin_sdk = { version = "0.1.0", path = "describe_me_plugin_sdk" }
 
 [dev-dependencies]
 proptest = "1.5"
