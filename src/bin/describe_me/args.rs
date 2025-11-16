@@ -278,9 +278,9 @@ pub enum PluginCommand {
 
 #[derive(Debug, Args)]
 pub struct PluginRunCommand {
-    /// Binaire du plugin (chemin absolu ou résolu via PATH).
-    #[arg(long = "cmd", value_name = "PATH")]
-    pub cmd: String,
+    /// Nom logique du plugin (ex: certificates, inventory).
+    #[arg(long = "name", value_name = "NAME")]
+    pub name: String,
     /// Arguments transmis au plugin (répéter --arg pour plusieurs valeurs).
     #[arg(long = "arg", value_name = "ARG", action = ArgAction::Append)]
     pub args: Vec<String>,
@@ -421,8 +421,8 @@ mod tests {
             "describe-me",
             "plugin",
             "run",
-            "--cmd",
-            "/usr/local/bin/demo",
+            "--name",
+            "certificates",
             "--arg",
             "foo",
             "--timeout",
@@ -431,7 +431,7 @@ mod tests {
         .unwrap();
         match opts.command {
             Some(CliCommand::Plugin(PluginCommand::Run(run))) => {
-                assert_eq!(run.cmd, "/usr/local/bin/demo");
+                assert_eq!(run.name, "certificates");
                 assert_eq!(run.args, vec!["foo"]);
                 assert_eq!(run.timeout_secs, 7);
             }
