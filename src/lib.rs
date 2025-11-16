@@ -14,6 +14,7 @@ pub mod domain;
 mod infrastructure;
 mod shared;
 
+pub use describe_me_plugin_sdk::PluginOutput;
 pub use domain::{
     CaptureOptions, DescribeError, DiskPartition, DiskUsage, NetworkInterfaceTraffic, ServiceInfo,
     SystemSnapshot, UpdatePackage, UpdatesInfo,
@@ -52,6 +53,7 @@ pub use application::web::{serve_http, WebAccess, WebTlsConfig};
 pub use application::health::{eval_checks, parse_check, Severity};
 
 pub use application::exposure::Exposure;
+pub use application::extensions::{run_ad_hoc_plugin, PluginExecutionError};
 
 pub use application::logging::{init_logging, LogEvent};
 
