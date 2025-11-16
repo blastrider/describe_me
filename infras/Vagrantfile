@@ -70,6 +70,8 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
         set -euo pipefail
         BINARY="#{BINARY}"
         CUSTOM_BINARY_REL_PATH="#{ENV['BINARY_REL_PATH']}"
+        PLUGIN_NAME="#{ENV['PLUGIN_NAME'] || 'describe-me-plugin-certificates'}"
+        CUSTOM_PLUGIN_REL_PATH="#{ENV['PLUGIN_REL_PATH']}"
         declare -a CANDIDATES=()
         if [ -n "${CUSTOM_BINARY_REL_PATH}" ]; then
           CANDIDATES+=("/vagrant/target/${CUSTOM_BINARY_REL_PATH}")
@@ -81,6 +83,16 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
         CANDIDATES+=("/vagrant/target/debug/${BINARY}")
         CANDIDATES+=("/vagrant/target/${BINARY}")
 
+        declare -a PLUGIN_CANDIDATES=()
+        if [ -n "${CUSTOM_PLUGIN_REL_PATH}" ]; then
+          PLUGIN_CANDIDATES+=("/vagrant/target/${CUSTOM_PLUGIN_REL_PATH}")
+        fi
+        PLUGIN_CANDIDATES+=("/vagrant/target/x86_64-unknown-linux-musl/release/${PLUGIN_NAME}")
+        PLUGIN_CANDIDATES+=("/vagrant/target/x86_64-unknown-linux-musl/debug/${PLUGIN_NAME}")
+        PLUGIN_CANDIDATES+=("/vagrant/target/release/${PLUGIN_NAME}")
+        PLUGIN_CANDIDATES+=("/vagrant/target/debug/${PLUGIN_NAME}")
+        PLUGIN_CANDIDATES+=("/vagrant/target/${PLUGIN_NAME}")
+
         SRC=""
         for candidate in "${CANDIDATES[@]}"; do
           if [ -f "${candidate}" ]; then
@@ -89,8 +101,17 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
           fi
         done
 
+        PLUGIN_SRC=""
+        for candidate in "${PLUGIN_CANDIDATES[@]}"; do
+          if [ -f "${candidate}" ]; then
+            PLUGIN_SRC="${candidate}"
+            break
+          fi
+        done
+
         DEST_DIR="/opt/describe_me"
         BIN_PATH="${DEST_DIR}/${BINARY}"
+        PLUGIN_BIN_PATH="/usr/bin/${PLUGIN_NAME}"
         CONFIG_DIR="/etc/describe_me"
         CERT_DIR="${CONFIG_DIR}/certs"
         CONFIG_FILE="${CONFIG_DIR}/config.toml"
@@ -281,6 +302,15 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
         else
           echo "[deb] utilisation du binaire installé par paquet: ${BIN_PATH}"
         fi
+        if [ "${INSTALL_MODE}" = "copy" ]; then
+          if [ -n "${PLUGIN_SRC}" ]; then
+            install -m 0755 "${PLUGIN_SRC}" "${PLUGIN_BIN_PATH}"
+          else
+            echo "[plugin] aucun binaire trouvé pour ${PLUGIN_NAME} (candidats: ${PLUGIN_CANDIDATES[*]})"
+          fi
+        else
+          echo "[deb] plugin ${PLUGIN_NAME} fourni via paquet (cible: ${PLUGIN_BIN_PATH})"
+        fi
         chown -R "${SERVICE_USER}:${SERVICE_USER}" "${DEST_DIR}" || true
 
         # ensure state dir exists and is writable by service user
@@ -362,6 +392,13 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
           (cd "${WORKSPACE}" && CARGO_TARGET_DIR="${TARGET_DIR}" cargo build --release --features "${BUILD_FEATURES}")
           cp -f "${TARGET_DIR}/release/${BINARY}" "${BIN_PATH}"
           chmod 0755 "${BIN_PATH}"
+          if [ -d "${WORKSPACE}/plugin-examples/certificates" ]; then
+            (cd "${WORKSPACE}/plugin-examples/certificates" && CARGO_TARGET_DIR="${TARGET_DIR}" cargo build --release)
+            if [ -f "${TARGET_DIR}/release/${PLUGIN_NAME}" ]; then
+              cp -f "${TARGET_DIR}/release/${PLUGIN_NAME}" "${PLUGIN_BIN_PATH}"
+              chmod 0755 "${PLUGIN_BIN_PATH}"
+            fi
+          fi
           chown -R "${SERVICE_USER}:${SERVICE_USER}" "${DEST_DIR}" || true
         }
         ensure_binary
@@ -458,6 +495,13 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
         expose_network_traffic = true
         expose_updates = true
         redacted = true
+
+        [extensions]
+        [[extensions.plugins]]
+        name = "certificates-demo"
+        cmd = "${PLUGIN_BIN_PATH}"
+        args = ["--probe", "/etc/ssl/certs", "--probe", "${CERT_DIR}"]
+        timeout_secs = 10
 	EOF
         chmod 0644 "${CONFIG_FILE}"
         chown "${SERVICE_USER}:${SERVICE_USER}" "${CONFIG_FILE}" || true
