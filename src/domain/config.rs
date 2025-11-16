@@ -100,16 +100,20 @@ pub struct ExtensionsConfig {
 /// Plugin externe lancé durant les captures.
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "serde", derive(Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
 pub struct PluginDefinition {
     /// Nom stable affiché côté UI/JSON (namespacing).
     pub name: String,
-    /// Binaire à lancer (chemin absolu/PATH).
-    pub cmd: String,
+    /// Chemin absolu vers le binaire autorisé.
+    pub path: String,
     /// Arguments optionnels transmis au binaire.
+    #[cfg_attr(feature = "serde", serde(default))]
     pub args: Vec<String>,
     /// Timeout (secondes) avant de tuer le processus.
+    #[cfg_attr(feature = "serde", serde(default))]
     pub timeout_secs: Option<u64>,
+    /// Empreinte SHA-256 hexadécimale attendue pour le binaire.
+    #[cfg_attr(feature = "serde", serde(deserialize_with = "deserialize_sha256"))]
+    pub sha256: String,
 }
 
 /// Contrôle fin des champs JSON sensibles.
@@ -160,6 +164,21 @@ impl Default for ExposureConfig {
             expose_extensions: false,
             redacted: true,
         }
+    }
+}
+
+#[cfg(feature = "serde")]
+fn deserialize_sha256<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+
+    let value = Option::<String>::deserialize(deserializer)?;
+    match value {
+        Some(v) if !v.trim().is_empty() => Ok(v),
+        Some(_) => Err(serde::de::Error::custom("sha256 ne peut pas être vide")),
+        None => Err(serde::de::Error::missing_field("sha256")),
     }
 }
 
