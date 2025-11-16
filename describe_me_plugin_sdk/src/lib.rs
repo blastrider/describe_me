@@ -27,6 +27,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::env;
 use std::io::{self, Write};
 use thiserror::Error;
 
@@ -81,6 +82,47 @@ impl FromIterator<(String, Value)> for PluginOutput {
     }
 }
 
+/// Contexte injecté via les variables d'environnement par `describe-me`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaunchContext {
+    pub host: String,
+    pub plugin_name: String,
+    pub token: String,
+    pub proto: String,
+}
+
+impl LaunchContext {
+    /// Charge le contexte à partir des variables d'environnement obligatoires.
+    pub fn from_env() -> Result<Self, PluginError> {
+        Ok(Self {
+            host: read_launch_var("DESCRIBE_ME_HOST")?,
+            plugin_name: read_launch_var("DESCRIBE_ME_PLUGIN_NAME")?,
+            token: read_launch_var("DESCRIBE_ME_PLUGIN_TOKEN")?,
+            proto: read_launch_var("DESCRIBE_ME_PLUGIN_PROTO")?,
+        })
+    }
+
+    fn validate_for(&self, plugin_name: &str) -> Result<(), PluginError> {
+        if self.host != "describe_me" {
+            return Err(PluginError::msg("lançeur inconnu"));
+        }
+        if self.proto != "v1" {
+            return Err(PluginError::msg("proto plugin non supporté"));
+        }
+        if self.token.is_empty() {
+            return Err(PluginError::msg("jeton d'initialisation manquant"));
+        }
+        if self.plugin_name != plugin_name {
+            return Err(PluginError::msg("nom de plugin inattendu"));
+        }
+        Ok(())
+    }
+}
+
+fn read_launch_var(key: &str) -> Result<String, PluginError> {
+    env::var(key).map_err(|_| PluginError::msg(format!("{key} requis")))
+}
+
 /// Erreur déclarée par un plugin durant `collect`.
 #[derive(Debug, Error)]
 pub enum PluginError {
@@ -113,6 +155,8 @@ pub trait Plugin {
 pub enum PluginRuntimeError {
     #[error("{0}")]
     Collect(#[from] PluginError),
+    #[error("plugin launch error: {0}")]
+    Launch(String),
     #[error("write error: {0}")]
     Io(#[from] io::Error),
     #[error("serialization error: {0}")]
@@ -120,6 +164,11 @@ pub enum PluginRuntimeError {
 }
 
 fn run_plugin_instance<P: Plugin>(plugin: P) -> Result<(), PluginRuntimeError> {
+    let ctx = LaunchContext::from_env()
+        .map_err(|err| PluginRuntimeError::Launch(err.to_string()))?;
+    let plugin_name = plugin.name();
+    ctx.validate_for(plugin_name)
+        .map_err(|err| PluginRuntimeError::Launch(err.to_string()))?;
     let output = plugin.collect()?;
     let mut stdout = io::stdout().lock();
     serde_json::to_writer(&mut stdout, &output)?;
@@ -167,6 +216,7 @@ macro_rules! describe_me_plugin_main {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
 
     #[derive(Default)]
     struct DemoPlugin;
@@ -198,5 +248,94 @@ mod tests {
         let plugin = DemoPlugin::default();
         let json = serde_json::to_string(&plugin.collect().unwrap()).unwrap();
         assert!(json.contains("\"status\""));
+    }
+
+    static ENV_GUARD: Mutex<()> = Mutex::new(());
+
+    fn with_launch_env(vars: &[(&str, Option<&str>)], f: impl FnOnce()) {
+        let _guard = ENV_GUARD.lock().unwrap();
+        let saved: Vec<(String, Option<String>)> = vars
+            .iter()
+            .map(|(key, _)| (key.to_string(), std::env::var(key).ok()))
+            .collect();
+        for (key, value) in vars {
+            match value {
+                Some(v) => std::env::set_var(key, v),
+                None => std::env::remove_var(key),
+            }
+        }
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+        for (key, value) in saved {
+            if let Some(val) = value {
+                std::env::set_var(&key, val);
+            } else {
+                std::env::remove_var(&key);
+            }
+        }
+        if let Err(panic) = result {
+            std::panic::resume_unwind(panic);
+        }
+    }
+
+    #[test]
+    fn launch_context_reads_env() {
+        with_launch_env(
+            &[
+                ("DESCRIBE_ME_HOST", Some("describe_me")),
+                ("DESCRIBE_ME_PLUGIN_NAME", Some("demo")),
+                ("DESCRIBE_ME_PLUGIN_TOKEN", Some("deadbeef")),
+                ("DESCRIBE_ME_PLUGIN_PROTO", Some("v1")),
+            ],
+            || {
+                let ctx = LaunchContext::from_env().unwrap();
+                assert_eq!(ctx.plugin_name, "demo");
+            },
+        );
+    }
+
+    #[test]
+    fn launch_context_errors_when_missing_var() {
+        with_launch_env(
+            &[
+                ("DESCRIBE_ME_HOST", Some("describe_me")),
+                ("DESCRIBE_ME_PLUGIN_NAME", Some("demo")),
+                ("DESCRIBE_ME_PLUGIN_TOKEN", None),
+                ("DESCRIBE_ME_PLUGIN_PROTO", Some("v1")),
+            ],
+            || {
+                assert!(LaunchContext::from_env().is_err());
+            },
+        );
+    }
+
+    #[test]
+    fn run_plugin_instance_rejects_missing_handshake() {
+        with_launch_env(
+            &[
+                ("DESCRIBE_ME_HOST", None),
+                ("DESCRIBE_ME_PLUGIN_NAME", None),
+                ("DESCRIBE_ME_PLUGIN_TOKEN", None),
+                ("DESCRIBE_ME_PLUGIN_PROTO", None),
+            ],
+            || {
+                let err = run_plugin_instance(DemoPlugin::default()).unwrap_err();
+                assert!(matches!(err, PluginRuntimeError::Launch(_)));
+            },
+        );
+    }
+
+    #[test]
+    fn run_plugin_instance_accepts_valid_handshake() {
+        with_launch_env(
+            &[
+                ("DESCRIBE_ME_HOST", Some("describe_me")),
+                ("DESCRIBE_ME_PLUGIN_NAME", Some("demo")),
+                ("DESCRIBE_ME_PLUGIN_TOKEN", Some("0123456789abcdef")),
+                ("DESCRIBE_ME_PLUGIN_PROTO", Some("v1")),
+            ],
+            || {
+                run_plugin_instance(DemoPlugin::default()).unwrap();
+            },
+        );
     }
 }
