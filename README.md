@@ -68,6 +68,13 @@ ls target/debian/*.deb  # ex: target/debian/describe-me_0.1.0_amd64.deb
 sudo dpkg -i target/debian/describe-me_0.1.0_amd64.deb
 ```
 
+Si votre machine hôte utilise une glibc plus récente (Ubuntu 24.04+, etc.) et que vous devez produire un paquet compatible Debian 12 (glibc 2.36), utilisez le helper conteneurisé :
+
+```bash
+make deb-bookworm       # lance un conteneur debian:12 et construit le .deb à l'intérieur
+ls target/debian/*.deb  # artefact prêt pour un dpkg -i dans la VM Debian 12
+```
+
 Le paquet embarque l’unité systemd durcie fournie dans `packaging/systemd/describe-me.service` et gère automatiquement le rechargement/preset du service lors de l’installation.
 
 ## Documentation
