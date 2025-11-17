@@ -66,3 +66,45 @@ h2 { font-size: 16px; margin: 0 0 10px; color: var(--muted); }
   opacity: 0.6;
   cursor: wait;
 }
+
+#historyCard .history-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.history-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.history-value {
+  font-weight: 600;
+  color: var(--text);
+  font-size: 15px;
+}
+
+.history-canvas {
+  width: 100%;
+  height: 60px;
+  display: block;
+}
+
+.history-metric[hidden] {
+  display: none;
+}
+
+.history-error {
+  font-size: 13px;
+  color: var(--warn);
+  margin: 0 0 8px;
+  display: none;
+}
+
+.history-error.history-error-visible {
+  display: block;
+}
