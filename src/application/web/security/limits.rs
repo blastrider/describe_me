@@ -21,6 +21,7 @@ const DEFAULT_TOKEN_AFFINITY_LIMIT: u32 = 2;
 pub(crate) struct SecurityPolicy {
     html: RoutePolicy,
     sse: SsePolicy,
+    history: RoutePolicy,
     allow_multiplier: u32,
     brute_force: BruteForcePolicy,
     token_affinity_limit: u32,
@@ -31,6 +32,7 @@ impl SecurityPolicy {
         Self {
             html: RoutePolicy::new(Duration::from_secs(60), 30, 10, 120),
             sse: SsePolicy::default(),
+            history: RoutePolicy::new(Duration::from_secs(60), 6, 4, 40),
             allow_multiplier: 2,
             brute_force: BruteForcePolicy::default(),
             token_affinity_limit: DEFAULT_TOKEN_AFFINITY_LIMIT,
@@ -46,6 +48,12 @@ impl SecurityPolicy {
             cfg.html.global,
         );
         let sse = SsePolicy::from_config(&cfg.sse);
+        let history = RoutePolicy::new(
+            duration_from_secs(cfg.history.window_seconds, 60),
+            cfg.history.per_ip,
+            cfg.history.per_token,
+            cfg.history.global,
+        );
         let brute_force = BruteForcePolicy::from_config(&cfg.brute_force);
         let affinity_limit = if cfg.token_ip_affinity_limit == 0 {
             DEFAULT_TOKEN_AFFINITY_LIMIT
@@ -56,6 +64,7 @@ impl SecurityPolicy {
         Self {
             html,
             sse,
+            history,
             allow_multiplier: cfg.allowlist_multiplier.max(1),
             brute_force,
             token_affinity_limit: affinity_limit,
@@ -66,6 +75,7 @@ impl SecurityPolicy {
         match route {
             WebRoute::Html => &self.html,
             WebRoute::Sse => &self.sse.route,
+            WebRoute::History => &self.history,
         }
     }
 
@@ -606,6 +616,7 @@ pub(super) struct FailureOutcome {
 enum RouteKey {
     Html,
     Sse,
+    History,
 }
 
 impl From<WebRoute> for RouteKey {
@@ -613,6 +624,7 @@ impl From<WebRoute> for RouteKey {
         match route {
             WebRoute::Html => RouteKey::Html,
             WebRoute::Sse => RouteKey::Sse,
+            WebRoute::History => RouteKey::History,
         }
     }
 }
