@@ -30,7 +30,7 @@ use std::{borrow::Cow, collections::HashSet, net::SocketAddr, sync::Arc, time::D
 
 use axum::{
     body::{Body, Bytes},
-    extract::{Extension, State},
+    extract::{Extension, Query, State},
     http::{
         header,
         header::{HeaderName, HeaderValue, ORIGIN},
@@ -46,17 +46,18 @@ use axum_server::tls_rustls::RustlsConfig;
 use tokio::sync::Notify;
 use tracing::warn;
 
-use crate::application::exposure::Exposure;
 use crate::application::logging::LogEvent;
 use crate::application::metadata::{
     add_server_tags, clear_server_tags, override_state_directory, remove_server_tags,
     set_server_description, set_server_tags,
 };
+use crate::application::{exposure::Exposure, history};
 use crate::domain::DescribeError;
 #[cfg(feature = "config")]
 use crate::domain::{DescribeConfig, WebSecurityConfig};
 use serde::{Deserialize, Serialize};
 
+use history::HistoryQueryError;
 use security::{AuthGuard, WebSecurity};
 use sse::sse_stream;
 use template::{render_index, render_updates_page};
@@ -199,6 +200,30 @@ struct TagsPayload {
 #[derive(Serialize)]
 struct TagsResponse {
     tags: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct HistoryRequestQuery {
+    server: Option<String>,
+    window: Option<u64>,
+    limit: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct HistoryPointResponse {
+    ts: u64,
+    cpu: Option<f32>,
+    mem: Option<f32>,
+    disk: Option<f32>,
+}
+
+#[derive(Serialize)]
+struct HistoryResponse {
+    server_id: String,
+    window_seconds: u64,
+    precision_seconds: u64,
+    truncated: bool,
+    points: Vec<HistoryPointResponse>,
 }
 
 impl LogoAsset {
@@ -641,6 +666,7 @@ pub async fn serve_http<A: Into<SocketAddr>>(
         .route("/assets/logo.svg", get(logo_asset))
         .route("/updates", get(updates_page))
         .route("/sse", get(sse_stream))
+        .route("/api/history", get(history_series))
         .route("/api/description", post(update_description))
         .route("/api/tags", post(update_tags))
         .layer(middleware::from_fn_with_state(
@@ -916,6 +942,131 @@ async fn update_tags(_guard: AuthGuard, Json(payload): Json<TagsPayload>) -> imp
         Err(DescribeError::System(msg)) => json_error(StatusCode::INTERNAL_SERVER_ERROR, msg),
         Err(err) => json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
     }
+}
+
+async fn history_series(
+    State(state): State<AppState>,
+    guard: AuthGuard,
+    Query(query): Query<HistoryRequestQuery>,
+) -> impl IntoResponse {
+    if state.exposure.redacted {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "L'historique est masqué lorsque l'exposition est redacted.",
+        );
+    }
+
+    let settings = history::settings_snapshot();
+    if !settings.is_active() {
+        return json_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "L'historique n'est pas activé sur cette instance.",
+        );
+    }
+
+    if settings.paranoid_mode {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "Mode paranoïaque actif : l'historique n'est consultable que depuis la CLI locale.",
+        );
+    }
+
+    let requested_server = if let Some(id) = query.server.clone() {
+        id
+    } else if let Some(default_id) = history::default_server_id() {
+        default_id
+    } else {
+        return json_error(
+            StatusCode::NOT_FOUND,
+            "Aucune donnée historique disponible pour ce serveur.",
+        );
+    };
+
+    let session = guard.into_session();
+    let cookie_token = session.session_cookie().map(str::to_owned);
+
+    let max_window_secs = settings.max_window_seconds.max(1) as u64;
+    let requested_window = query.window.filter(|v| *v > 0).unwrap_or(max_window_secs);
+    let window_secs = requested_window.min(max_window_secs);
+    let retention_cap = settings.retention_points.max(16) as usize;
+    let default_limit = retention_cap.min(256);
+    let limit = query
+        .limit
+        .filter(|v| *v > 0)
+        .unwrap_or(default_limit)
+        .min(retention_cap);
+
+    let rounding = settings.rounding_seconds.max(1);
+    let series = match history::query_series(
+        &requested_server,
+        Duration::from_secs(window_secs),
+        limit,
+        rounding,
+    ) {
+        Ok(series) => series,
+        Err(HistoryQueryError::Disabled) => {
+            return json_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "L'historique n'est pas actif sur cette instance.",
+            )
+        }
+        Err(HistoryQueryError::InvalidLimit | HistoryQueryError::InvalidServer) => {
+            return json_error(StatusCode::BAD_REQUEST, "Paramètres history invalides.")
+        }
+        Err(HistoryQueryError::NotFound) => {
+            return json_error(
+                StatusCode::NOT_FOUND,
+                "Aucune donnée historique disponible pour ce serveur.",
+            )
+        }
+        Err(HistoryQueryError::Storage(err)) => {
+            LogEvent::SystemError {
+                location: Cow::Borrowed("history_query"),
+                error: Cow::Owned(err.to_string()),
+            }
+            .emit();
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Lecture de l'historique impossible pour le moment.",
+            );
+        }
+    };
+
+    let allow_disk = state.exposure.disk_partitions();
+    let points = series
+        .points
+        .into_iter()
+        .map(|point| HistoryPointResponse {
+            ts: point.timestamp,
+            cpu: point.cpu_pct,
+            mem: point.mem_pct,
+            disk: if allow_disk { point.disk_pct } else { None },
+        })
+        .collect::<Vec<_>>();
+
+    LogEvent::HistoryQuery {
+        ip: Cow::Owned(session.ip().to_string()),
+        token: Cow::Owned(session.token_key().to_string()),
+        server: Cow::Owned(series.server_id.clone()),
+        points: points.len() as u32,
+        window_seconds: series.window_seconds,
+        truncated: series.truncated,
+    }
+    .emit();
+
+    let payload = HistoryResponse {
+        server_id: series.server_id,
+        window_seconds: series.window_seconds,
+        precision_seconds: rounding,
+        truncated: series.truncated,
+        points,
+    };
+
+    let mut response = Json(payload).into_response();
+    if let Some(token) = cookie_token.as_deref() {
+        set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
+    }
+    response
 }
 
 fn map_io(e: impl std::error::Error + Send + Sync + 'static) -> DescribeError {

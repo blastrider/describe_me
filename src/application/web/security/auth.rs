@@ -192,7 +192,7 @@ pub(super) fn build_request(
         remote_ip,
         credential,
         token_key,
-        require_token: route != WebRoute::Html,
+        require_token: route.requires_token(),
         trusted_ip,
     })
 }

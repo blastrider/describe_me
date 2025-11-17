@@ -342,12 +342,15 @@ impl WebSecurity {
 pub(super) enum WebRoute {
     Html,
     Sse,
+    History,
 }
 
 impl WebRoute {
     pub fn from_path(path: &str) -> Self {
         if path == "/sse" {
             WebRoute::Sse
+        } else if path.starts_with("/api/history") {
+            WebRoute::History
         } else {
             WebRoute::Html
         }
@@ -357,7 +360,12 @@ impl WebRoute {
         match self {
             WebRoute::Html => "/",
             WebRoute::Sse => "/sse",
+            WebRoute::History => "/api/history",
         }
+    }
+
+    pub fn requires_token(&self) -> bool {
+        !matches!(self, WebRoute::Html)
     }
 }
 

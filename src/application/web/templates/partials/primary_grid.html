@@ -98,6 +98,39 @@
     <div class="mono" id="partitions">—</div>
   </section>
 
+  <section class="card" id="historyCard" style="display:none">
+    <div class="card-header">
+      <h2>Tendances</h2>
+      <div class="card-actions">
+        <button type="button" class="link-button small" data-role="history-refresh">Rafraîchir</button>
+      </div>
+    </div>
+    <p class="history-error" data-role="history-error" hidden></p>
+    <div class="history-grid">
+      <div class="history-metric" data-role="history-block-cpu">
+        <div class="history-label">
+          <span>CPU</span>
+          <span class="history-value" data-role="history-value-cpu">—</span>
+        </div>
+        <canvas class="history-canvas" width="220" height="60" data-role="history-canvas-cpu"></canvas>
+      </div>
+      <div class="history-metric" data-role="history-block-mem">
+        <div class="history-label">
+          <span>Mémoire</span>
+          <span class="history-value" data-role="history-value-mem">—</span>
+        </div>
+        <canvas class="history-canvas" width="220" height="60" data-role="history-canvas-mem"></canvas>
+      </div>
+      <div class="history-metric" data-role="history-block-disk">
+        <div class="history-label">
+          <span>Disque</span>
+          <span class="history-value" data-role="history-value-disk">—</span>
+        </div>
+        <canvas class="history-canvas" width="220" height="60" data-role="history-canvas-disk"></canvas>
+      </div>
+    </div>
+  </section>
+
   <section class="card" id="networkCard" style="display:none">
     <h2>Trafic reseau</h2>
     <div class="network-grid" id="networkList">

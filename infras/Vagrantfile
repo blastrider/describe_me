@@ -122,8 +122,10 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
         WEB_TOKEN_INPUT="#{ENV['WEB_TOKEN'] || ''}"
         WEB_TOKEN_HASH_INPUT='#{ENV['WEB_TOKEN_HASH'] || ''}'
         BUILD_IN_GUEST_INPUT="#{ENV['BUILD_IN_GUEST'] || ''}"
+        BUILD_DEB_IN_GUEST_INPUT="#{ENV['BUILD_DEB_IN_GUEST'] || 'auto'}"
         WORKSPACE="/workspace"
         BUILD_FEATURES="cli web config systemd net"
+        TARGET_DIR="/opt/target"
         PORT=8443
         BIND_ADDR="0.0.0.0:${PORT}"
         ORIGIN="https://${HOST_IP}:${PORT}"
@@ -136,6 +138,56 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
           OS_ID="${ID:-}"
           OS_ID_LIKE="${ID_LIKE:-}"
         fi
+
+        prepare_rust_env() {
+          if command -v apt-get >/dev/null 2>&1; then
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -y
+            apt-get install -y --no-install-recommends curl ca-certificates build-essential pkg-config
+          elif command -v dnf >/dev/null 2>&1; then
+            dnf install -y --setopt=ip_resolve=4 --setopt=timeout=60 curl gcc make pkgconf-pkg-config ca-certificates
+          elif command -v yum >/dev/null 2>&1; then
+            yum install -y curl gcc make pkgconfig ca-certificates || true
+          elif command -v pacman >/dev/null 2>&1; then
+            pacman -Sy --noconfirm curl base-devel ca-certificates
+          fi
+          if ! command -v cargo >/dev/null 2>&1; then
+            curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          fi
+          export PATH="$HOME/.cargo/bin:/root/.cargo/bin:$PATH"
+        }
+
+        build_deb_in_guest() {
+          case "${BUILD_DEB_IN_GUEST_INPUT}" in
+            ""|"0"|"false"|"no")
+              return 1
+              ;;
+          esac
+          if [ ! -d "${WORKSPACE}" ]; then
+            echo "[deb] workspace ${WORKSPACE} introuvable — build en invité impossible."
+            return 1
+          fi
+          echo "[deb] tentative de compilation du paquet dans la VM"
+          prepare_rust_env
+          if ! command -v cargo-deb >/dev/null 2>&1; then
+            cargo install --locked cargo-deb
+          fi
+          mkdir -p "${TARGET_DIR}"
+          if ! (cd "${WORKSPACE}" && CARGO_TARGET_DIR="${TARGET_DIR}" cargo deb --features "${BUILD_FEATURES}"); then
+            echo "[deb] cargo deb a échoué dans la VM."
+            return 1
+          fi
+          local built_pkg
+          built_pkg=$(ls -1t "${TARGET_DIR}/debian/${BINARY}"_*_amd64.deb 2>/dev/null | head -n1 || true)
+          if [ -z "${built_pkg}" ]; then
+            echo "[deb] aucun paquet généré dans ${TARGET_DIR}/debian"
+            return 1
+          fi
+          mkdir -p /vagrant/target/debian
+          local host_pkg="/vagrant/target/debian/$(basename "${built_pkg}")"
+          cp -f "${built_pkg}" "${host_pkg}"
+          echo "${host_pkg}"
+        }
 
         install_deb_if_available() {
           local deb_family=0
@@ -177,6 +229,14 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
             apt-get install -f -y || true
           fi
           if dpkg -i "${deb_file}"; then
+            INSTALL_MODE="package"
+            BIN_PATH="/usr/bin/${BINARY}"
+            return
+          fi
+          echo "[deb] installation du paquet fourni impossible; tentative de build dans la VM"
+          local guest_pkg=""
+          guest_pkg=$(build_deb_in_guest || true)
+          if [ -n "${guest_pkg}" ] && dpkg -i "${guest_pkg}"; then
             INSTALL_MODE="package"
             BIN_PATH="/usr/bin/${BINARY}"
             return
@@ -366,29 +426,11 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
               ;;
           esac
           echo "Attempting in-guest build of ${BINARY} with features: ${BUILD_FEATURES}"
-          # install prerequisites + rustup
-          if command -v apt-get >/dev/null 2>&1; then
-            export DEBIAN_FRONTEND=noninteractive
-            apt-get update -y
-            apt-get install -y --no-install-recommends curl ca-certificates build-essential pkg-config
-          elif command -v dnf >/dev/null 2>&1; then
-            dnf install -y --setopt=ip_resolve=4 --setopt=timeout=60 curl gcc make pkgconf-pkg-config ca-certificates
-          elif command -v yum >/dev/null 2>&1; then
-            yum install -y curl gcc make pkgconfig ca-certificates || true
-          elif command -v pacman >/dev/null 2>&1; then
-            pacman -Sy --noconfirm curl base-devel ca-certificates
-          fi
-          if ! command -v cargo >/dev/null 2>&1; then
-            curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
-            export PATH="$HOME/.cargo/bin:/root/.cargo/bin:$PATH"
-          else
-            export PATH="$HOME/.cargo/bin:/root/.cargo/bin:$PATH"
-          fi
+          prepare_rust_env
           if [ ! -d "${WORKSPACE}" ]; then
             echo "Workspace directory ${WORKSPACE} not found (synced_folder missing?)."
             exit 1
           fi
-          TARGET_DIR="/opt/target"
           mkdir -p "${TARGET_DIR}"
           (cd "${WORKSPACE}" && CARGO_TARGET_DIR="${TARGET_DIR}" cargo build --release --features "${BUILD_FEATURES}")
           cp -f "${TARGET_DIR}/release/${BINARY}" "${BIN_PATH}"
@@ -472,6 +514,12 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
         max_stream_bytes = 4194304
         global = 40
 
+        [web.security.history]
+        window_seconds = 60
+        per_ip = 6
+        per_token = 4
+        global = 40
+
         [web.security.brute_force]
         window_seconds = 600
         threshold = 5
@@ -503,6 +551,15 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
         cmd = "${PLUGIN_BIN_PATH}"
         args = ["--probe", "/etc/ssl/certs", "--probe", "${CERT_DIR}"]
         timeout_secs = 10
+
+        [history]
+        enabled = true
+        profile = "default"
+        retention_points = 180
+        max_window_seconds = 3600
+        rounding_seconds = 60
+        in_memory_only = false
+        paranoid = false
 	EOF
         chmod 0644 "${CONFIG_FILE}"
         chown "${SERVICE_USER}:${SERVICE_USER}" "${CONFIG_FILE}" || true

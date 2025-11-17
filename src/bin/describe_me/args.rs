@@ -46,6 +46,18 @@ pub struct Opts {
     #[arg(long, action = ArgAction::SetTrue)]
     pub summary: bool,
 
+    /// Profil d'historique à activer (default, ops, paranoid).
+    #[arg(long = "history-profile", value_enum)]
+    pub history_profile: Option<HistoryProfileArg>,
+
+    /// Désactive explicitement l'historique (prioritaire).
+    #[arg(long = "history-disabled", action = ArgAction::SetTrue)]
+    pub history_disabled: bool,
+
+    /// Nombre de points conservés (ring buffer) pour l'historique local.
+    #[arg(long = "history-retention", value_name = "POINTS")]
+    pub history_retention: Option<u32>,
+
     /// Lance un serveur web SSE (HTML/CSS/JS) — nécessite la feature `web`.
     /// Optionnellement préciser l'adresse:port (ex: 127.0.0.1:9000). Par défaut: 127.0.0.1:8080.
     #[arg(
@@ -214,6 +226,13 @@ pub enum TokenHashAlgorithm {
     Bcrypt,
 }
 
+#[derive(Copy, Clone, Debug, ValueEnum)]
+pub enum HistoryProfileArg {
+    Default,
+    Ops,
+    Paranoid,
+}
+
 #[derive(Debug, Subcommand)]
 pub enum CliCommand {
     /// Gère les métadonnées persistées (redb).
@@ -222,6 +241,8 @@ pub enum CliCommand {
     /// Outils autour des plugins/collecteurs externes.
     #[command(subcommand)]
     Plugin(PluginCommand),
+    /// Interroge l'historique local (mini time-series).
+    History(HistoryCommand),
 }
 
 #[derive(Debug, Subcommand)]
@@ -274,6 +295,19 @@ pub enum TagsCommand {
 pub enum PluginCommand {
     /// Lance un plugin externe et affiche sa sortie JSON.
     Run(PluginRunCommand),
+}
+
+#[derive(Debug, Args)]
+pub struct HistoryCommand {
+    /// Identifiant de serveur (hash stable).
+    #[arg(long = "server", value_name = "ID")]
+    pub server: Option<String>,
+    /// Fenêtre temporelle à analyser (secondes).
+    #[arg(long = "window", value_name = "SECS", default_value_t = 900)]
+    pub window: u64,
+    /// Nombre maximum de points à afficher (≤ rétention).
+    #[arg(long = "limit", value_name = "POINTS")]
+    pub limit: Option<usize>,
 }
 
 #[derive(Debug, Args)]

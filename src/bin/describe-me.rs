@@ -10,7 +10,7 @@ mod exposure_cfg;
 use anyhow::{bail, Result};
 #[cfg(feature = "net")]
 use describe_me::domain::{ListeningSocket, NetworkInterfaceTraffic};
-use describe_me::LogEvent;
+use describe_me::{HistoryMode, HistoryProfile, HistorySettings, LogEvent};
 #[cfg(all(unix, feature = "cli"))]
 use nix::unistd::Uid;
 #[cfg(feature = "cli")]
@@ -24,7 +24,8 @@ const PLUGIN_BINARY_PREFIX: &str = "describe-me-plugin-";
 use allowlists::{resolve_web_list, CliListOrigin};
 use args::{
     hash_web_token, parse as parse_opts, read_token_from_stdin, CliCommand, DescriptionCommand,
-    MetadataCommand, PluginCommand, PluginRunCommand, TagsCommand,
+    HistoryCommand, HistoryProfileArg, MetadataCommand, PluginCommand, PluginRunCommand,
+    TagsCommand,
 };
 use exposure_cfg::apply_cli_exposure_flags;
 #[cfg(feature = "web")]
@@ -61,6 +62,7 @@ fn handle_command(cmd: CliCommand) -> Result<()> {
     match cmd {
         CliCommand::Metadata(metadata) => handle_metadata_command(metadata),
         CliCommand::Plugin(plugin) => handle_plugin_command(plugin),
+        CliCommand::History(history) => handle_history_command(history),
     }
 }
 
@@ -134,6 +136,91 @@ fn handle_tags_command(cmd: TagsCommand) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn handle_history_command(cmd: HistoryCommand) -> Result<()> {
+    let settings = describe_me::history_settings_snapshot();
+    if !settings.is_active() {
+        bail!("L'historique n'est pas activé sur cette instance.");
+    }
+
+    let server_id = if let Some(id) = cmd.server {
+        id
+    } else if let Some(default_id) = describe_me::history_default_server_id() {
+        default_id
+    } else {
+        bail!("Aucun identifiant serveur n'est disponible (aucun snapshot capturé ?).");
+    };
+
+    let window_secs = cmd.window.max(1);
+    let rounding = settings.rounding_seconds.max(1);
+    let retention_cap = settings.retention_points.max(16) as usize;
+    let default_limit = retention_cap.min(256);
+    let limit = cmd
+        .limit
+        .filter(|v| *v > 0)
+        .unwrap_or(default_limit)
+        .min(retention_cap)
+        .max(1);
+
+    let series = match describe_me::history_query_series(
+        &server_id,
+        Duration::from_secs(window_secs),
+        limit,
+        rounding,
+    ) {
+        Ok(series) => series,
+        Err(describe_me::HistoryQueryError::Disabled) => {
+            bail!("L'historique n'est plus actif ou a été désactivé.");
+        }
+        Err(describe_me::HistoryQueryError::InvalidLimit) => {
+            bail!("La limite demandée n'est pas valide.");
+        }
+        Err(describe_me::HistoryQueryError::InvalidServer) => {
+            bail!("Identifiant de serveur invalide.");
+        }
+        Err(describe_me::HistoryQueryError::NotFound) => {
+            println!("Aucune donnée historique disponible pour ce serveur.");
+            return Ok(());
+        }
+        Err(describe_me::HistoryQueryError::Storage(err)) => {
+            bail!("Lecture de l'historique impossible: {err}");
+        }
+    };
+
+    print_history_series(&series, rounding);
+    Ok(())
+}
+
+fn print_history_series(series: &describe_me::HistorySeries, rounding: u64) {
+    println!(
+        "Serveur: {}\nFenêtre: {}s | Points: {} | Précision: {}s | Tronqué: {}",
+        series.server_id,
+        series.window_seconds,
+        series.points.len(),
+        rounding,
+        if series.truncated { "oui" } else { "non" }
+    );
+    println!(
+        "{:>20}  {:>6}  {:>6}  {:>6}",
+        "timestamp", "cpu%", "mem%", "disk%"
+    );
+    for point in &series.points {
+        println!(
+            "{:>20}  {:>6}  {:>6}  {:>6}",
+            point.timestamp,
+            format_pct(point.cpu_pct),
+            format_pct(point.mem_pct),
+            format_pct(point.disk_pct),
+        );
+    }
+}
+
+fn format_pct(value: Option<f32>) -> String {
+    match value {
+        Some(v) => format!("{v:>5.1}"),
+        None => String::from("  -- "),
+    }
 }
 
 fn run_plugin(cmd: PluginRunCommand) -> Result<()> {
@@ -317,6 +404,52 @@ fn main() -> Result<()> {
     let mut web_access = describe_me::WebAccess::default();
 
     let mut exposure = describe_me::Exposure::default();
+
+    let mut history_settings = HistorySettings::disabled();
+
+    #[cfg(feature = "config")]
+    if let Some(cfg) = cfg.as_ref() {
+        if let Some(history_cfg) = cfg.history.as_ref() {
+            if history_cfg.enabled {
+                let mut profile = history_cfg.profile.unwrap_or(HistoryProfile::Default);
+                if history_cfg.paranoid {
+                    profile = HistoryProfile::Paranoid;
+                }
+                history_settings = HistorySettings::for_profile(profile);
+                if let Some(retention) = history_cfg.retention_points {
+                    history_settings.set_retention_points(retention);
+                }
+                if let Some(max_window) = history_cfg.max_window_seconds {
+                    history_settings.max_window_seconds = max_window;
+                }
+                if let Some(rounding) = history_cfg.rounding_seconds {
+                    history_settings.rounding_seconds = rounding;
+                }
+                if history_cfg.in_memory_only {
+                    history_settings.set_mode(HistoryMode::InMemory);
+                }
+            }
+        }
+    }
+
+    if opts.history_disabled {
+        history_settings.disable();
+    }
+
+    if let Some(profile) = opts.history_profile {
+        let resolved = match profile {
+            HistoryProfileArg::Default => HistoryProfile::Default,
+            HistoryProfileArg::Ops => HistoryProfile::Ops,
+            HistoryProfileArg::Paranoid => HistoryProfile::Paranoid,
+        };
+        history_settings = HistorySettings::for_profile(resolved);
+    }
+
+    if let Some(retention) = opts.history_retention {
+        history_settings.set_retention_points(retention);
+    }
+
+    describe_me::configure_history(history_settings)?;
 
     #[cfg(all(feature = "web", feature = "config"))]
     let web_cfg = cfg.as_ref().and_then(|cfg| cfg.web.as_ref());

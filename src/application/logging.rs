@@ -126,6 +126,14 @@ pub enum LogEvent<'a> {
         command: Cow<'a, str>,
         error: Cow<'a, str>,
     },
+    HistoryQuery {
+        ip: Cow<'a, str>,
+        token: Cow<'a, str>,
+        server: Cow<'a, str>,
+        points: u32,
+        window_seconds: u64,
+        truncated: bool,
+    },
 }
 
 impl LogEvent<'_> {
@@ -321,6 +329,30 @@ impl LogEvent<'_> {
                     plugin,
                     command,
                     error
+                );
+            }
+            LogEvent::HistoryQuery {
+                ip,
+                token,
+                server,
+                points,
+                window_seconds,
+                truncated,
+            } => {
+                info!(
+                    ip = ip.as_ref(),
+                    token = token.as_ref(),
+                    server = server.as_ref(),
+                    points,
+                    window_seconds,
+                    truncated,
+                    "history_query ip={} token={} server={} points={} window_seconds={} truncated={}",
+                    ip,
+                    token,
+                    server,
+                    points,
+                    window_seconds,
+                    truncated
                 );
             }
         }

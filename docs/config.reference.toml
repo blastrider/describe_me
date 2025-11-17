@@ -30,6 +30,22 @@ web_allow_ip = ["127.0.0.1", "::1", "192.168.0.0/24"]
 web_allow_origin = ["https://admin.example.com"]
 web_trusted_proxy = ["192.168.0.1"]
 
+[history]
+# Active l'historique local mini time-series (désactivé par défaut).
+enabled = false
+# Profil prédéfini : "default", "ops" (rétention accrue) ou "paranoid".
+profile = "default"
+# Nombre maximal de points conservés (par serveur).
+retention_points = 120
+# Fenêtre maximale (en secondes) exposée par requête history.
+max_window_seconds = 3600
+# Arrondi appliqué aux timestamps pour brouiller légèrement l'horizon.
+rounding_seconds = 60
+# Force un stockage purement mémoire (pas d'écriture sur disque).
+in_memory_only = false
+# Active les garde-fous paranoïaques (stockage mémoire, fenêtre réduite, UI history désactivée).
+paranoid = false
+
 [services]
 # Liste blanche des unités systemd affichées lorsque --with-services est actif.
 include = ["sshd.service", "nginx.service", "docker.service"]
@@ -132,6 +148,13 @@ max_stream_seconds = 600
 min_event_interval_ms = 500
 max_payload_bytes = 98304
 max_stream_bytes = 4194304
+global = 40
+
+[web.security.history]
+# Rate limiting pour l'endpoint `/api/history`.
+window_seconds = 60
+per_ip = 6
+per_token = 4
 global = 40
 
 [web.security.brute_force]

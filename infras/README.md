@@ -96,6 +96,15 @@ Exemples:
 - `BINARY_REL_PATH`: Chemin relatif sous `target/` si tu ranges ailleurs le binaire.
 - `SYNC_HOST_DIR`: Répertoire `target` à monter (défaut: `../target`). Le provisioner s’en passe si absent.
 - `SYNC_WORKSPACE_DIR`: Racine du repo à monter (défaut: `..`), utilisée pour compiler dans la VM et copier des certs.
+- `BUILD_DEB_IN_GUEST`: `1` pour forcer la recompilation du paquet `.deb` dans la VM si celui fourni n’est pas compatible (glibc trop récente), `0` pour désactiver ce fallback (défaut: `auto`).
+
+Astuce : si ta machine hôte tourne sur Ubuntu ou Mint avec une glibc plus récente que Debian 12, construis un paquet `.deb` compatible dans un conteneur `debian:12` en appelant depuis la racine du repo :
+
+```bash
+make deb-bookworm
+```
+
+Le fichier généré dans `target/debian/` sera ensuite accepté par les VM Bookworm sans dépendance manquante.
 
 ## Déploiement dans la VM
 
