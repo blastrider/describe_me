@@ -1,3 +1,4 @@
+use super::history_profile::HistoryProfile;
 #[cfg(feature = "serde")]
 use serde::Deserialize;
 
@@ -16,6 +17,8 @@ pub struct DescribeConfig {
     pub runtime: Option<RuntimeConfig>,
     /// Plugins/collecteurs additionnels à exécuter sur chaque snapshot.
     pub extensions: Option<ExtensionsConfig>,
+    /// Paramétrage de l'historique local (mini time-series).
+    pub history: Option<HistoryConfig>,
 }
 
 /// Sélection des services (liste blanche simple).
@@ -95,6 +98,27 @@ pub struct CliDefaults {
 pub struct ExtensionsConfig {
     /// Liste des plugins exécutés à chaque snapshot.
     pub plugins: Vec<PluginDefinition>,
+}
+
+/// Configuration de l'historique persistant (mini time-series).
+#[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "serde", derive(Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct HistoryConfig {
+    /// Active l'enregistrement des snapshots dans l'historique.
+    pub enabled: bool,
+    /// Profil préconfiguré (default, ops, paranoid).
+    pub profile: Option<HistoryProfile>,
+    /// Nombre maximal de points conservés par serveur.
+    pub retention_points: Option<u32>,
+    /// Fenêtre maximale autorisée par requête (secondes).
+    pub max_window_seconds: Option<u32>,
+    /// Arrondi appliqué aux timestamps pour les tendances (secondes).
+    pub rounding_seconds: Option<u64>,
+    /// Force un stockage purement mémoire (pas d'écriture disque).
+    pub in_memory_only: bool,
+    /// Applique les garde-fous paranoïaques (quotas réduits, pas d'exposition UI).
+    pub paranoid: bool,
 }
 
 /// Plugin externe lancé durant les captures.
@@ -222,6 +246,8 @@ pub struct WebSecurityConfig {
     pub html: RouteLimitConfig,
     /// Limites applicables à la route "/sse".
     pub sse: SseLimitConfig,
+    /// Limites applicables à la route "/api/history".
+    pub history: RouteLimitConfig,
     /// Multiplicateur des plafonds pour les IP explicitement autorisées.
     pub allowlist_multiplier: u32,
     /// Nombre maximal d'IP distinctes autorisées par token dans la fenêtre.
@@ -237,6 +263,7 @@ impl Default for WebSecurityConfig {
         Self {
             html: RouteLimitConfig::html_default(),
             sse: SseLimitConfig::sse_default(),
+            history: RouteLimitConfig::history_default(),
             allowlist_multiplier: 2,
             token_ip_affinity_limit: 2,
             brute_force: BruteForceConfig::default(),
@@ -285,6 +312,17 @@ impl RouteLimitConfig {
 impl Default for RouteLimitConfig {
     fn default() -> Self {
         Self::html_default()
+    }
+}
+
+impl RouteLimitConfig {
+    pub const fn history_default() -> Self {
+        Self {
+            window_seconds: 60,
+            per_ip: 6,
+            per_token: 4,
+            global: 40,
+        }
     }
 }
 
