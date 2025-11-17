@@ -20,11 +20,17 @@ pub use domain::{
     SystemSnapshot, UpdatePackage, UpdatesInfo,
 };
 
+pub use domain::HistoryProfile;
 #[cfg(feature = "config")]
 pub use domain::{DescribeConfig, ServiceSelection};
 
 // API fonctionnelle
 pub use application::disk_usage;
+pub use application::history::{
+    configure_history, default_server_id as history_default_server_id,
+    query_series as history_query_series, settings_snapshot as history_settings_snapshot,
+    HistoryMode, HistoryPoint, HistoryQueryError, HistorySeries, HistorySettings,
+};
 
 #[cfg(feature = "config")]
 pub use application::{filter_services, load_config_from_path};
