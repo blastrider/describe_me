@@ -433,6 +433,13 @@ function updateUI(data) {
     }
   }
 
+  if (
+    window.HistoryTrends &&
+    typeof window.HistoryTrends.handleSnapshot === "function"
+  ) {
+    window.HistoryTrends.handleSnapshot(data);
+  }
+
   raw.textContent = JSON.stringify(data, null, 2);
   last.textContent = new Date().toLocaleTimeString();
   dot.classList.add('ok');
