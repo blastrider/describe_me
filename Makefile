@@ -98,6 +98,9 @@ deb: build-plugins
 	fi
 	cargo deb
 
+deb-bookworm:
+	./scripts/deb-bookworm-build.sh
+
 release-patch:
 	$(RELEASE_HELPER) patch $(RELEASE_SIGN_FLAG)
 
