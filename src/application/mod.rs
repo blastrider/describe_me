@@ -146,6 +146,7 @@ impl SystemSnapshot {
             "snapshot_captured"
         );
 
+        crate::application::history::record_snapshot(&snapshot);
         Ok(snapshot)
     }
 }
@@ -277,5 +278,6 @@ pub mod health;
 
 pub mod exposure;
 pub mod extensions;
+pub mod history;
 pub mod logging;
 pub mod metadata;
