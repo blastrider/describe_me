@@ -6,5 +6,6 @@ pub mod systemd;
 #[cfg(feature = "net")]
 pub mod net;
 
+pub mod history;
 pub mod storage;
 pub mod updates;
