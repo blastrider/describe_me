@@ -1,15 +1,17 @@
 #[cfg(feature = "config")]
 pub mod config;
 pub mod error;
+pub mod history_profile;
 pub mod model;
 
 #[cfg(feature = "config")]
 pub use config::{
-    BruteForceConfig, CliDefaults, DescribeConfig, ExposureConfig, ExtensionsConfig,
+    BruteForceConfig, CliDefaults, DescribeConfig, ExposureConfig, ExtensionsConfig, HistoryConfig,
     PluginDefinition, RouteLimitConfig, RuntimeConfig, ServiceSelection, SseLimitConfig,
     WebAccessConfig, WebSecurityConfig,
 };
 pub use error::DescribeError;
+pub use history_profile::HistoryProfile;
 pub use model::{
     CaptureOptions,
     DiskPartition,
