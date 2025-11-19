@@ -21,6 +21,7 @@
 //!   ).await?;
 
 mod assets;
+mod handlers;
 mod security;
 mod sse;
 mod template;
@@ -30,7 +31,7 @@ use std::{borrow::Cow, collections::HashSet, net::SocketAddr, sync::Arc, time::D
 
 use axum::{
     body::{Body, Bytes},
-    extract::{Extension, Query, State},
+    extract::State,
     http::{
         header,
         header::{HeaderName, HeaderValue, ORIGIN},
@@ -38,29 +39,24 @@ use axum::{
     },
     middleware,
     middleware::Next,
-    response::{Html, IntoResponse, Response},
+    response::{IntoResponse, Response},
     routing::{get, post},
-    Json, Router,
+    Router,
 };
 use axum_server::tls_rustls::RustlsConfig;
 use tokio::sync::Notify;
 use tracing::warn;
 
+use crate::application::exposure::Exposure;
 use crate::application::logging::LogEvent;
-use crate::application::metadata::{
-    add_server_tags, clear_server_tags, override_state_directory, remove_server_tags,
-    set_server_description, set_server_tags,
-};
-use crate::application::{exposure::Exposure, history};
+use crate::application::metadata::override_state_directory;
 use crate::domain::DescribeError;
 #[cfg(feature = "config")]
 use crate::domain::{DescribeConfig, WebSecurityConfig};
-use serde::{Deserialize, Serialize};
 
-use history::HistoryQueryError;
-use security::{AuthGuard, WebSecurity};
+use handlers::{history_series, index, logo_asset, update_description, update_tags, updates_page};
+use security::WebSecurity;
 use sse::sse_stream;
-use template::{render_index, render_updates_page};
 use updates_cache::UpdatesCache;
 
 #[cfg(unix)]
@@ -159,80 +155,10 @@ struct AppState {
     session_cookie_secure: bool,
 }
 
+/// Ressource statique (ou personnalisée) représentant le logo exposé par l'UI.
 #[derive(Clone)]
 struct LogoAsset {
     bytes: Bytes,
-}
-
-#[derive(Deserialize)]
-struct DescriptionPayload {
-    text: String,
-}
-
-#[derive(Serialize)]
-struct DescriptionResponse {
-    description: String,
-}
-
-#[derive(Serialize)]
-struct ApiErrorResponse {
-    error: String,
-}
-
-#[derive(Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-enum TagOperation {
-    #[default]
-    Set,
-    Add,
-    Remove,
-    Clear,
-}
-
-#[derive(Deserialize)]
-struct TagsPayload {
-    #[serde(default)]
-    tags: Vec<String>,
-    #[serde(default)]
-    op: TagOperation,
-}
-
-#[derive(Serialize)]
-struct TagsResponse {
-    tags: Vec<String>,
-}
-
-#[derive(Deserialize)]
-struct HistoryRequestQuery {
-    server: Option<String>,
-    window: Option<u64>,
-    limit: Option<usize>,
-}
-
-#[derive(Serialize)]
-struct HistoryMetricResponse {
-    avg: Option<f32>,
-    min: Option<f32>,
-    max: Option<f32>,
-}
-
-#[derive(Serialize)]
-struct HistoryPointResponse {
-    ts: u64,
-    span_seconds: u64,
-    cpu: HistoryMetricResponse,
-    mem: HistoryMetricResponse,
-    disk: HistoryMetricResponse,
-}
-
-#[derive(Serialize)]
-struct HistoryResponse {
-    server_id: String,
-    window_seconds: u64,
-    bucket_seconds: u64,
-    truncated: bool,
-    aggregated: bool,
-    points: Vec<HistoryPointResponse>,
 }
 
 impl LogoAsset {
@@ -752,10 +678,6 @@ pub async fn serve_http<A: Into<SocketAddr>>(
     Ok(())
 }
 
-async fn logo_asset(State(state): State<AppState>) -> Response {
-    state.logo.response()
-}
-
 async fn wait_for_shutdown(notify: Arc<Notify>) {
     let signal = wait_for_shutdown_signal().await;
     LogEvent::HttpServerShutdown {
@@ -804,294 +726,6 @@ async fn wait_for_shutdown_signal() -> &'static str {
         Err(err) => {
             warn!(error = ?err, "ctrl_c_wait_failed");
             "ctrl_c_error"
-        }
-    }
-}
-
-async fn index(
-    State(state): State<AppState>,
-    guard: AuthGuard,
-    Extension(csp_nonce): Extension<CspNonce>,
-) -> impl IntoResponse {
-    let session = guard.into_session();
-    let mut response = Html(render_index(state.web_debug, csp_nonce.as_str())).into_response();
-    if let Some(token) = session.session_cookie() {
-        set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
-    }
-    mark_response_no_store(response.headers_mut());
-    response
-}
-
-async fn updates_page(
-    State(state): State<AppState>,
-    guard: AuthGuard,
-    Extension(csp_nonce): Extension<CspNonce>,
-) -> impl IntoResponse {
-    let session = guard.into_session();
-    let cookie_token = session.session_cookie().map(str::to_owned);
-
-    if !state.exposure.updates() {
-        let message = "L'exposition des mises à jour est désactivée pour cette instance.";
-        let html = render_updates_page(None, Some(message), csp_nonce.as_str());
-        let mut response = Html(html).into_response();
-        if let Some(token) = cookie_token.as_deref() {
-            set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
-        }
-        return response;
-    }
-
-    state.updates_cache.ensure_fresh().await;
-    let updates = match state.updates_cache.peek().await {
-        Some(info) => Some(info),
-        None => state.updates_cache.refresh_blocking().await,
-    };
-
-    let html = render_updates_page(updates.as_ref(), None, csp_nonce.as_str());
-    let mut response = Html(html).into_response();
-    if let Some(token) = cookie_token.as_deref() {
-        set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
-    }
-    response
-}
-
-async fn update_description(
-    _guard: AuthGuard,
-    Json(payload): Json<DescriptionPayload>,
-) -> impl IntoResponse {
-    let text = match normalize_description(&payload.text) {
-        Ok(value) => value,
-        Err(msg) => return json_error(StatusCode::BAD_REQUEST, msg),
-    };
-
-    if let Err(err) = set_server_description(&text) {
-        LogEvent::SystemError {
-            location: Cow::Borrowed("web_description_update"),
-            error: Cow::Owned(err.to_string()),
-        }
-        .emit();
-        return json_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Impossible d'enregistrer la description.",
-        );
-    }
-
-    (
-        StatusCode::OK,
-        Json(DescriptionResponse { description: text }),
-    )
-        .into_response()
-}
-
-fn normalize_description(input: &str) -> Result<String, &'static str> {
-    let sanitized = {
-        let crlf_folded = input.replace("\r\n", "\n");
-        crlf_folded.replace('\r', "\n")
-    };
-    if sanitized.len() > DESCRIPTION_MAX_BYTES {
-        return Err("La description ne peut pas dépasser 2048 caractères.");
-    }
-    Ok(sanitized)
-}
-
-fn json_error(status: StatusCode, message: impl Into<String>) -> Response {
-    (
-        status,
-        Json(ApiErrorResponse {
-            error: message.into(),
-        }),
-    )
-        .into_response()
-}
-
-fn validate_tags_payload(payload: &TagsPayload) -> Option<&'static str> {
-    match payload.op {
-        TagOperation::Clear => None,
-        _ => {
-            if payload.tags.is_empty() {
-                return Some("Merci de fournir au moins un tag.");
-            }
-            if payload.tags.len() > TAGS_MAX_PER_REQUEST {
-                return Some("Trop de tags fournis.");
-            }
-            if payload
-                .tags
-                .iter()
-                .any(|tag| tag.chars().count() > TAG_LENGTH_LIMIT)
-            {
-                return Some("Un tag dépasse la longueur maximale autorisée.");
-            }
-            None
-        }
-    }
-}
-
-async fn update_tags(_guard: AuthGuard, Json(payload): Json<TagsPayload>) -> impl IntoResponse {
-    if let Some(error) = validate_tags_payload(&payload) {
-        return json_error(StatusCode::BAD_REQUEST, error);
-    }
-
-    let tags = payload
-        .tags
-        .into_iter()
-        .map(|t| t.trim().to_string())
-        .filter(|t| !t.is_empty())
-        .take(TAGS_MAX_PER_REQUEST)
-        .collect::<Vec<_>>();
-
-    let op = payload.op;
-    let result = match op {
-        TagOperation::Set => set_server_tags(tags.iter().map(|s| s.as_str())),
-        TagOperation::Add => add_server_tags(tags.iter().map(|s| s.as_str())),
-        TagOperation::Remove => remove_server_tags(tags.iter().map(|s| s.as_str())),
-        TagOperation::Clear => clear_server_tags().map(|_| Vec::new()),
-    };
-
-    match result {
-        Ok(list) => (StatusCode::OK, Json(TagsResponse { tags: list.clone() })).into_response(),
-        Err(DescribeError::System(msg)) => json_error(StatusCode::INTERNAL_SERVER_ERROR, msg),
-        Err(err) => json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
-    }
-}
-
-async fn history_series(
-    State(state): State<AppState>,
-    guard: AuthGuard,
-    Query(query): Query<HistoryRequestQuery>,
-) -> impl IntoResponse {
-    if state.exposure.redacted {
-        return json_error(
-            StatusCode::FORBIDDEN,
-            "L'historique est masqué lorsque l'exposition est redacted.",
-        );
-    }
-
-    let settings = history::settings_snapshot();
-    if !settings.is_active() {
-        return json_error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "L'historique n'est pas activé sur cette instance.",
-        );
-    }
-
-    if settings.paranoid_mode {
-        return json_error(
-            StatusCode::FORBIDDEN,
-            "Mode paranoïaque actif : l'historique n'est consultable que depuis la CLI locale.",
-        );
-    }
-
-    let requested_server = if let Some(id) = query.server.clone() {
-        id
-    } else if let Some(default_id) = history::default_server_id() {
-        default_id
-    } else {
-        return json_error(
-            StatusCode::NOT_FOUND,
-            "Aucune donnée historique disponible pour ce serveur.",
-        );
-    };
-
-    let session = guard.into_session();
-    let cookie_token = session.session_cookie().map(str::to_owned);
-
-    let max_window_secs = settings.max_window_seconds.max(1) as u64;
-    let requested_window = query.window.filter(|v| *v > 0).unwrap_or(max_window_secs);
-    let window_secs = requested_window.min(max_window_secs);
-    let retention_cap = settings.retention_points.max(16) as usize;
-    let default_limit = retention_cap.min(256);
-    let limit = query
-        .limit
-        .filter(|v| *v > 0)
-        .unwrap_or(default_limit)
-        .min(retention_cap);
-
-    let rounding = settings.rounding_seconds.max(1);
-    let series = match history::query_series(
-        &requested_server,
-        Duration::from_secs(window_secs),
-        limit,
-        rounding,
-    ) {
-        Ok(series) => series,
-        Err(HistoryQueryError::Disabled) => {
-            return json_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "L'historique n'est pas actif sur cette instance.",
-            )
-        }
-        Err(HistoryQueryError::InvalidLimit | HistoryQueryError::InvalidServer) => {
-            return json_error(StatusCode::BAD_REQUEST, "Paramètres history invalides.")
-        }
-        Err(HistoryQueryError::NotFound) => {
-            return json_error(
-                StatusCode::NOT_FOUND,
-                "Aucune donnée historique disponible pour ce serveur.",
-            )
-        }
-        Err(HistoryQueryError::Storage(err)) => {
-            LogEvent::SystemError {
-                location: Cow::Borrowed("history_query"),
-                error: Cow::Owned(err.to_string()),
-            }
-            .emit();
-            return json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Lecture de l'historique impossible pour le moment.",
-            );
-        }
-    };
-
-    let allow_disk = state.exposure.disk_partitions();
-    let points = series
-        .points
-        .into_iter()
-        .map(|point| HistoryPointResponse {
-            ts: point.timestamp,
-            span_seconds: point.span_seconds,
-            cpu: to_metric_response(&point.cpu, true),
-            mem: to_metric_response(&point.mem, true),
-            disk: to_metric_response(&point.disk, allow_disk),
-        })
-        .collect::<Vec<_>>();
-
-    LogEvent::HistoryQuery {
-        ip: Cow::Owned(session.ip().to_string()),
-        token: Cow::Owned(session.token_key().to_string()),
-        server: Cow::Owned(series.server_id.clone()),
-        points: points.len() as u32,
-        window_seconds: series.window_seconds,
-        truncated: series.truncated,
-    }
-    .emit();
-
-    let payload = HistoryResponse {
-        server_id: series.server_id,
-        window_seconds: series.window_seconds,
-        bucket_seconds: series.bucket_seconds,
-        truncated: series.truncated,
-        aggregated: series.aggregated,
-        points,
-    };
-
-    let mut response = Json(payload).into_response();
-    if let Some(token) = cookie_token.as_deref() {
-        set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
-    }
-    response
-}
-
-fn to_metric_response(metric: &history::MetricAggregate, allow: bool) -> HistoryMetricResponse {
-    if allow {
-        HistoryMetricResponse {
-            avg: metric.avg,
-            min: metric.min,
-            max: metric.max,
-        }
-    } else {
-        HistoryMetricResponse {
-            avg: None,
-            min: None,
-            max: None,
         }
     }
 }
@@ -1151,242 +785,4 @@ pub(crate) fn clear_session_cookie(headers: &mut HeaderMap, secure: bool) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use axum::body::to_bytes;
-    use axum::http::header::SET_COOKIE;
-
-    fn build_request_with_headers(origin: Option<&str>, host: &str) -> AxumRequest {
-        let mut builder = axum::http::Request::builder()
-            .uri("http://internal/")
-            .header(header::HOST, host);
-        if let Some(origin_value) = origin {
-            builder = builder.header(ORIGIN, origin_value);
-        }
-        builder.body(axum::body::Body::empty()).unwrap()
-    }
-
-    #[test]
-    fn nonce_is_inserted_in_csp_header() {
-        let mut headers = HeaderMap::new();
-        let nonce = CspNonce::new("abcd1234".into());
-        apply_security_headers(&mut headers, &nonce);
-        let value = headers
-            .get(HEADER_CONTENT_SECURITY_POLICY)
-            .and_then(|val| val.to_str().ok())
-            .unwrap();
-        assert!(value.contains("style-src 'nonce-abcd1234'"));
-        assert!(value.contains("script-src 'nonce-abcd1234'"));
-        let permissions = headers
-            .get(HEADER_PERMISSIONS_POLICY)
-            .and_then(|val| val.to_str().ok())
-            .unwrap();
-        assert_eq!(permissions, "geolocation=(), camera=(), microphone=()");
-        let coop = headers
-            .get(HEADER_CROSS_ORIGIN_OPENER_POLICY)
-            .and_then(|val| val.to_str().ok())
-            .unwrap();
-        assert_eq!(coop, "same-origin");
-        let coep = headers
-            .get(HEADER_CROSS_ORIGIN_EMBEDDER_POLICY)
-            .and_then(|val| val.to_str().ok())
-            .unwrap();
-        assert_eq!(coep, "require-corp");
-    }
-
-    #[test]
-    fn origin_allowlist_accepts_configured_origin() {
-        let request = build_request_with_headers(
-            Some("https://public.example.com"),
-            "internal.example.lan:8080",
-        );
-        let policy = OriginPolicy::from_allowlist(vec!["https://public.example.com".to_string()])
-            .expect("origin policy");
-        assert!(is_origin_allowed(&request, &policy));
-    }
-
-    #[test]
-    fn origin_allowlist_blocks_unlisted_origin() {
-        let request = build_request_with_headers(Some("https://evil.example.com"), "internal:8080");
-        let policy = OriginPolicy::from_allowlist(vec!["https://public.example.com".to_string()])
-            .expect("origin policy");
-        assert!(!is_origin_allowed(&request, &policy));
-    }
-
-    #[test]
-    fn origin_defaults_to_same_host_port() {
-        let request = build_request_with_headers(Some("http://internal:8080"), "internal:8080");
-        let policy = OriginPolicy::from_allowlist(Vec::new()).expect("origin policy");
-        assert!(is_origin_allowed(&request, &policy));
-    }
-
-    #[test]
-    fn set_session_cookie_includes_http_only() {
-        let mut headers = HeaderMap::new();
-        set_session_cookie(&mut headers, "sess:v1:test", true);
-        let value = headers.get(SET_COOKIE).expect("set-cookie");
-        let text = value.to_str().expect("utf8");
-        assert!(
-            text.contains("; HttpOnly"),
-            "cookie missing HttpOnly: {text}"
-        );
-        assert!(
-            text.contains("SameSite=Strict"),
-            "cookie missing SameSite=Strict: {text}"
-        );
-    }
-
-    #[test]
-    fn clear_session_cookie_includes_http_only() {
-        let mut headers = HeaderMap::new();
-        clear_session_cookie(&mut headers, true);
-        let value = headers.get(SET_COOKIE).expect("set-cookie");
-        let text = value.to_str().expect("utf8");
-        assert!(
-            text.contains("; HttpOnly"),
-            "clear cookie missing HttpOnly: {text}"
-        );
-    }
-
-    #[test]
-    fn session_cookies_include_secure() {
-        let mut headers = HeaderMap::new();
-        set_session_cookie(&mut headers, "sess:v1:test", true);
-        let value = headers.get(SET_COOKIE).expect("set-cookie");
-        let text = value.to_str().expect("utf8");
-        assert!(
-            text.contains("; Secure"),
-            "cookie missing Secure attribute: {text}"
-        );
-    }
-
-    #[test]
-    fn session_cookie_secure_flag_can_be_disabled() {
-        let mut headers = HeaderMap::new();
-        set_session_cookie(&mut headers, "sess:v1:test", false);
-        let value = headers.get(SET_COOKIE).expect("set-cookie");
-        let text = value.to_str().expect("utf8");
-        assert!(
-            !text.contains("; Secure"),
-            "insecure cookies should skip Secure: {text}"
-        );
-    }
-
-    #[test]
-    fn clear_session_cookie_includes_secure() {
-        let mut headers = HeaderMap::new();
-        clear_session_cookie(&mut headers, true);
-        let value = headers.get(SET_COOKIE).expect("set-cookie");
-        let text = value.to_str().expect("utf8");
-        assert!(
-            text.contains("; Secure"),
-            "clear cookie missing Secure attribute: {text}"
-        );
-    }
-
-    #[test]
-    fn clear_session_cookie_respects_insecure_flag() {
-        let mut headers = HeaderMap::new();
-        clear_session_cookie(&mut headers, false);
-        let value = headers.get(SET_COOKIE).expect("set-cookie");
-        let text = value.to_str().expect("utf8");
-        assert!(
-            !text.contains("; Secure"),
-            "insecure clear cookie should skip Secure: {text}"
-        );
-    }
-
-    #[test]
-    fn response_marked_no_store_sets_cache_header() {
-        let mut headers = HeaderMap::new();
-        mark_response_no_store(&mut headers);
-        let value = headers
-            .get(header::CACHE_CONTROL)
-            .expect("Cache-Control header");
-        assert_eq!(value, HeaderValue::from_static("no-store"));
-    }
-
-    #[test]
-    fn hsts_header_is_added() {
-        let mut headers = HeaderMap::new();
-        let nonce = CspNonce::new("abc".into());
-        apply_security_headers(&mut headers, &nonce);
-        let value = headers
-            .get(HEADER_STRICT_TRANSPORT_SECURITY)
-            .expect("Strict-Transport-Security header");
-        assert_eq!(
-            value.to_str().unwrap(),
-            "max-age=31536000; includeSubDomains"
-        );
-    }
-
-    #[test]
-    fn normalize_description_replaces_carriage_returns() {
-        let normalized = super::normalize_description("hello\r\nworld\rgoodbye").expect("ok");
-        assert_eq!(normalized, "hello\nworld\ngoodbye");
-    }
-
-    #[test]
-    fn normalize_description_enforces_limit() {
-        let long = "x".repeat(super::DESCRIPTION_MAX_BYTES + 1);
-        let err = super::normalize_description(&long).unwrap_err();
-        assert!(err.contains("2048"), "unexpected message: {err}");
-    }
-
-    #[tokio::test]
-    async fn logo_asset_is_static_svg() {
-        let asset = LogoAsset::default();
-        let response = asset.response();
-        let (parts, body) = response.into_parts();
-
-        let content_type = parts
-            .headers
-            .get(header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .expect("content-type header");
-        assert_eq!(content_type, "image/svg+xml");
-
-        let body = to_bytes(body, usize::MAX).await.expect("body bytes");
-        assert_eq!(body.as_ref(), asset.bytes.as_ref());
-    }
-
-    #[cfg(feature = "config")]
-    #[tokio::test]
-    async fn custom_logo_path_is_loaded_and_validated() {
-        use std::fs;
-        use tempfile::tempdir;
-
-        let dir = tempdir().expect("tempdir");
-        let logo_path = dir.path().join("logo.svg");
-        fs::write(
-            &logo_path,
-            r#"<svg xmlns="http://www.w3.org/2000/svg"><text>OK</text></svg>"#,
-        )
-        .expect("write logo");
-
-        let asset =
-            LogoAsset::from_optional_path(logo_path.to_str()).expect("logo from config path");
-        let response = asset.response();
-        let (_, body) = response.into_parts();
-        let body = to_bytes(body, usize::MAX).await.expect("body bytes");
-        assert_eq!(body.as_ref(), asset.bytes.as_ref());
-    }
-
-    #[cfg(feature = "config")]
-    #[test]
-    fn custom_logo_rejects_script() {
-        use std::fs;
-        use tempfile::tempdir;
-
-        let dir = tempdir().expect("tempdir");
-        let logo_path = dir.path().join("logo.svg");
-        fs::write(
-            &logo_path,
-            r#"<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>"#,
-        )
-        .expect("write logo");
-
-        let err = LogoAsset::from_optional_path(logo_path.to_str());
-        assert!(matches!(err, Err(DescribeError::Config(msg)) if msg.contains("script")));
-    }
-}
+mod tests;
