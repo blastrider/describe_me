@@ -188,39 +188,52 @@ fn handle_history_command(cmd: HistoryCommand) -> Result<()> {
         }
     };
 
-    print_history_series(&series, rounding);
+    print_history_series(&series);
     Ok(())
 }
 
-fn print_history_series(series: &describe_me::HistorySeries, rounding: u64) {
+fn print_history_series(series: &describe_me::HistorySeries) {
     println!(
-        "Serveur: {}\nFenêtre: {}s | Points: {} | Précision: {}s | Tronqué: {}",
+        "Serveur: {}\nFenêtre: {}s | Points: {} | Bucket: {}s | Agrégé: {} | Tronqué: {}",
         series.server_id,
         series.window_seconds,
         series.points.len(),
-        rounding,
+        series.bucket_seconds,
+        if series.aggregated { "oui" } else { "non" },
         if series.truncated { "oui" } else { "non" }
     );
     println!(
-        "{:>20}  {:>6}  {:>6}  {:>6}",
-        "timestamp", "cpu%", "mem%", "disk%"
+        "{:>20}  {:>18}  {:>18}  {:>18}",
+        "timestamp", "cpu avg/min/max", "mem avg/min/max", "disk avg/min/max"
     );
     for point in &series.points {
         println!(
-            "{:>20}  {:>6}  {:>6}  {:>6}",
+            "{:>20}  {:>18}  {:>18}  {:>18}",
             point.timestamp,
-            format_pct(point.cpu_pct),
-            format_pct(point.mem_pct),
-            format_pct(point.disk_pct),
+            format_metric(&point.cpu),
+            format_metric(&point.mem),
+            format_metric(&point.disk),
         );
     }
 }
 
-fn format_pct(value: Option<f32>) -> String {
-    match value {
-        Some(v) => format!("{v:>5.1}"),
-        None => String::from("  -- "),
+fn format_metric(metric: &describe_me::MetricAggregate) -> String {
+    match metric.avg {
+        Some(avg) => {
+            let min = metric.min.unwrap_or(avg);
+            let max = metric.max.unwrap_or(avg);
+            if approx_equal(min, avg) && approx_equal(max, avg) {
+                format!("{avg:>6.1}%")
+            } else {
+                format!("{avg:>5.1}% ({min:>4.1}-{max:>4.1})")
+            }
+        }
+        None => String::from("    --"),
     }
+}
+
+fn approx_equal(a: f32, b: f32) -> bool {
+    (a - b).abs() < 0.05
 }
 
 fn run_plugin(cmd: PluginRunCommand) -> Result<()> {
