@@ -210,19 +210,28 @@ struct HistoryRequestQuery {
 }
 
 #[derive(Serialize)]
+struct HistoryMetricResponse {
+    avg: Option<f32>,
+    min: Option<f32>,
+    max: Option<f32>,
+}
+
+#[derive(Serialize)]
 struct HistoryPointResponse {
     ts: u64,
-    cpu: Option<f32>,
-    mem: Option<f32>,
-    disk: Option<f32>,
+    span_seconds: u64,
+    cpu: HistoryMetricResponse,
+    mem: HistoryMetricResponse,
+    disk: HistoryMetricResponse,
 }
 
 #[derive(Serialize)]
 struct HistoryResponse {
     server_id: String,
     window_seconds: u64,
-    precision_seconds: u64,
+    bucket_seconds: u64,
     truncated: bool,
+    aggregated: bool,
     points: Vec<HistoryPointResponse>,
 }
 
@@ -1038,9 +1047,10 @@ async fn history_series(
         .into_iter()
         .map(|point| HistoryPointResponse {
             ts: point.timestamp,
-            cpu: point.cpu_pct,
-            mem: point.mem_pct,
-            disk: if allow_disk { point.disk_pct } else { None },
+            span_seconds: point.span_seconds,
+            cpu: to_metric_response(&point.cpu, true),
+            mem: to_metric_response(&point.mem, true),
+            disk: to_metric_response(&point.disk, allow_disk),
         })
         .collect::<Vec<_>>();
 
@@ -1057,8 +1067,9 @@ async fn history_series(
     let payload = HistoryResponse {
         server_id: series.server_id,
         window_seconds: series.window_seconds,
-        precision_seconds: rounding,
+        bucket_seconds: series.bucket_seconds,
         truncated: series.truncated,
+        aggregated: series.aggregated,
         points,
     };
 
@@ -1067,6 +1078,22 @@ async fn history_series(
         set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
     }
     response
+}
+
+fn to_metric_response(metric: &history::MetricAggregate, allow: bool) -> HistoryMetricResponse {
+    if allow {
+        HistoryMetricResponse {
+            avg: metric.avg,
+            min: metric.min,
+            max: metric.max,
+        }
+    } else {
+        HistoryMetricResponse {
+            avg: None,
+            min: None,
+            max: None,
+        }
+    }
 }
 
 fn map_io(e: impl std::error::Error + Send + Sync + 'static) -> DescribeError {
