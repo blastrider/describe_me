@@ -1,5 +1,9 @@
 ## Unreleased
 
+- Ajoutez vos changements ici.
+
+## v0.2.0 - 2025-11-19
+
 - Ajout d'un SDK `describe_me_plugin_sdk` (trait `Plugin`, macro `describe_me_plugin_main!`) pour écrire des collecteurs externes sérialisant un `PluginOutput` déterministe.
 - Nouvelle commande `describe-me plugin run --name <plugin> [--arg ...] [--timeout <s>]` qui résout automatiquement `/usr/lib/describe_me/plugins/describe-me-plugin-<nom>`, épingle les binaires par SHA-256, gère les erreurs (exit code, timeout, JSON invalide) et affiche la sortie formatée.
 - Intégration « extensions » : configuration `[extensions.plugins]`, exécution automatique lors des snapshots, données namespacées sous `extensions.<plugin>` (CLI, JSON, web) avec exposition contrôlée par `expose_extensions`.
