@@ -10,6 +10,10 @@
 - UI web : carte « Extensions » listant les collecteurs configurés, mise à jour SSE et sérialisation côté API.
 - Fourniture d'un exemple de plugin dans `plugin-examples/certificates`.
 - La cible `make` construit désormais automatiquement les plugins déclarés (ex: certificats) et les artefacts sont intégrés au paquet Debian/Vagrant (copie dans `/usr/bin` + configuration extensions).
+- Ajout d'un module « history » persistant : enregistrement des snapshots dans une base redb, identifiant serveur stable, agrégation bucketisée et nouveaux profils/préréglages (`HistoryProfile`, `[history]` + overrides CLI).
+- Nouvelle sous-commande `describe-me history …` et exposition HTTP (`/api/history`) pour interroger les métriques agrégées, également imprimables depuis la CLI.
+- UI web : carte « Tendances » affichant les séries historiques (sparklines, moyennes), branchée sur l'API history/SSE et respectant le niveau d'exposition configuré.
+- Build & packaging Debian : cible `make deb-bookworm`, helper containerisé, paramétrage des features deb/vagrant et exécution des builds en mode utilisateur pour livrer les nouvelles dépendances history.
 
 ## v0.1.3 - 2025-11-14
 
