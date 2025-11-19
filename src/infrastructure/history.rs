@@ -1,13 +1,16 @@
 use crate::domain::DescribeError;
 use crate::infrastructure::storage::metadata_db_path;
+use fastrand;
 use redb::{Database, ReadableTable, TableDefinition, TableError};
 use std::collections::HashMap;
 use std::fs;
+use std::io;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
 const HISTORY_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("history_samples");
 const HISTORY_DB_FILE: &str = "history.redb";
+const SERVER_ID_FILE: &str = "history.identity";
 const ENCODING_VERSION: u8 = 1;
 const NO_VALUE: u16 = u16::MAX;
 
@@ -286,6 +289,36 @@ fn history_db_path() -> PathBuf {
         Some(dir) => dir.join(HISTORY_DB_FILE),
         None => metadata_path.with_file_name(HISTORY_DB_FILE),
     }
+}
+
+pub(crate) fn history_identity_path() -> PathBuf {
+    let metadata_path = metadata_db_path();
+    match metadata_path.parent() {
+        Some(dir) => dir.join(SERVER_ID_FILE),
+        None => metadata_path.with_file_name(SERVER_ID_FILE),
+    }
+}
+
+pub(crate) fn load_or_create_identity() -> Result<String, DescribeError> {
+    let path = history_identity_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(map_io_err)?;
+    }
+    if let Ok(existing) = fs::read_to_string(&path) {
+        let trimmed = existing.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_owned());
+        }
+    }
+    let mut bytes = [0u8; 16];
+    fastrand::fill(&mut bytes);
+    let id = hex::encode(bytes);
+    fs::write(&path, &id).map_err(map_io_err)?;
+    Ok(id)
+}
+
+fn map_io_err(err: io::Error) -> DescribeError {
+    DescribeError::System(format!("history identity error: {err}"))
 }
 
 #[cfg(test)]
