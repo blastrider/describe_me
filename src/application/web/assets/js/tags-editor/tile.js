@@ -1,121 +1,27 @@
 /*
- * tags-editor.js
+ * tags-editor/tile.js
  *
- * Module autonome pour gérer les tuiles description/tags côté client.
- *
- * Exemple HTML minimal :
- * <section class="card tile"
- *          data-tags-editor
- *          data-server-id="default"
- *          data-description-endpoint="/api/description"
- *          data-tags-endpoint="/api/tags">
- *   <div class="tile-header">
- *     <button type="button" class="link-button small edit">Modifier</button>
- *     <button type="button" class="primary-button small save" hidden>Enregistrer</button>
- *     <button type="button" class="link-button small cancel" hidden>Annuler</button>
- *   </div>
- *   <div class="desc">
- *     <p class="desc-view" data-role="desc-view"></p>
- *     <p class="desc-empty" data-role="desc-empty">Aucune description.</p>
- *     <textarea class="desc-input" data-role="desc-input" hidden></textarea>
- *     <p class="form-hint desc-hint" data-role="desc-hint"></p>
- *   </div>
- *   <div class="tags">
- *     <div class="tags-list" data-role="tag-list"></div>
- *     <p class="tags-empty" data-role="tag-empty">Aucun tag.</p>
- *     <form class="tag-editor" data-role="tag-editor" hidden>
- *       <input type="text" class="tag-input" data-role="tag-input" />
- *       <div class="tags-actions">
- *         <button type="submit" class="primary-button small">Ajouter</button>
- *         <button type="button" class="link-button small" data-role="tag-clear">Tout effacer</button>
- *       </div>
- *     </form>
- *     <p class="form-hint tag-hint" data-role="tag-hint"></p>
- *   </div>
- * </section>
- *
- * Tests API rapides :
- * curl -sS -X POST http://127.0.0.1:8080/api/tags?server=default \
- *      -H 'Content-Type: application/json' \
- *      -d '{"tags":["ubuntu","ftp"],"op":"set"}'
- *
- * curl -sS -X POST http://127.0.0.1:8080/api/description?server=default \
- *      -H 'Content-Type: application/json' \
- *      -d '{"text":"Serveur FTP staging"}'
+ * Implémente la logique d'édition (description + tags) pour une tuile donnée.
  */
-
 (function (global) {
-  const DESCRIPTION_MAX_CHARS = 2048;
-  const TAGS_MAX = 64;
-  const TAG_LENGTH_LIMIT = 48;
-const DEFAULT_DESC_ENDPOINT = "/api/description";
-const DEFAULT_TAG_ENDPOINT = "/api/tags";
-const TAG_OP_SET = "set";
-
-  function sanitizeDescription(value) {
-    return String(value ?? "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const tags = (global.DescribeMe && global.DescribeMe.tags) || null;
+  if (!tags) {
+    return;
   }
-
-  function arraysEqual(a, b) {
-    if (a.length !== b.length) {
-      return false;
-    }
-    for (let i = 0; i < a.length; i += 1) {
-      if (a[i] !== b[i]) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  function dedupeTags(list) {
-    const seen = new Set();
-    const out = [];
-    list.forEach((tag) => {
-      if (!seen.has(tag)) {
-        seen.add(tag);
-        out.push(tag);
-      }
-    });
-    return out;
-  }
-
-  function parseInputTags(raw) {
-    return String(raw || "")
-      .split(/[,\s]+/)
-      .map((token) => token.trim())
-      .filter((token) => token.length > 0);
-  }
-
-  function appendServerParam(url, serverId) {
-    if (!serverId) {
-      return url;
-    }
-    try {
-      const absolute = new URL(url, window.location.origin);
-      absolute.searchParams.set("server", serverId);
-      return absolute.toString();
-    } catch (_) {
-      const separator = url.includes("?") ? "&" : "?";
-      return `${url}${separator}server=${encodeURIComponent(serverId)}`;
-    }
-  }
-
-  async function readJsonMessage(response) {
-    try {
-      const text = await response.text();
-      if (!text) {
-        return "";
-      }
-      const data = JSON.parse(text);
-      if (data && typeof data.error === "string") {
-        return data.error;
-      }
-      return text;
-    } catch (_) {
-      return "";
-    }
-  }
+  const {
+    DESCRIPTION_MAX_CHARS,
+    TAGS_MAX,
+    TAG_LENGTH_LIMIT,
+    DEFAULT_DESC_ENDPOINT,
+    DEFAULT_TAG_ENDPOINT,
+    TAG_OP_SET,
+    sanitizeDescription,
+    arraysEqual,
+    dedupeTags,
+    parseInputTags,
+    appendServerParam,
+    readJsonMessage,
+  } = tags;
 
   class TagsEditorTile {
     constructor(root, options = {}) {
@@ -125,9 +31,7 @@ const TAG_OP_SET = "set";
         options.descriptionEndpoint ||
         DEFAULT_DESC_ENDPOINT;
       this.tagsEndpoint =
-        root.dataset.tagsEndpoint ||
-        options.tagsEndpoint ||
-        DEFAULT_TAG_ENDPOINT;
+        root.dataset.tagsEndpoint || options.tagsEndpoint || DEFAULT_TAG_ENDPOINT;
       this.serverId = (root.dataset.serverId || options.serverId || "").trim();
 
       this.descView = root.querySelector("[data-role='desc-view']");
@@ -163,7 +67,9 @@ const TAG_OP_SET = "set";
         this.editButton.addEventListener("click", () => this.enterEditMode());
       }
       if (this.cancelButton) {
-        this.cancelButton.addEventListener("click", () => this.exitEditMode(true));
+        this.cancelButton.addEventListener("click", () =>
+          this.exitEditMode(true)
+        );
       }
       if (this.saveButton) {
         this.saveButton.addEventListener("click", () => this.saveDescription());
@@ -300,14 +206,14 @@ const TAG_OP_SET = "set";
       while (this.tagList.firstChild) {
         this.tagList.removeChild(this.tagList.firstChild);
       }
-      const tags = Array.isArray(list) ? list : [];
-      if (tags.length === 0) {
+      const tagsList = Array.isArray(list) ? list : [];
+      if (tagsList.length === 0) {
         this.tagEmpty.hidden = false;
         return;
       }
       this.tagEmpty.hidden = true;
       const fragment = document.createDocumentFragment();
-      tags.forEach((tag) => {
+      tagsList.forEach((tag) => {
         const value = typeof tag === "string" ? tag : "";
         if (!value) {
           return;
@@ -388,7 +294,9 @@ const TAG_OP_SET = "set";
         if (response.status === 401) {
           const message = await readJsonMessage(response);
           if (typeof showTokenPrompt === "function") {
-            showTokenPrompt(message || "Jeton requis pour modifier la description.");
+            showTokenPrompt(
+              message || "Jeton requis pour modifier la description."
+            );
           }
           return;
         }
@@ -430,10 +338,7 @@ const TAG_OP_SET = "set";
       if (!this.isEditing) {
         this.enterEditMode();
       }
-      if (this.isSavingTags) {
-        return;
-      }
-      if (!this.tagInput) {
+      if (this.isSavingTags || !this.tagInput) {
         return;
       }
       const tokens = parseInputTags(this.tagInput.value).map((token) => token);
@@ -491,9 +396,7 @@ const TAG_OP_SET = "set";
       if (tags.length > TAGS_MAX) {
         return `La liste ne peut pas dépasser ${TAGS_MAX} tags.`;
       }
-      if (
-        tags.some((tag) => tag.length === 0 || tag.length > TAG_LENGTH_LIMIT)
-      ) {
+      if (tags.some((tag) => tag.length === 0 || tag.length > TAG_LENGTH_LIMIT)) {
         return `Chaque tag doit contenir entre 1 et ${TAG_LENGTH_LIMIT} caractères.`;
       }
       return null;
@@ -516,9 +419,9 @@ const TAG_OP_SET = "set";
 
     async persistTags(nextTags) {
       const normalized = dedupeTags(
-        nextTags.map((tag) => (typeof tag === "string" ? tag.trim() : "")).filter(
-          (tag) => tag.length > 0
-        )
+        nextTags
+          .map((tag) => (typeof tag === "string" ? tag.trim() : ""))
+          .filter((tag) => tag.length > 0)
       );
       const validationError = this.validateTagsCollection(normalized);
       if (validationError) {
@@ -549,7 +452,9 @@ const TAG_OP_SET = "set";
         if (response.status === 401) {
           const message = await readJsonMessage(response);
           if (typeof showTokenPrompt === "function") {
-            showTokenPrompt(message || "Jeton requis pour modifier les tags.");
+            showTokenPrompt(
+              message || "Jeton requis pour modifier les tags."
+            );
           }
           return;
         }
@@ -590,20 +495,5 @@ const TAG_OP_SET = "set";
     }
   }
 
-  class TagsEditorManager {
-    constructor({ selector = "[data-tags-editor]" } = {}) {
-      this.tiles = Array.from(document.querySelectorAll(selector)).map(
-        (node) => new TagsEditorTile(node)
-      );
-    }
-
-    applySnapshot(payload) {
-      const description =
-        typeof payload.description === "string" ? payload.description : "";
-      const tags = Array.isArray(payload.tags) ? payload.tags : [];
-      this.tiles.forEach((tile) => tile.applySnapshot({ description, tags }));
-    }
-  }
-
-  global.TagsEditorManager = TagsEditorManager;
+  tags.TagsEditorTile = TagsEditorTile;
 })(window);

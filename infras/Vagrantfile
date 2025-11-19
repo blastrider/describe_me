@@ -124,7 +124,7 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
         BUILD_IN_GUEST_INPUT="#{ENV['BUILD_IN_GUEST'] || ''}"
         BUILD_DEB_IN_GUEST_INPUT="#{ENV['BUILD_DEB_IN_GUEST'] || 'auto'}"
         WORKSPACE="/workspace"
-        BUILD_FEATURES="cli web config systemd net"
+        BUILD_FEATURES="cli web config systemd net journald"
         TARGET_DIR="/opt/target"
         PORT=8443
         BIND_ADDR="0.0.0.0:${PORT}"
@@ -234,6 +234,14 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
             return
           fi
           echo "[deb] installation du paquet fourni impossible; tentative de build dans la VM"
+          if dpkg -s "${BINARY}" >/dev/null 2>&1; then
+            echo "[deb] nettoyage du paquet ${BINARY} partiellement installé"
+            dpkg -r "${BINARY}" >/dev/null 2>&1 || true
+            dpkg -P "${BINARY}" >/dev/null 2>&1 || true
+            if command -v apt-get >/dev/null 2>&1; then
+              apt-get install -f -y || true
+            fi
+          fi
           local guest_pkg=""
           guest_pkg=$(build_deb_in_guest || true)
           if [ -n "${guest_pkg}" ] && dpkg -i "${guest_pkg}"; then

@@ -146,13 +146,13 @@
     lastFetch = Date.now();
     showCard(true);
     const cpuValues = payload.points.map((point) =>
-      sanitizePercent(point && point.cpu),
+      sanitizePercent(metricAverage(point && point.cpu)),
     );
     const memValues = payload.points.map((point) =>
-      sanitizePercent(point && point.mem),
+      sanitizePercent(metricAverage(point && point.mem)),
     );
     const diskValues = payload.points.map((point) =>
-      sanitizePercent(point && point.disk),
+      sanitizePercent(metricAverage(point && point.disk)),
     );
     drawSparkline(canvases.cpu, cpuValues, COLORS.cpu);
     drawSparkline(canvases.mem, memValues, COLORS.mem);
@@ -161,9 +161,9 @@
 
     const lastPoint = payload.points[payload.points.length - 1];
     if (lastPoint) {
-      updateMetricValue("cpu", sanitizePercent(lastPoint.cpu));
-      updateMetricValue("mem", sanitizePercent(lastPoint.mem));
-      updateMetricValue("disk", sanitizePercent(lastPoint.disk));
+      updateMetricValue("cpu", sanitizePercent(metricAverage(lastPoint.cpu)));
+      updateMetricValue("mem", sanitizePercent(metricAverage(lastPoint.mem)));
+      updateMetricValue("disk", sanitizePercent(metricAverage(lastPoint.disk)));
     }
   }
 
@@ -251,6 +251,13 @@
       }
     });
     ctx.stroke();
+  }
+
+  function metricAverage(metric) {
+    if (!metric || typeof metric.avg !== "number" || !Number.isFinite(metric.avg)) {
+      return undefined;
+    }
+    return metric.avg;
   }
 
   function sanitizePercent(value) {

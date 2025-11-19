@@ -454,7 +454,7 @@ async fn build_failure_rejection(
             request.route,
         )
         .await;
-    if let Some(delay) = failure.retry_after {
+    if let Some(delay) = failure.retry_after() {
         LogEvent::SecurityIncident {
             category: Cow::Borrowed("auth_failure_backoff"),
             route: Cow::Borrowed(request.route.as_str()),

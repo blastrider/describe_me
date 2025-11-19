@@ -29,7 +29,7 @@ pub use application::disk_usage;
 pub use application::history::{
     configure_history, default_server_id as history_default_server_id,
     query_series as history_query_series, settings_snapshot as history_settings_snapshot,
-    HistoryMode, HistoryPoint, HistoryQueryError, HistorySeries, HistorySettings,
+    HistoryMode, HistoryPoint, HistoryQueryError, HistorySeries, HistorySettings, MetricAggregate,
 };
 
 #[cfg(feature = "config")]

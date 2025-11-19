@@ -3,6 +3,9 @@
 CARGO ?= cargo
 FEATURES ?= --all-features
 MSRV ?= 1.90.0
+DEB_FEATURES ?= cli web config systemd net journald
+DEB_FEATURE_ARGS ?= --features "$(DEB_FEATURES)"
+DEB_USE_CONTAINER ?= 1
 
 RELEASE_SIGN_TAG ?= 0
 RELEASE_HELPER ?= cargo run --quiet --manifest-path scripts/release-helper/Cargo.toml --
@@ -16,12 +19,16 @@ endif
 all: deb
 
 PLUGIN_MANIFESTS := plugin-examples/certificates/Cargo.toml
+PLUGIN_TARGET_DIR := $(abspath target)
+ifdef CARGO_TARGET_DIR
+PLUGIN_TARGET_DIR := $(CARGO_TARGET_DIR)
+endif
 
 build-plugins:
 	@if [ -n "$(strip $(PLUGIN_MANIFESTS))" ]; then \
 		for manifest in $(PLUGIN_MANIFESTS); do \
 			echo "[plugin] building $$manifest"; \
-			$(CARGO) build --release --manifest-path $$manifest; \
+			CARGO_TARGET_DIR="$(PLUGIN_TARGET_DIR)" $(CARGO) build --release --manifest-path $$manifest; \
 		done; \
 	else \
 		echo "[plugin] no plugin manifests configured"; \
@@ -92,14 +99,20 @@ tools:
 		fi; \
 	done
 
+ifeq ($(DEB_USE_CONTAINER),1)
+deb:
+	DEB_FEATURES="$(DEB_FEATURES)" ./scripts/deb-bookworm-build.sh
+else
 deb: build-plugins
 	@if ! command -v cargo-deb >/dev/null 2>&1; then \
 		cargo install cargo-deb --locked; \
 	fi
-	cargo deb
+	$(CARGO) build --release $(DEB_FEATURE_ARGS)
+	$(CARGO) deb $(DEB_FEATURE_ARGS) --no-build
+endif
 
 deb-bookworm:
-	./scripts/deb-bookworm-build.sh
+	DEB_FEATURES="$(DEB_FEATURES)" ./scripts/deb-bookworm-build.sh
 
 release-patch:
 	$(RELEASE_HELPER) patch $(RELEASE_SIGN_FLAG)
