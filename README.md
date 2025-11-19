@@ -63,16 +63,27 @@ timeout_secs = 10
 ## Paquet Debian
 
 ```bash
-make                    # installe cargo-deb si nécessaire et construit le binaire
+make                    # lance un conteneur debian:12 et construit le .deb à l'intérieur
 ls target/debian/*.deb  # ex: target/debian/describe-me_0.1.0_amd64.deb
 sudo dpkg -i target/debian/describe-me_0.1.0_amd64.deb
 ```
 
-Si votre machine hôte utilise une glibc plus récente (Ubuntu 24.04+, etc.) et que vous devez produire un paquet compatible Debian 12 (glibc 2.36), utilisez le helper conteneurisé :
+Ce `make deb` invoque `scripts/deb-bookworm-build.sh`, qui:
+
+- Demande automatiquement `docker` ou `podman` (au choix) et démarre une image `debian:12` en rootless en récréant votre UID/GID dans le conteneur pour que `target/` reste éditable sans `sudo`.
+- Installe rustup + `cargo-deb`, compile `describe-me` et les plugins configurés, puis exécute `cargo deb --no-build` avec les features `cli web config systemd net journald`.  
+- Dépose les artefacts construits sous `target/debian/` côté hôte (prêt pour `dpkg -i` ou pour la VM Vagrant Debian).
+
+Si vous avez besoin d’un build strictement local (ex. dans un environnement air-gapped sans Docker), forcez le mode hôte :
 
 ```bash
-make deb-bookworm       # lance un conteneur debian:12 et construit le .deb à l'intérieur
-ls target/debian/*.deb  # artefact prêt pour un dpkg -i dans la VM Debian 12
+DEB_USE_CONTAINER=0 make deb   # installe cargo-deb et construit directement sur la machine courante
+```
+
+Et pour toutes les variantes, le helper reste accessible directement :
+
+```bash
+./scripts/deb-bookworm-build.sh     # même logique que make deb, pratique pour du scripting
 ```
 
 Le paquet embarque l’unité systemd durcie fournie dans `packaging/systemd/describe-me.service` et gère automatiquement le rechargement/preset du service lors de l’installation.
