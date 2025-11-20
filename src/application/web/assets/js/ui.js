@@ -49,6 +49,105 @@ function extensionEntries(payload) {
   return [formatExtensionValue(payload)];
 }
 
+function basename(path) {
+  if (typeof path !== "string") return "";
+  const idx = path.lastIndexOf("/");
+  return idx === -1 ? path : path.slice(idx + 1);
+}
+
+function formatExpiryLine(entry) {
+  const path = entry.path || "certificat";
+  const shortName = basename(path) || path;
+  const status = typeof entry.status === "string" ? entry.status : "ok";
+  const until = typeof entry.not_after === "string" ? entry.not_after : "";
+  const days = Number(entry.days_until_expiry);
+
+  if (status !== "ok") {
+    return `${shortName}: ${status}`;
+  }
+
+  if (Number.isFinite(days)) {
+    if (days >= 0) {
+      return `${shortName}: expire dans ${days}j${until ? ` (${until})` : ""}`;
+    }
+    return `${shortName}: expiré depuis ${Math.abs(days)}j${until ? ` (${until})` : ""}`;
+  }
+
+  if (until) {
+    return `${shortName}: valide jusqu'au ${until}`;
+  }
+
+  return `${shortName}: statut inconnu`;
+}
+
+function renderCertificatesPlugin(rawPayload) {
+  const payload =
+    rawPayload &&
+    typeof rawPayload === "object" &&
+    !Array.isArray(rawPayload) &&
+    rawPayload.values &&
+    typeof rawPayload.values === "object" &&
+    !Array.isArray(rawPayload.values)
+      ? rawPayload.values
+      : rawPayload;
+
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return null;
+  }
+
+  const nodes = [];
+  const stats = [];
+  const found = num(payload.certificates_found);
+  if (Number.isFinite(found) && found >= 0) {
+    stats.push(`${found} certificat(s) analysé(s)`);
+  }
+  const pem = num(payload.pem_files);
+  if (Number.isFinite(pem) && pem >= 0) {
+    stats.push(`${pem} fichier(s) PEM`);
+  }
+  if (stats.length) {
+    nodes.push(createEl('div', 'service-meta', stats.join(' • ')));
+  }
+
+  if (Array.isArray(payload.directories) && payload.directories.length) {
+    const dirs = payload.directories
+      .map((d) => String(d))
+      .filter((d) => d.trim() !== "")
+      .slice(0, 3)
+      .join(", ");
+    if (dirs) {
+      nodes.push(createEl('div', 'service-meta', `Dossiers: ${dirs}`));
+    }
+  }
+
+  const certificates = Array.isArray(payload.certificates)
+    ? payload.certificates.filter(
+        (entry) => entry && typeof entry === "object" && !Array.isArray(entry)
+      )
+    : [];
+  const describeCerts = certificates.filter(
+    (entry) =>
+      typeof entry.path === "string" &&
+      entry.path.includes("/etc/describe_me/certs")
+  );
+  const selected = describeCerts.length > 0 ? describeCerts : certificates;
+
+  selected
+    .sort((a, b) => {
+      const ad = Number(a.days_until_expiry);
+      const bd = Number(b.days_until_expiry);
+      if (Number.isFinite(ad) && Number.isFinite(bd)) return ad - bd;
+      if (Number.isFinite(ad)) return -1;
+      if (Number.isFinite(bd)) return 1;
+      return 0;
+    })
+    .slice(0, 4)
+    .map(formatExpiryLine)
+    .forEach((line) => nodes.push(createEl('div', 'service-meta', line)));
+
+  return nodes.length ? nodes : null;
+}
+
 function updateUI(data) {
   err.textContent = "";
 
@@ -254,8 +353,15 @@ function updateUI(data) {
             row.appendChild(createEl('span', 'dot service-dot ok'));
             const details = document.createElement('div');
             details.appendChild(createEl('div', 'service-name', pluginName));
-            const values = extensionEntries(payload);
-            details.appendChild(createEl('div', 'service-meta', values.join(' • ')));
+            const custom = pluginName === 'certificates-demo'
+              ? renderCertificatesPlugin(payload)
+              : null;
+            if (custom && custom.length) {
+              custom.forEach((node) => details.appendChild(node));
+            } else {
+              const values = extensionEntries(payload);
+              details.appendChild(createEl('div', 'service-meta', values.join(' • ')));
+            }
             row.appendChild(details);
             fragment.appendChild(row);
           });
