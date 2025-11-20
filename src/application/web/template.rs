@@ -25,6 +25,29 @@ const INDEX_CSS: &str = concat!(
     "\n",
     include_str!("templates/styles/light-theme.css"),
 );
+const AUTH_REQUIRED_TEMPLATE: &str = r#"<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>describe_me — Authentification requise</title>
+  <style nonce="__CSP_NONCE__">
+__INLINE_CSS__
+  </style>
+</head>
+<body>
+  <div class="token-overlay visible">
+    <div class="token-dialog">
+      <h2>Authentification requise</h2>
+      <p>__MESSAGE__</p>
+      <p>Présentez un jeton via l'en-tête <code>Authorization</code> (Bearer) ou rechargez cette page avec un jeton valide.</p>
+    </div>
+  </div>
+</body>
+</html>
+"#;
 const UPDATES_HTML_TEMPLATE: &str = include_str!("templates/updates.html");
 const UPDATES_CSS: &str = include_str!("templates/updates.css");
 
@@ -59,6 +82,17 @@ where
 
     out.push_str(remaining);
     out
+}
+
+pub(super) fn render_auth_required(message: &str, csp_nonce: &str) -> String {
+    let escaped_msg = escape_html(message);
+    let extra_capacity = INDEX_CSS.len() + escaped_msg.len() + csp_nonce.len();
+    fill_template(AUTH_REQUIRED_TEMPLATE, extra_capacity, |key| match key {
+        "INLINE_CSS" => Some(INDEX_CSS),
+        "CSP_NONCE" => Some(csp_nonce),
+        "MESSAGE" => Some(escaped_msg.as_str()),
+        _ => None,
+    })
 }
 
 pub(super) fn render_index(web_debug: bool, csp_nonce: &str) -> String {
@@ -321,6 +355,15 @@ mod tests {
         assert!(html.contains("Attention"));
         assert!(!html.contains("__SUMMARY__"));
         assert!(!html.contains("__INLINE_CSS__"));
+    }
+
+    #[test]
+    fn render_auth_required_includes_nonce_and_message() {
+        let html = render_auth_required("authentification requise", "nonce-123");
+        assert!(html.contains("nonce=\"nonce-123\""));
+        assert!(html.contains("authentification requise"));
+        assert!(!html.contains("__INLINE_CSS__"));
+        assert!(!html.contains("__MESSAGE__"));
     }
 
     #[test]
