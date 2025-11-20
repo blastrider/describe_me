@@ -4,7 +4,10 @@
 
 ## v0.2.1 - 2025-11-20
 
-- Ajoutez vos changements ici.
+- Plugin exemple « certificates-demo » : parcourt des répertoires de PEM (override via `--probe` ou `DESCRIBE_ME_CERTS_DIR`), parse les certificats X509, calcule la validité/expiration et renvoie un résumé textuel (`certificates_summary`).
+- UI web (tuile Extensions) : rendu personnalisé pour le plugin certificats, avec compteurs (PEM, certificats analysés), dossiers sondés et mise en avant des expirations les plus proches triées par ordre croissant.
+- Sécurité web : les échecs d’authentification renvoient désormais une page HTML stylée (overlay, CSS inline avec nonce CSP) expliquant comment transmettre un jeton valide au lieu d’un corps brut.
+- Build/infra : ajout de la cible `make vagrant-up-debian` (documentée dans `infras/README.md`) pour lancer rapidement la VM Vagrant Debian depuis la racine du projet.
 
 ## v0.2.0 - 2025-11-19
 
