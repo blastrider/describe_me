@@ -14,7 +14,7 @@ ifneq ($(RELEASE_SIGN_TAG),0)
 RELEASE_SIGN_FLAG := --sign-tag
 endif
 
-.PHONY: all deb fmt fmt-check clippy test test-release doc audit deny bench ci msrv-build tools build-complete sbom supply-chain release-patch release-minor release-major build-plugins
+.PHONY: all deb fmt fmt-check clippy test test-release doc audit deny bench ci msrv-build tools build-complete sbom supply-chain release-patch release-minor release-major build-plugins vagrant-up-debian
 
 all: deb
 
@@ -122,3 +122,6 @@ release-minor:
 
 release-major:
 	$(RELEASE_HELPER) major $(RELEASE_SIGN_FLAG)
+
+vagrant-up-debian:
+	cd infras && vagrant up debian
