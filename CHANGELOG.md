@@ -2,6 +2,10 @@
 
 - Ajoutez vos changements ici.
 
+## v0.2.1 - 2025-11-20
+
+- Ajoutez vos changements ici.
+
 ## v0.2.0 - 2025-11-19
 
 - Ajout d'un SDK `describe_me_plugin_sdk` (trait `Plugin`, macro `describe_me_plugin_main!`) pour écrire des collecteurs externes sérialisant un `PluginOutput` déterministe.
