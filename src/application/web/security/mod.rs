@@ -5,13 +5,12 @@ mod sse;
 
 pub(crate) use limits::GlobalPermit;
 
-use super::clear_session_cookie;
+use super::{clear_session_cookie, template, AppState, CspNonce, WebAccess};
 use auth::{build_request, verify_token, AuthRequest, TokenVerifier};
 use limits::{enforce_rate_limits, ensure_not_blocked, SecurityPolicy, SecurityState};
 use session::SessionManager;
 use sse::acquire_permit;
 
-use super::{AppState, WebAccess};
 use crate::application::logging::LogEvent;
 use crate::domain::DescribeError;
 #[cfg(feature = "config")]
@@ -19,8 +18,8 @@ use crate::domain::WebSecurityConfig;
 use axum::{
     async_trait,
     extract::FromRequestParts,
-    http::{header::HeaderValue, request::Parts, StatusCode},
-    response::{IntoResponse, Response},
+    http::{header, header::HeaderValue, request::Parts, StatusCode},
+    response::{Html, IntoResponse, Response},
 };
 pub(crate) use sse::SsePermit;
 use std::{
@@ -92,7 +91,21 @@ impl FromRequestParts<AppState> for AuthGuard {
         let route = WebRoute::from_path(parts.uri.path());
         match state.security.authorize(parts, route).await {
             Ok(session) => Ok(AuthGuard { session }),
-            Err(rejection) => Err(rejection.into_response(state.session_cookie_secure)),
+            Err(rejection) => {
+                let wants_styled_html =
+                    route == WebRoute::Html && rejection.is_auth_failure() && accepts_html(parts);
+                let html_body = if wants_styled_html {
+                    let nonce = parts
+                        .extensions
+                        .get::<CspNonce>()
+                        .map(|value| value.as_str())
+                        .unwrap_or_default();
+                    Some(template::render_auth_required(rejection.body, nonce))
+                } else {
+                    None
+                };
+                Err(rejection.into_response(state.session_cookie_secure, html_body))
+            }
         }
     }
 }
@@ -416,8 +429,11 @@ impl SecurityRejection {
         Self::rate_limited(retry)
     }
 
-    fn into_response(self, secure_cookie: bool) -> Response {
-        let mut response = (self.status, self.body).into_response();
+    fn into_response(self, secure_cookie: bool, html_body: Option<String>) -> Response {
+        let mut response = match html_body {
+            Some(html) => (self.status, Html(html)).into_response(),
+            None => (self.status, self.body).into_response(),
+        };
         if let Some(delay) = self.retry_after {
             let jittered = jitter(delay);
             let secs = retry_after_seconds(jittered);
@@ -434,6 +450,19 @@ impl SecurityRejection {
     pub(super) fn is_auth_failure(&self) -> bool {
         self.status == StatusCode::UNAUTHORIZED
     }
+}
+
+fn accepts_html(parts: &Parts) -> bool {
+    parts
+        .headers
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .map(|raw| {
+            raw.contains("text/html")
+                || raw.contains("application/xhtml+xml")
+                || raw.contains("*/*")
+        })
+        .unwrap_or(true)
 }
 
 fn jitter(delay: Duration) -> Duration {
