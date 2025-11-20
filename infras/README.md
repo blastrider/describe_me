@@ -65,6 +65,7 @@ Astuce: quelques cibles Make sont disponibles ici et redirigent vers la racine d
 - `make fmt` — formatage (`cargo fmt`)
 - `make ci` — fmt-check, clippy, tests, doc, audit, deny, bench
 - `make release-complete` — build release toutes features
+- `make vagrant-up-debian` — lance `vagrant up debian` depuis ce répertoire
 
 ## Images utilisées (publiques, overridables)
 
