@@ -17,6 +17,8 @@ inventaire réseau et serveur web SSE.
 | `--check <expr>`            | Health checks (`mem`, `disk`, `service`)                    |
 | `--web[=ADDR:PORT]`         | Lance le serveur SSE intégré (feature `web`)                |
 | `--web-token`, `--web-allow-ip` | Sécurisation du mode web (hash Argon2id/bcrypt + allowlist IP, voir `docs/web-security.md`) |
+| `--services-limit/--services-offset` | Paginer l’affichage CLI des services (sortie human-readable uniquement) |
+| `--sockets-limit/--sockets-offset`   | Paginer l’affichage CLI des sockets (sortie human-readable uniquement) |
 | `--hash-web-token`, `--hash-web-token-stdin` | Helper pour générer une empreinte (Argon2id par défaut) |
 | `--expose-*`, `--no-redacted`, `--expose-all` | Contrôle fin des champs sensibles (hostname, services, partitions, sockets, updates) |
 | `--expose-extensions`, `--web-expose-extensions` | Active l’exposition des résultats des plugins (CLI / mode web) |
@@ -122,3 +124,9 @@ Tous les plugins doivent vivre sous `/usr/lib/describe_me/plugins/`, être épin
 > Consultez [`docs/plugins.md`](./plugins.md) pour un tutoriel complet (SDK, packaging, calcul du hash).
 
 Chaque plugin est exécuté séquentiellement avec un timeout configurable. La sortie JSON est désérialisée dans `PluginOutput` et publiée sous `extensions.<nom>` dans `SnapshotView`, l’API et l’UI web (activer `expose_extensions`/`web_expose_extensions` pour rendre les données visibles). Les erreurs sont loguées (`LogEvent::PluginError`) mais n’interrompent pas la capture principale.
+
+## Pagination CLI (services, sockets)
+
+- `--services-limit/--services-offset` et `--sockets-limit/--sockets-offset` n’agissent que sur l’affichage human-readable (les sorties JSON/SnapshotView restent complètes).
+- `limit` est borné (500 max) et un `offset` trop grand se contente de renvoyer une page vide sans erreur.
+- Les pages sont rappelées en pied de section sous la forme `(page X/Y — entrées A-B sur N)`.

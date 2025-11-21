@@ -135,6 +135,8 @@ function handleSseEvent(rawEvent) {
       showError(parsed.error);
       return;
     }
+    currentSnapshot = parsed;
+    applyFiltersAndRender();
     updateUI(parsed);
   } catch (e) {
     showError("Erreur de parsing JSON: " + (e && e.message ? e.message : e));

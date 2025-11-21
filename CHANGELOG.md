@@ -2,6 +2,10 @@
 
 - Ajoutez vos changements ici.
 
+## v0.2.2 - 2025-11-21
+
+- Ajoutez vos changements ici.
+
 ## v0.2.1 - 2025-11-20
 
 - Plugin exemple « certificates-demo » : parcourt des répertoires de PEM (override via `--probe` ou `DESCRIBE_ME_CERTS_DIR`), parse les certificats X509, calcule la validité/expiration et renvoie un résumé textuel (`certificates_summary`).

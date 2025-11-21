@@ -3,6 +3,21 @@ const tagsEditorManager =
     ? new window.TagsEditorManager()
     : null;
 
+const MAX_PAGE_LIMIT = 500;
+const DEFAULT_PAGE_LIMIT = 20;
+
+let currentSnapshot = null;
+
+const filterState = {
+  services: { query: "", status: "all", tags: [] },
+  sockets: { query: "", tags: [] },
+};
+
+const paginationState = {
+  services: { offset: 0, limit: DEFAULT_PAGE_LIMIT },
+  sockets: { offset: 0, limit: DEFAULT_PAGE_LIMIT },
+};
+
 function getWidthFromBytes(totalBytes, availableBytes) {
   if (typeof widthFromBytes === "function") {
     return widthFromBytes(totalBytes, availableBytes);
@@ -53,6 +68,157 @@ function basename(path) {
   if (typeof path !== "string") return "";
   const idx = path.lastIndexOf("/");
   return idx === -1 ? path : path.slice(idx + 1);
+}
+
+function normalizeText(value) {
+  return typeof value === "string" ? value.toLowerCase() : "";
+}
+
+function matchesQuery(query, fields, tags) {
+  if (!query) return true;
+  const needle = query.toLowerCase();
+  return (
+    fields.some((field) => normalizeText(field).includes(needle)) ||
+    tags.some((tag) => tag.includes(needle))
+  );
+}
+
+function filterServices(list, filters, tags) {
+  if (!Array.isArray(list)) return [];
+  const status = normalizeText(filters?.status || "all");
+  const query = (filters?.query || "").trim().toLowerCase();
+  const selectedTags =
+    Array.isArray(filters?.tags) && filters.tags.length
+      ? filters.tags.map(normalizeText)
+      : [];
+  const tagPool = Array.isArray(tags) ? tags.map(normalizeText) : [];
+
+  const statusMatchers = {
+    running: (state) =>
+      state.includes("running") || state.includes("active") || state.includes("listening"),
+    exited: (state) =>
+      state.includes("exited") || state.includes("dead") || state.includes("inactive"),
+    failed: (state) => state.includes("fail"),
+  };
+
+  return list.filter((svc) => {
+    const state = normalizeText(svc?.state || "");
+
+    if (status !== "all") {
+      const matcher = statusMatchers[status];
+      if (!matcher || !matcher(state)) {
+        return false;
+      }
+    }
+
+    if (selectedTags.length && !selectedTags.every((tag) => tagPool.includes(tag))) {
+      return false;
+    }
+
+    const fields = [
+      svc?.name,
+      svc?.state,
+      svc?.summary,
+    ].filter(Boolean);
+
+    return matchesQuery(query, fields, tagPool);
+  });
+}
+
+function sortServices(list) {
+  if (!Array.isArray(list)) return [];
+  const rank = (state) => {
+    const val = normalizeText(state);
+    if (!val) return 3;
+    if (val.includes("running") || val.includes("active") || val.includes("listening")) {
+      return 0;
+    }
+    if (val.includes("exited") || val.includes("inactive")) {
+      return 1;
+    }
+    if (val.includes("fail")) {
+      return 2;
+    }
+    return 3;
+  };
+  return list
+    .slice()
+    .sort((a, b) => {
+      const rankDiff = rank(a?.state) - rank(b?.state);
+      if (rankDiff !== 0) return rankDiff;
+      const nameA = normalizeText(a?.name || "");
+      const nameB = normalizeText(b?.name || "");
+      if (nameA === nameB) return 0;
+      return nameA < nameB ? -1 : 1;
+    });
+}
+
+function filterSockets(list, filters, tags) {
+  if (!Array.isArray(list)) return [];
+  const query = (filters?.query || "").trim().toLowerCase();
+  const selectedTags =
+    Array.isArray(filters?.tags) && filters.tags.length
+      ? filters.tags.map(normalizeText)
+      : [];
+  const tagPool = Array.isArray(tags) ? tags.map(normalizeText) : [];
+
+  return list.filter((sock) => {
+    if (selectedTags.length && !selectedTags.every((tag) => tagPool.includes(tag))) {
+      return false;
+    }
+    const pid =
+      typeof sock?.process === "number"
+        ? String(sock.process)
+        : typeof sock?.pid === "number"
+          ? String(sock.pid)
+          : null;
+    const fields = [
+      sock?.proto,
+      sock?.addr,
+      sock?.port != null ? String(sock.port) : null,
+      sock?.process_name,
+      pid,
+    ].filter(Boolean);
+
+    return matchesQuery(query, fields, tagPool);
+  });
+}
+
+function sortSockets(list) {
+  if (!Array.isArray(list)) return [];
+  const protoWeight = (proto) => (proto === "udp" ? 1 : 0);
+  return list
+    .slice()
+    .sort((a, b) => {
+      const protoA = normalizeText(a?.proto || "tcp");
+      const protoB = normalizeText(b?.proto || "tcp");
+      const protoDiff = protoWeight(protoA) - protoWeight(protoB);
+      if (protoDiff !== 0) return protoDiff;
+      const portA = Number(a?.port) || 0;
+      const portB = Number(b?.port) || 0;
+      if (portA !== portB) return portA - portB;
+      const addrA = normalizeText(a?.addr || "");
+      const addrB = normalizeText(b?.addr || "");
+      if (addrA === addrB) return 0;
+      return addrA < addrB ? -1 : 1;
+    });
+}
+
+function paginate(list, state, maxLimit) {
+  const items = Array.isArray(list) ? list : [];
+  const total = items.length;
+  const cap = maxLimit && maxLimit > 0 ? maxLimit : Number.MAX_SAFE_INTEGER;
+  const rawLimit = Number(state?.limit) || 0;
+  const desired = rawLimit === 0 ? cap : rawLimit;
+  const limit = Math.min(Math.max(desired, 1), cap);
+  const offset = Math.min(Math.max(Number(state?.offset) || 0, 0), total);
+  const end = Math.min(offset + limit, total);
+  return {
+    items: items.slice(offset, end),
+    total,
+    offset,
+    limit,
+  };
 }
 
 function formatExpiryLine(entry) {
@@ -146,6 +312,413 @@ function renderCertificatesPlugin(rawPayload) {
     .forEach((line) => nodes.push(createEl('div', 'service-meta', line)));
 
   return nodes.length ? nodes : null;
+}
+
+function renderTagFilters(tags, elementId, targetKey) {
+  const container = el(elementId);
+  if (!container) return;
+  clearChildren(container);
+
+  const normalizedTags = Array.isArray(tags)
+    ? Array.from(new Set(tags.map((tag) => String(tag).trim()).filter(Boolean)))
+    : [];
+
+  if (normalizedTags.length === 0) {
+    container.appendChild(createEl('div', 'service-empty', 'Aucun tag'));
+    return;
+  }
+
+  normalizedTags.forEach((tag) => {
+    const norm = normalizeText(tag);
+    const active =
+      Array.isArray(filterState[targetKey].tags) &&
+      filterState[targetKey].tags.includes(norm);
+    const chip = createEl(
+      'button',
+      `filter-chip${active ? ' active' : ''}`,
+      tag
+    );
+    chip.type = "button";
+    chip.setAttribute('aria-pressed', active.toString());
+    chip.addEventListener('click', () => {
+      const list = filterState[targetKey].tags || [];
+      if (active) {
+        filterState[targetKey].tags = list.filter((t) => t !== norm);
+      } else {
+        filterState[targetKey].tags = [...list, norm];
+      }
+      paginationState[targetKey].offset = 0;
+      applyFiltersAndRender();
+    });
+    container.appendChild(chip);
+  });
+}
+
+function updatePaginationControls(kind, page) {
+  const pagination = el(`${kind}Pagination`);
+  const info = el(`${kind}PageInfo`);
+  const prev = el(`${kind}Prev`);
+  const next = el(`${kind}Next`);
+  if (!pagination || !info || !prev || !next) {
+    return;
+  }
+  if (!page || page.total === 0) {
+    pagination.style.display = "none";
+    return;
+  }
+
+  pagination.style.display = "flex";
+  const start = page.offset + 1;
+  const end = page.offset + page.items.length;
+  const totalPages = Math.max(1, Math.ceil(page.total / page.limit));
+  const current = Math.min(totalPages, Math.floor(page.offset / page.limit) + 1);
+  info.textContent = `${start}-${end} / ${page.total} (page ${current}/${totalPages})`;
+  prev.disabled = page.offset === 0;
+  next.disabled = end >= page.total;
+}
+
+function renderServices(result) {
+  const card = el('servicesCard');
+  const list = el('servicesList');
+  const filtersPanel = el('servicesFilters');
+  const pagination = el('servicesPagination');
+  const notExposed = el('servicesNotExposed');
+  if (!card || !list) return;
+
+  if (!result.exposed) {
+    card.style.display = "none";
+    if (pagination) pagination.style.display = "none";
+    if (filtersPanel) filtersPanel.style.display = "none";
+    if (notExposed) {
+      notExposed.style.display = "block";
+    }
+    return;
+  }
+
+  if (notExposed) notExposed.style.display = "none";
+  card.style.display = "block";
+  if (filtersPanel) filtersPanel.style.display = "flex";
+  clearChildren(list);
+
+  if (result.page.total === 0) {
+    if (
+      result.summary &&
+      typeof result.summary.total === "number" &&
+      result.summary.total > 0
+    ) {
+      const row = createEl('div', 'service-row');
+      row.appendChild(createEl('span', 'dot service-dot'));
+      const details = document.createElement('div');
+      details.appendChild(
+        createEl('div', 'service-name', `${result.summary.total} service(s) observé(s)`)
+      );
+      const meta = createEl('div', 'service-meta');
+      const byState = Array.isArray(result.summary.by_state)
+        ? result.summary.by_state
+        : [];
+      if (byState.length > 0) {
+        byState.forEach((item, index) => {
+          const badge = createEl('span', 'badge', `${item.state}: ${item.count}`);
+          meta.appendChild(badge);
+          if (index < byState.length - 1) {
+            meta.appendChild(document.createTextNode(' '));
+          }
+        });
+      } else {
+        meta.textContent = "Aucune donnée détaillée";
+      }
+      details.appendChild(meta);
+      row.appendChild(details);
+      list.appendChild(row);
+    } else {
+      const message =
+        result.originalTotal > 0
+          ? "Aucun service ne correspond aux filtres"
+          : "Aucun service actif rapporté";
+      list.appendChild(createServiceEmpty(message));
+    }
+    updatePaginationControls('services', result.page);
+    return;
+  }
+
+  result.page.items.forEach((svc) => {
+    const name = svc?.name ? String(svc.name) : "Service";
+    const stateRaw = svc?.state || "";
+    const state = stateRaw ? String(stateRaw) : "";
+    const summaryText = svc?.summary ? String(svc.summary) : "";
+    const dotClass = serviceStateClass(stateRaw);
+    const metaParts = [];
+    if (state) {
+      metaParts.push(state);
+    }
+    if (summaryText) {
+      metaParts.push(summaryText);
+    }
+
+    const row = createEl('div', 'service-row');
+    row.appendChild(createEl('span', `dot service-dot ${dotClass}`));
+
+    const details = document.createElement('div');
+    details.appendChild(createEl('div', 'service-name', name));
+    if (metaParts.length) {
+      details.appendChild(createEl('div', 'service-meta', metaParts.join(" • ")));
+    }
+
+    row.appendChild(details);
+    list.appendChild(row);
+  });
+
+  updatePaginationControls('services', result.page);
+}
+
+function renderSockets(result) {
+  const grid = el('socketsGrid');
+  const tcpCard = el('socketsTcpCard');
+  const udpCard = el('socketsUdpCard');
+  const tcpList = el('socketsTcp');
+  const udpList = el('socketsUdp');
+  const notExposed = el('socketsNotExposed');
+  const filtersPanel = el('socketsFilters');
+  const pagination = el('socketsPagination');
+  if (!grid || !tcpCard || !udpCard || !tcpList || !udpList) return;
+
+  if (!result.exposed) {
+    grid.style.display = "none";
+    tcpCard.style.display = "none";
+    udpCard.style.display = "none";
+    if (pagination) pagination.style.display = "none";
+    if (filtersPanel) filtersPanel.style.display = "none";
+    if (notExposed) {
+      notExposed.style.display = "block";
+    }
+    return;
+  }
+
+  if (notExposed) notExposed.style.display = "none";
+  if (filtersPanel) filtersPanel.style.display = "flex";
+  clearChildren(tcpList);
+  clearChildren(udpList);
+
+  if (result.page.total === 0) {
+    grid.style.display = "grid";
+    tcpCard.style.display = "block";
+    udpCard.style.display = "block";
+    const message =
+      result.originalTotal > 0
+        ? "Aucune socket après filtrage"
+        : "Aucune socket d’écoute";
+    tcpList.appendChild(createServiceEmpty(message));
+    udpList.appendChild(createServiceEmpty(message));
+    updatePaginationControls('sockets', result.page);
+    return;
+  }
+
+  const grouped = result.page.items.reduce(
+    (acc, sock) => {
+      const proto = (sock?.proto || "").toLowerCase() === "udp" ? "udp" : "tcp";
+      acc[proto].push(sock);
+      return acc;
+    },
+    { tcp: [], udp: [] }
+  );
+
+  grid.style.display = "grid";
+
+  const renderGroup = (list) => {
+    const fragment = document.createDocumentFragment();
+    list.forEach((sock) => {
+      const proto = sock?.proto ? String(sock.proto) : "?";
+      const addr = sock?.addr ? String(sock.addr) : "—";
+      const port = sock?.port != null ? Number(sock.port) : "—";
+      const pidValue =
+        typeof sock?.process === "number"
+          ? sock.process
+          : typeof sock?.pid === "number"
+            ? sock.pid
+            : null;
+      const pid = typeof pidValue === "number" ? `PID ${pidValue}` : "";
+      const procName = sock?.process_name ? String(sock.process_name) : "";
+      const detailsParts = [`${addr}:${port}`];
+      if (procName) {
+        detailsParts.push(procName);
+      }
+      if (pid) {
+        detailsParts.push(pid);
+      }
+
+      const row = createEl('div', 'service-row');
+      row.appendChild(createEl('span', 'dot service-dot ok'));
+
+      const details = document.createElement('div');
+      details.appendChild(createEl('div', 'service-name', proto.toUpperCase()));
+      details.appendChild(createEl('div', 'service-meta', detailsParts.join(" • ")));
+      row.appendChild(details);
+
+      fragment.appendChild(row);
+    });
+    return fragment;
+  };
+
+  if (grouped.tcp.length) {
+    tcpCard.style.display = "block";
+    tcpList.appendChild(renderGroup(grouped.tcp));
+  } else {
+    tcpCard.style.display = "block";
+    tcpList.appendChild(createServiceEmpty('Aucun port TCP'));
+  }
+
+  if (grouped.udp.length) {
+    udpCard.style.display = "block";
+    udpList.appendChild(renderGroup(grouped.udp));
+  } else {
+    udpCard.style.display = "block";
+    udpList.appendChild(createServiceEmpty('Aucun port UDP'));
+  }
+
+  updatePaginationControls('sockets', result.page);
+}
+
+function applyFiltersAndRender() {
+  if (!currentSnapshot || typeof currentSnapshot !== "object") {
+    return;
+  }
+
+  const tags = Array.isArray(currentSnapshot.server_tags)
+    ? currentSnapshot.server_tags
+    : [];
+
+  const normalizedTags = tags.map(normalizeText);
+  filterState.services.tags = (filterState.services.tags || []).filter((t) =>
+    normalizedTags.includes(t)
+  );
+  filterState.sockets.tags = (filterState.sockets.tags || []).filter((t) =>
+    normalizedTags.includes(t)
+  );
+
+  renderTagFilters(tags, 'servicesTags', 'services');
+  renderTagFilters(tags, 'socketsTags', 'sockets');
+
+  const hasServicesField = Object.prototype.hasOwnProperty.call(
+    currentSnapshot,
+    'services_running'
+  );
+  const rawServices = Array.isArray(currentSnapshot.services_running)
+    ? currentSnapshot.services_running
+    : null;
+  const filteredServices = sortServices(
+    filterServices(rawServices || [], filterState.services, tags)
+  );
+  let servicesPage = paginate(filteredServices, paginationState.services, MAX_PAGE_LIMIT);
+  if (
+    servicesPage.total > 0 &&
+    servicesPage.items.length === 0 &&
+    paginationState.services.offset > 0
+  ) {
+    paginationState.services.offset = Math.max(
+      servicesPage.total - servicesPage.limit,
+      0
+    );
+    servicesPage = paginate(filteredServices, paginationState.services, MAX_PAGE_LIMIT);
+  }
+
+  renderServices({
+    exposed: hasServicesField && rawServices !== null,
+    page: servicesPage,
+    originalTotal: rawServices ? rawServices.length : 0,
+    summary: currentSnapshot.services_summary,
+  });
+
+  const hasSocketsField = Object.prototype.hasOwnProperty.call(
+    currentSnapshot,
+    'listening_sockets'
+  );
+  const rawSockets = Array.isArray(currentSnapshot.listening_sockets)
+    ? currentSnapshot.listening_sockets
+    : null;
+  const filteredSockets = sortSockets(
+    filterSockets(rawSockets || [], filterState.sockets, tags)
+  );
+  let socketsPage = paginate(filteredSockets, paginationState.sockets, MAX_PAGE_LIMIT);
+  if (
+    socketsPage.total > 0 &&
+    socketsPage.items.length === 0 &&
+    paginationState.sockets.offset > 0
+  ) {
+    paginationState.sockets.offset = Math.max(
+      socketsPage.total - socketsPage.limit,
+      0
+    );
+    socketsPage = paginate(filteredSockets, paginationState.sockets, MAX_PAGE_LIMIT);
+  }
+
+  renderSockets({
+    exposed: hasSocketsField && rawSockets !== null,
+    page: socketsPage,
+    originalTotal: rawSockets ? rawSockets.length : 0,
+  });
+}
+
+const servicesSearchInput = el('servicesSearch');
+if (servicesSearchInput) {
+  servicesSearchInput.addEventListener('input', (event) => {
+    filterState.services.query = event.target.value || "";
+    paginationState.services.offset = 0;
+    applyFiltersAndRender();
+  });
+}
+
+const servicesStatusSelect = el('servicesStatus');
+if (servicesStatusSelect) {
+  servicesStatusSelect.addEventListener('change', (event) => {
+    filterState.services.status = event.target.value || "all";
+    paginationState.services.offset = 0;
+    applyFiltersAndRender();
+  });
+}
+
+const socketsSearchInput = el('socketsSearch');
+if (socketsSearchInput) {
+  socketsSearchInput.addEventListener('input', (event) => {
+    filterState.sockets.query = event.target.value || "";
+    paginationState.sockets.offset = 0;
+    applyFiltersAndRender();
+  });
+}
+
+const servicesPrev = el('servicesPrev');
+const servicesNext = el('servicesNext');
+if (servicesPrev && servicesNext) {
+  servicesPrev.addEventListener('click', () => {
+    const step = Math.max(paginationState.services.limit || DEFAULT_PAGE_LIMIT, 1);
+    paginationState.services.offset = Math.max(
+      paginationState.services.offset - step,
+      0
+    );
+    applyFiltersAndRender();
+  });
+  servicesNext.addEventListener('click', () => {
+    const step = Math.max(paginationState.services.limit || DEFAULT_PAGE_LIMIT, 1);
+    paginationState.services.offset += step;
+    applyFiltersAndRender();
+  });
+}
+
+const socketsPrev = el('socketsPrev');
+const socketsNext = el('socketsNext');
+if (socketsPrev && socketsNext) {
+  socketsPrev.addEventListener('click', () => {
+    const step = Math.max(paginationState.sockets.limit || DEFAULT_PAGE_LIMIT, 1);
+    paginationState.sockets.offset = Math.max(
+      paginationState.sockets.offset - step,
+      0
+    );
+    applyFiltersAndRender();
+  });
+  socketsNext.addEventListener('click', () => {
+    const step = Math.max(paginationState.sockets.limit || DEFAULT_PAGE_LIMIT, 1);
+    paginationState.sockets.offset += step;
+    applyFiltersAndRender();
+  });
 }
 
 function updateUI(data) {
@@ -379,163 +952,6 @@ function updateUI(data) {
     } else {
       extensionsCard.style.display = 'none';
       extensionsList.appendChild(createServiceEmpty());
-    }
-  }
-
-  const servicesCard = document.getElementById('servicesCard');
-  const servicesList = document.getElementById('servicesList');
-  if (servicesCard && servicesList) {
-    const services = Array.isArray(data.services_running) ? data.services_running : [];
-    const summary = data.services_summary;
-    clearChildren(servicesList);
-    if (services.length > 0) {
-      servicesCard.style.display = "block";
-      const fragment = document.createDocumentFragment();
-      services.forEach((svc) => {
-        const name = svc?.name ? String(svc.name) : "Service";
-        const stateRaw = svc?.state || "";
-        const state = stateRaw ? String(stateRaw) : "";
-        const summaryText = svc?.summary ? String(svc.summary) : "";
-        const dotClass = serviceStateClass(stateRaw);
-        const metaParts = [];
-        if (state) {
-          metaParts.push(state);
-        }
-        if (summaryText) {
-          metaParts.push(summaryText);
-        }
-
-        const row = createEl('div', 'service-row');
-        row.appendChild(createEl('span', `dot service-dot ${dotClass}`));
-
-        const details = document.createElement('div');
-        details.appendChild(createEl('div', 'service-name', name));
-        if (metaParts.length) {
-          details.appendChild(createEl('div', 'service-meta', metaParts.join(" • ")));
-        }
-
-        row.appendChild(details);
-        fragment.appendChild(row);
-      });
-      servicesList.appendChild(fragment);
-    } else if (summary && typeof summary.total === 'number') {
-      servicesCard.style.display = "block";
-      const items = Array.isArray(summary.by_state) ? summary.by_state : [];
-      const row = createEl('div', 'service-row');
-      row.appendChild(createEl('span', 'dot service-dot'));
-
-      const details = document.createElement('div');
-      details.appendChild(
-        createEl('div', 'service-name', `${summary.total} service(s) observé(s)`)
-      );
-
-      const meta = createEl('div', 'service-meta');
-      if (items.length > 0) {
-        items.forEach((item, index) => {
-          const badgeText = `${item.state}: ${item.count}`;
-          const badge = createEl('span', 'badge', badgeText);
-          meta.appendChild(badge);
-          if (index < items.length - 1) {
-            meta.appendChild(document.createTextNode(' '));
-          }
-        });
-      } else {
-        meta.textContent = "Aucune donnée détaillée";
-      }
-
-      details.appendChild(meta);
-      row.appendChild(details);
-      servicesList.appendChild(row);
-    } else if ('services_running' in data) {
-      servicesCard.style.display = "block";
-      servicesList.appendChild(createServiceEmpty('Aucun service actif rapporté'));
-    } else {
-      servicesCard.style.display = "none";
-    }
-  }
-
-  const socketsGrid = document.getElementById('socketsGrid');
-  const socketsTcpCard = document.getElementById('socketsTcpCard');
-  const socketsUdpCard = document.getElementById('socketsUdpCard');
-  const socketsTcp = document.getElementById('socketsTcp');
-  const socketsUdp = document.getElementById('socketsUdp');
-  if (socketsGrid && socketsTcp && socketsUdp && socketsTcpCard && socketsUdpCard) {
-    const sockets = Array.isArray(data.listening_sockets) ? data.listening_sockets : [];
-    if (sockets.length > 0) {
-      socketsGrid.style.display = "grid";
-      const grouped = sockets.reduce(
-        (acc, sock) => {
-          const proto = (sock?.proto || "").toLowerCase();
-          const normalized = proto === "udp" ? "udp" : "tcp";
-          acc[normalized].push(sock);
-          return acc;
-        },
-        { tcp: [], udp: [] }
-      );
-
-      const renderSockets = (list) => {
-        const fragment = document.createDocumentFragment();
-        list.forEach((sock) => {
-          const proto = sock?.proto ? String(sock.proto) : "?";
-          const addr = sock?.addr ? String(sock.addr) : "—";
-          const port = sock?.port != null ? Number(sock.port) : "—";
-          const pid =
-            sock && typeof sock.pid === "number"
-              ? `PID ${sock.pid}`
-              : "";
-          const procName = sock?.process_name ? String(sock.process_name) : "";
-          const detailsParts = [`${addr}:${port}`];
-          if (procName) {
-            detailsParts.push(procName);
-          }
-          if (pid) {
-            detailsParts.push(pid);
-          }
-
-          const row = createEl('div', 'service-row');
-          row.appendChild(createEl('span', 'dot service-dot ok'));
-
-          const details = document.createElement('div');
-          details.appendChild(createEl('div', 'service-name', proto.toUpperCase()));
-          details.appendChild(createEl('div', 'service-meta', detailsParts.join(" • ")));
-          row.appendChild(details);
-
-          fragment.appendChild(row);
-        });
-        return fragment;
-      };
-
-      clearChildren(socketsTcp);
-      if (grouped.tcp.length) {
-        socketsTcpCard.style.display = "block";
-        socketsTcp.appendChild(renderSockets(grouped.tcp));
-      } else {
-        socketsTcpCard.style.display = "block";
-        socketsTcp.appendChild(createServiceEmpty('Aucun port TCP'));
-      }
-
-      clearChildren(socketsUdp);
-      if (grouped.udp.length) {
-        socketsUdpCard.style.display = "block";
-        socketsUdp.appendChild(renderSockets(grouped.udp));
-      } else {
-        socketsUdpCard.style.display = "block";
-        socketsUdp.appendChild(createServiceEmpty('Aucun port UDP'));
-      }
-    } else if ('listening_sockets' in data) {
-      socketsGrid.style.display = "grid";
-      socketsTcpCard.style.display = "block";
-      socketsUdpCard.style.display = "block";
-      clearChildren(socketsTcp);
-      clearChildren(socketsUdp);
-      socketsTcp.appendChild(createServiceEmpty('Aucun port TCP'));
-      socketsUdp.appendChild(createServiceEmpty('Aucun port UDP'));
-    } else {
-      socketsGrid.style.display = "none";
-      socketsTcpCard.style.display = "none";
-      socketsUdpCard.style.display = "none";
-      clearChildren(socketsTcp);
-      clearChildren(socketsUdp);
     }
   }
 

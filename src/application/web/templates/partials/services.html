@@ -1,6 +1,26 @@
 <section class="card" id="servicesCard" style="display:none">
   <h2>Services actifs</h2>
+  <div class="filters-panel" id="servicesFilters" style="display:none">
+    <input
+      type="search"
+      id="servicesSearch"
+      class="filter-input"
+      placeholder="Rechercher un service ou un tag" />
+    <select id="servicesStatus" class="filter-select">
+      <option value="all">Tous les statuts</option>
+      <option value="running">En cours</option>
+      <option value="exited">Arrêté</option>
+      <option value="failed">Échec</option>
+    </select>
+    <div class="filter-tags" id="servicesTags"></div>
+  </div>
   <div class="services-list" id="servicesList">
     <div class="service-empty">—</div>
   </div>
+  <div class="pagination-controls" id="servicesPagination" style="display:none">
+    <button type="button" class="link-button small" id="servicesPrev">Page précédente</button>
+    <span class="pagination-info" id="servicesPageInfo">—</span>
+    <button type="button" class="link-button small" id="servicesNext">Page suivante</button>
+  </div>
 </section>
+<div class="service-empty" id="servicesNotExposed" style="display:none">Services non exposés</div>

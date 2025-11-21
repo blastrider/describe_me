@@ -13,6 +13,14 @@ pub struct Opts {
     #[arg(long)]
     pub with_services: bool,
 
+    /// Limite d'affichage pour les services (mode CLI human-readable).
+    #[arg(long = "services-limit", value_name = "N")]
+    pub services_limit: Option<usize>,
+
+    /// Décalage de pagination pour les services.
+    #[arg(long = "services-offset", value_name = "N", default_value_t = 0)]
+    pub services_offset: usize,
+
     /// Afficher l'usage disque (agrégé + partitions)
     /// (Note: l'usage disque est de toute façon présent dans le snapshot JSON)
     #[arg(long)]
@@ -25,6 +33,14 @@ pub struct Opts {
     /// Affiche les sockets d’écoute (TCP/UDP) — nécessite la feature `net`
     #[arg(long = "net-listen", action = ArgAction::SetTrue)]
     pub net_listen: bool,
+
+    /// Limite d'affichage pour les sockets (mode CLI human-readable).
+    #[arg(long = "sockets-limit", value_name = "N")]
+    pub sockets_limit: Option<usize>,
+
+    /// Décalage de pagination pour les sockets.
+    #[arg(long = "sockets-offset", value_name = "N", default_value_t = 0)]
+    pub sockets_offset: usize,
 
     /// Affiche le trafic réseau agrégé par interface — nécessite la feature `net`
     #[arg(long = "net-traffic", action = ArgAction::SetTrue)]

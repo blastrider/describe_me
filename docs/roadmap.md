@@ -13,8 +13,8 @@
 
 ## 3. Recherche/tri dynamique (services, sockets, tags)
 
-- [ ] Implémenter un panneau de filtres (texte, statut, tag) qui agit en temps réel côté front.
-- [ ] Ajouter une API de pagination côté CLI/web pour éviter de charger des listes massives.
+- [x] Implémenter un panneau de filtres (texte, statut, tag) qui agit en temps réel côté front.
+- [x] Ajouter une API de pagination côté CLI/web pour éviter de charger des listes massives.
 
 ## 4. Export & automatisation des snapshots
 

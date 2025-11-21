@@ -10,7 +10,9 @@ mod exposure_cfg;
 use anyhow::{bail, Result};
 #[cfg(feature = "net")]
 use describe_me::domain::{ListeningSocket, NetworkInterfaceTraffic};
-use describe_me::{HistoryMode, HistoryProfile, HistorySettings, LogEvent};
+use describe_me::{
+    paginate_slice, HistoryMode, HistoryProfile, HistorySettings, LogEvent, PageRequest,
+};
 #[cfg(all(unix, feature = "cli"))]
 use nix::unistd::Uid;
 #[cfg(feature = "cli")]
@@ -19,6 +21,8 @@ use std::time::Duration;
 
 const PLUGIN_DIR: &str = "/usr/lib/describe_me/plugins/";
 const PLUGIN_BINARY_PREFIX: &str = "describe-me-plugin-";
+const SERVICES_PAGE_MAX: usize = 500;
+const SOCKETS_PAGE_MAX: usize = 500;
 
 #[cfg(feature = "web")]
 use allowlists::{resolve_web_list, CliListOrigin};
@@ -234,6 +238,122 @@ fn format_metric(metric: &describe_me::MetricAggregate) -> String {
 
 fn approx_equal(a: f32, b: f32) -> bool {
     (a - b).abs() < 0.05
+}
+
+fn print_page_hint(total: usize, offset: usize, limit: usize, displayed: usize) {
+    if total == 0 || displayed == 0 {
+        return;
+    }
+    if total <= displayed && offset == 0 {
+        return;
+    }
+    let start = offset + 1;
+    let end = offset + displayed;
+    let page_idx = offset / limit + 1;
+    let total_pages = total.div_ceil(limit);
+    println!(
+        "(page {}/{} — entrées {}-{} sur {})",
+        page_idx, total_pages, start, end, total
+    );
+}
+
+#[cfg(feature = "systemd")]
+fn print_services_cli(view: &describe_me::SnapshotView, limit: Option<usize>, offset: usize) {
+    println!("{:<38} {:<14} INFO", "SERVICE", "STATUT");
+
+    if let Some(list) = view.services_running.as_ref() {
+        let services = list.as_slice();
+        if services.is_empty() {
+            println!("(aucun service actif rapporté)");
+            println!();
+            return;
+        }
+
+        let fallback_limit = services.len().clamp(1, SERVICES_PAGE_MAX);
+        let page = paginate_slice(
+            services,
+            PageRequest {
+                offset,
+                limit: limit.unwrap_or(fallback_limit),
+            },
+            SERVICES_PAGE_MAX,
+        );
+
+        for svc in &page.items {
+            let summary = svc.summary.as_deref().unwrap_or("");
+            if summary.is_empty() {
+                println!("{:<38} {:<14}", svc.name, svc.state);
+            } else {
+                println!("{:<38} {:<14} {}", svc.name, svc.state, summary);
+            }
+        }
+        print_page_hint(page.total, page.offset, page.limit, page.items.len());
+    } else if let Some(summary) = view.services_summary.as_ref() {
+        println!("{} service(s) observé(s)", summary.total);
+        if !summary.by_state.is_empty() {
+            let joined = summary
+                .by_state
+                .iter()
+                .map(|item| format!("{}: {}", item.state, item.count))
+                .collect::<Vec<_>>()
+                .join(" • ");
+            println!("Répartition: {joined}");
+        }
+    } else {
+        println!("(services non exposés)");
+    }
+    println!();
+}
+
+#[cfg(feature = "net")]
+fn print_sockets_cli(
+    sockets: &[ListeningSocket],
+    show_process: bool,
+    limit: Option<usize>,
+    offset: usize,
+) {
+    if show_process {
+        println!(
+            "{:<5} {:<15} {:<6} {:<8} {:<}",
+            "PROTO", "ADDR", "PORT", "PID", "PROCESS"
+        );
+    } else {
+        println!("{:<5} {:<15} {:<6}", "PROTO", "ADDR", "PORT");
+    }
+
+    if sockets.is_empty() {
+        println!("(aucune socket d’écoute trouvée)");
+        println!();
+        return;
+    }
+
+    let fallback_limit = sockets.len().clamp(1, SOCKETS_PAGE_MAX);
+    let page = paginate_slice(
+        sockets,
+        PageRequest {
+            offset,
+            limit: limit.unwrap_or(fallback_limit),
+        },
+        SOCKETS_PAGE_MAX,
+    );
+
+    for s in &page.items {
+        if show_process {
+            let pid = s
+                .process
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| "-".into());
+            let name = s.process_name.as_deref().unwrap_or("?");
+            println!(
+                "{:<5} {:<15} {:<6} {:<8} {}",
+                s.proto, s.addr, s.port, pid, name
+            );
+        } else {
+            println!("{:<5} {:<15} {:<6}", s.proto, s.addr, s.port);
+        }
+    }
+    print_page_hint(page.total, page.offset, page.limit, page.items.len());
+    println!();
 }
 
 fn run_plugin(cmd: PluginRunCommand) -> Result<()> {
@@ -689,43 +809,27 @@ fn main() -> Result<()> {
         println!();
     }
 
+    #[cfg(feature = "systemd")]
+    if opts.with_services {
+        print_services_cli(&snapshot_view, opts.services_limit, opts.services_offset);
+    }
+
     // --- Mode non-JSON (comportement existant + snapshot JSON à la fin) ---
 
     // 1) NET — tableau lisible
     #[cfg(feature = "net")]
     if opts.net_listen {
-        if opts.show_process {
-            println!(
-                "{:<5} {:<15} {:<6} {:<8} {:<}",
-                "PROTO", "ADDR", "PORT", "PID", "PROCESS"
+        if let Some(list) = snapshot_view.listening_sockets.as_ref() {
+            print_sockets_cli(
+                list.as_slice(),
+                opts.show_process,
+                opts.sockets_limit,
+                opts.sockets_offset,
             );
         } else {
-            println!("{:<5} {:<15} {:<6}", "PROTO", "ADDR", "PORT");
+            println!("(listening sockets non exposées)");
+            println!();
         }
-
-        if let Some(list) = snapshot_view.listening_sockets.as_ref() {
-            let slice = list.as_slice();
-            if slice.is_empty() {
-                println!("(aucune socket d’écoute trouvée)");
-            } else {
-                for s in slice {
-                    if opts.show_process {
-                        let pid = s
-                            .process
-                            .map(|p| p.to_string())
-                            .unwrap_or_else(|| "-".into());
-                        let name = s.process_name.as_deref().unwrap_or("?");
-                        println!(
-                            "{:<5} {:<15} {:<6} {:<8} {}",
-                            s.proto, s.addr, s.port, pid, name
-                        );
-                    } else {
-                        println!("{:<5} {:<15} {:<6}", s.proto, s.addr, s.port);
-                    }
-                }
-            }
-        }
-        println!();
     }
 
     #[cfg(feature = "net")]

@@ -31,6 +31,7 @@ pub use application::history::{
     query_series as history_query_series, settings_snapshot as history_settings_snapshot,
     HistoryMode, HistoryPoint, HistoryQueryError, HistorySeries, HistorySettings, MetricAggregate,
 };
+pub use application::pagination::{paginate_slice, Page, PageRequest};
 
 #[cfg(feature = "config")]
 pub use application::{filter_services, load_config_from_path};
