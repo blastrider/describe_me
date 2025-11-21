@@ -281,3 +281,4 @@ pub mod extensions;
 pub mod history;
 pub mod logging;
 pub mod metadata;
+pub mod pagination;

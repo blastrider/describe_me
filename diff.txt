@@ -1,0 +1,1257 @@
+diff --git a/README.md b/README.md
+index 93b4cf6..5a58463 100644
+--- a/README.md
++++ b/README.md
+@@ -13,8 +13,8 @@ Outil Rust minimaliste pour capturer l’état d’un serveur (CPU, RAM, disques
+ ## Points clés
+ 
+ - **Snapshot complet** : hostname, OS, uptime, charge, disques, services, sockets, trafic réseau, mises à jour.
+-- **CLI & Healthchecks** : sortie JSON lisible, `--check` (Nagios/Icinga), filtres config TOML.
+-- **Mode Web** : UI SSE auto-hébergée, rate limiting, jetons Argon2/bcrypt, HTTPS natif via `[web.tls]`.
++- **CLI & Healthchecks** : sortie JSON lisible, `--check` (Nagios/Icinga), filtres config TOML, pagination CLI pour services/sockets.
++- **Mode Web** : UI SSE auto-hébergée, rate limiting, jetons Argon2/bcrypt, HTTPS natif via `[web.tls]`, filtres temps réel et pagination pour services/sockets/tags.
+ - **Extensions/plugins** : SDK `describe_me_plugin_sdk`, commande `describe-me plugin run`, exécution automatique configurable.
+ - **Bibliothèque** : API stable (`SystemSnapshot`, `disk_usage`, `serve_http`) pour intégrer la collecte dans vos outils.
+ 
+diff --git a/docs/cli.md b/docs/cli.md
+index 00dc053..5271a4e 100644
+--- a/docs/cli.md
++++ b/docs/cli.md
+@@ -17,6 +17,8 @@ inventaire réseau et serveur web SSE.
+ | `--check <expr>`            | Health checks (`mem`, `disk`, `service`)                    |
+ | `--web[=ADDR:PORT]`         | Lance le serveur SSE intégré (feature `web`)                |
+ | `--web-token`, `--web-allow-ip` | Sécurisation du mode web (hash Argon2id/bcrypt + allowlist IP, voir `docs/web-security.md`) |
++| `--services-limit/--services-offset` | Paginer l’affichage CLI des services (sortie human-readable uniquement) |
++| `--sockets-limit/--sockets-offset`   | Paginer l’affichage CLI des sockets (sortie human-readable uniquement) |
+ | `--hash-web-token`, `--hash-web-token-stdin` | Helper pour générer une empreinte (Argon2id par défaut) |
+ | `--expose-*`, `--no-redacted`, `--expose-all` | Contrôle fin des champs sensibles (hostname, services, partitions, sockets, updates) |
+ | `--expose-extensions`, `--web-expose-extensions` | Active l’exposition des résultats des plugins (CLI / mode web) |
+@@ -122,3 +124,9 @@ Tous les plugins doivent vivre sous `/usr/lib/describe_me/plugins/`, être épin
+ > Consultez [`docs/plugins.md`](./plugins.md) pour un tutoriel complet (SDK, packaging, calcul du hash).
+ 
+ Chaque plugin est exécuté séquentiellement avec un timeout configurable. La sortie JSON est désérialisée dans `PluginOutput` et publiée sous `extensions.<nom>` dans `SnapshotView`, l’API et l’UI web (activer `expose_extensions`/`web_expose_extensions` pour rendre les données visibles). Les erreurs sont loguées (`LogEvent::PluginError`) mais n’interrompent pas la capture principale.
++
++## Pagination CLI (services, sockets)
++
++- `--services-limit/--services-offset` et `--sockets-limit/--sockets-offset` n’agissent que sur l’affichage human-readable (les sorties JSON/SnapshotView restent complètes).
++- `limit` est borné (500 max) et un `offset` trop grand se contente de renvoyer une page vide sans erreur.
++- Les pages sont rappelées en pied de section sous la forme `(page X/Y — entrées A-B sur N)`.
+diff --git a/docs/roadmap.md b/docs/roadmap.md
+index a2755c1..9e69e35 100644
+--- a/docs/roadmap.md
++++ b/docs/roadmap.md
+@@ -13,8 +13,8 @@
+ 
+ ## 3. Recherche/tri dynamique (services, sockets, tags)
+ 
+-- [ ] Implémenter un panneau de filtres (texte, statut, tag) qui agit en temps réel côté front.
+-- [ ] Ajouter une API de pagination côté CLI/web pour éviter de charger des listes massives.
++- [x] Implémenter un panneau de filtres (texte, statut, tag) qui agit en temps réel côté front.
++- [x] Ajouter une API de pagination côté CLI/web pour éviter de charger des listes massives.
+ 
+ ## 4. Export & automatisation des snapshots
+ 
+diff --git a/docs/testing.md b/docs/testing.md
+index 5218e38..033e324 100644
+--- a/docs/testing.md
++++ b/docs/testing.md
+@@ -33,3 +33,23 @@ qui renforce la robustesse du parsing `systemctl`.
+ - `cargo fmt` garantit le style.
+ - `cargo clippy --all-targets --all-features -D warnings` garde le code
+   propre (testé lors du refactoring).
++
++## Front (UI web)
++
++Il n’y a pas encore de harnais de tests automatisés pour les assets
++JavaScript (UI SSE). Les filtres/tri/pagination des services et sockets
++sont purement côté client et doivent être vérifiés manuellement :
++
++- lancer `describe-me` en mode web avec exposition des services/sockets
++  (`--web-expose-services --web-expose-network-traffic` si besoin),
++  puis vérifier la barre de recherche, le select de statut et les puces
++  de tags dans la tuile Services ; idem pour la tuile Sockets.
++- tester la pagination (précédent/suivant) et le message « non exposé »
++  lorsque `services_running`/`listening_sockets` ne sont pas présents
++  dans le SnapshotView (exposure redacted).
++
++Pour ajouter des tests auto JS, prévoir l’introduction d’un runner Node
++(`node --test` + jsdom ou Vitest/Jest) et extraire les fonctions pures
++de filtrage/tri dans un module commun. Aucune dépendance Node n’est
++encore versionnée dans ce dépôt, il faudra donc ajouter le tooling le
++moment venu.
+diff --git a/docs/utilisateurs/guide.md b/docs/utilisateurs/guide.md
+index 5a8c494..7a7882a 100644
+--- a/docs/utilisateurs/guide.md
++++ b/docs/utilisateurs/guide.md
+@@ -156,6 +156,12 @@ chmod 600 ./certs/server-key.pem
+ 
+ > ⚠️ Le cookie d’authentification `describe_me_session` est toujours émis en `HttpOnly; Secure`. Il n’est donc renvoyé par le navigateur qu’en HTTPS ou derrière un proxy qui termine TLS. Déclare `allow_origins`/`trusted_proxies` lorsque tu passes par Caddy/Nginx/Traefik. Pour un développement local en HTTP uniquement, active explicitement `--web-dev` (ou `web.dev_insecure_session_cookie = true`) afin de retirer `Secure` côté session — et désactive ce mode en production.
+ 
++### Filtres et pagination côté UI
++
++- La tuile « Services » dispose d’une barre de recherche plein texte, d’un sélecteur de statut (running/exited/failed/tous) et de puces de tags basées sur `server_tags`. Le filtrage est immédiat et ne requiert aucune requête supplémentaire côté serveur.
++- La tuile « Sockets » propose une recherche (proto/adresse/port/processus) et un filtrage par tags. Les sockets sont triées par protocole/port avant pagination.
++- Les deux tuiles exposent des contrôles de pagination client (page précédente/suivante). Quand les services ou sockets ne sont pas exposés (exposure.redacted), les panneaux sont masqués et un message “non exposé” s’affiche sans erreur JS.
++
+ 6. Configuration TOML
+ ---------------------
+ 
+diff --git a/src/application/mod.rs b/src/application/mod.rs
+index e5d2b0f..1fd8369 100644
+--- a/src/application/mod.rs
++++ b/src/application/mod.rs
+@@ -281,3 +281,4 @@ pub mod extensions;
+ pub mod history;
+ pub mod logging;
+ pub mod metadata;
++pub mod pagination;
+diff --git a/src/application/web/assets/js/sse.js b/src/application/web/assets/js/sse.js
+index a971541..4044f8d 100644
+--- a/src/application/web/assets/js/sse.js
++++ b/src/application/web/assets/js/sse.js
+@@ -135,6 +135,8 @@ function handleSseEvent(rawEvent) {
+       showError(parsed.error);
+       return;
+     }
++    currentSnapshot = parsed;
++    applyFiltersAndRender();
+     updateUI(parsed);
+   } catch (e) {
+     showError("Erreur de parsing JSON: " + (e && e.message ? e.message : e));
+diff --git a/src/application/web/assets/js/ui.js b/src/application/web/assets/js/ui.js
+index 28b07bb..1cbb532 100644
+--- a/src/application/web/assets/js/ui.js
++++ b/src/application/web/assets/js/ui.js
+@@ -3,6 +3,21 @@ const tagsEditorManager =
+     ? new window.TagsEditorManager()
+     : null;
+ 
++const MAX_PAGE_LIMIT = 500;
++const DEFAULT_PAGE_LIMIT = 20;
++
++let currentSnapshot = null;
++
++const filterState = {
++  services: { query: "", status: "all", tags: [] },
++  sockets: { query: "", tags: [] },
++};
++
++const paginationState = {
++  services: { offset: 0, limit: DEFAULT_PAGE_LIMIT },
++  sockets: { offset: 0, limit: DEFAULT_PAGE_LIMIT },
++};
++
+ function getWidthFromBytes(totalBytes, availableBytes) {
+   if (typeof widthFromBytes === "function") {
+     return widthFromBytes(totalBytes, availableBytes);
+@@ -55,6 +70,157 @@ function basename(path) {
+   return idx === -1 ? path : path.slice(idx + 1);
+ }
+ 
++function normalizeText(value) {
++  return typeof value === "string" ? value.toLowerCase() : "";
++}
++
++function matchesQuery(query, fields, tags) {
++  if (!query) return true;
++  const needle = query.toLowerCase();
++  return (
++    fields.some((field) => normalizeText(field).includes(needle)) ||
++    tags.some((tag) => tag.includes(needle))
++  );
++}
++
++function filterServices(list, filters, tags) {
++  if (!Array.isArray(list)) return [];
++  const status = normalizeText(filters?.status || "all");
++  const query = (filters?.query || "").trim().toLowerCase();
++  const selectedTags =
++    Array.isArray(filters?.tags) && filters.tags.length
++      ? filters.tags.map(normalizeText)
++      : [];
++  const tagPool = Array.isArray(tags) ? tags.map(normalizeText) : [];
++
++  const statusMatchers = {
++    running: (state) =>
++      state.includes("running") || state.includes("active") || state.includes("listening"),
++    exited: (state) =>
++      state.includes("exited") || state.includes("dead") || state.includes("inactive"),
++    failed: (state) => state.includes("fail"),
++  };
++
++  return list.filter((svc) => {
++    const state = normalizeText(svc?.state || "");
++
++    if (status !== "all") {
++      const matcher = statusMatchers[status];
++      if (!matcher || !matcher(state)) {
++        return false;
++      }
++    }
++
++    if (selectedTags.length && !selectedTags.every((tag) => tagPool.includes(tag))) {
++      return false;
++    }
++
++    const fields = [
++      svc?.name,
++      svc?.state,
++      svc?.summary,
++    ].filter(Boolean);
++
++    return matchesQuery(query, fields, tagPool);
++  });
++}
++
++function sortServices(list) {
++  if (!Array.isArray(list)) return [];
++  const rank = (state) => {
++    const val = normalizeText(state);
++    if (!val) return 3;
++    if (val.includes("running") || val.includes("active") || val.includes("listening")) {
++      return 0;
++    }
++    if (val.includes("exited") || val.includes("inactive")) {
++      return 1;
++    }
++    if (val.includes("fail")) {
++      return 2;
++    }
++    return 3;
++  };
++  return list
++    .slice()
++    .sort((a, b) => {
++      const rankDiff = rank(a?.state) - rank(b?.state);
++      if (rankDiff !== 0) return rankDiff;
++      const nameA = normalizeText(a?.name || "");
++      const nameB = normalizeText(b?.name || "");
++      if (nameA === nameB) return 0;
++      return nameA < nameB ? -1 : 1;
++    });
++}
++
++function filterSockets(list, filters, tags) {
++  if (!Array.isArray(list)) return [];
++  const query = (filters?.query || "").trim().toLowerCase();
++  const selectedTags =
++    Array.isArray(filters?.tags) && filters.tags.length
++      ? filters.tags.map(normalizeText)
++      : [];
++  const tagPool = Array.isArray(tags) ? tags.map(normalizeText) : [];
++
++  return list.filter((sock) => {
++    if (selectedTags.length && !selectedTags.every((tag) => tagPool.includes(tag))) {
++      return false;
++    }
++    const pid =
++      typeof sock?.process === "number"
++        ? String(sock.process)
++        : typeof sock?.pid === "number"
++          ? String(sock.pid)
++          : null;
++    const fields = [
++      sock?.proto,
++      sock?.addr,
++      sock?.port != null ? String(sock.port) : null,
++      sock?.process_name,
++      pid,
++    ].filter(Boolean);
++
++    return matchesQuery(query, fields, tagPool);
++  });
++}
++
++function sortSockets(list) {
++  if (!Array.isArray(list)) return [];
++  const protoWeight = (proto) => (proto === "udp" ? 1 : 0);
++  return list
++    .slice()
++    .sort((a, b) => {
++      const protoA = normalizeText(a?.proto || "tcp");
++      const protoB = normalizeText(b?.proto || "tcp");
++      const protoDiff = protoWeight(protoA) - protoWeight(protoB);
++      if (protoDiff !== 0) return protoDiff;
++      const portA = Number(a?.port) || 0;
++      const portB = Number(b?.port) || 0;
++      if (portA !== portB) return portA - portB;
++      const addrA = normalizeText(a?.addr || "");
++      const addrB = normalizeText(b?.addr || "");
++      if (addrA === addrB) return 0;
++      return addrA < addrB ? -1 : 1;
++    });
++}
++
++function paginate(list, state, maxLimit) {
++  const items = Array.isArray(list) ? list : [];
++  const total = items.length;
++  const cap = maxLimit && maxLimit > 0 ? maxLimit : Number.MAX_SAFE_INTEGER;
++  const rawLimit = Number(state?.limit) || 0;
++  const desired = rawLimit === 0 ? cap : rawLimit;
++  const limit = Math.min(Math.max(desired, 1), cap);
++  const offset = Math.min(Math.max(Number(state?.offset) || 0, 0), total);
++  const end = Math.min(offset + limit, total);
++  return {
++    items: items.slice(offset, end),
++    total,
++    offset,
++    limit,
++  };
++}
++
+ function formatExpiryLine(entry) {
+   const path = entry.path || "certificat";
+   const shortName = basename(path) || path;
+@@ -148,6 +314,413 @@ function renderCertificatesPlugin(rawPayload) {
+   return nodes.length ? nodes : null;
+ }
+ 
++function renderTagFilters(tags, elementId, targetKey) {
++  const container = el(elementId);
++  if (!container) return;
++  clearChildren(container);
++
++  const normalizedTags = Array.isArray(tags)
++    ? Array.from(new Set(tags.map((tag) => String(tag).trim()).filter(Boolean)))
++    : [];
++
++  if (normalizedTags.length === 0) {
++    container.appendChild(createEl('div', 'service-empty', 'Aucun tag'));
++    return;
++  }
++
++  normalizedTags.forEach((tag) => {
++    const norm = normalizeText(tag);
++    const active =
++      Array.isArray(filterState[targetKey].tags) &&
++      filterState[targetKey].tags.includes(norm);
++    const chip = createEl(
++      'button',
++      `filter-chip${active ? ' active' : ''}`,
++      tag
++    );
++    chip.type = "button";
++    chip.setAttribute('aria-pressed', active.toString());
++    chip.addEventListener('click', () => {
++      const list = filterState[targetKey].tags || [];
++      if (active) {
++        filterState[targetKey].tags = list.filter((t) => t !== norm);
++      } else {
++        filterState[targetKey].tags = [...list, norm];
++      }
++      paginationState[targetKey].offset = 0;
++      applyFiltersAndRender();
++    });
++    container.appendChild(chip);
++  });
++}
++
++function updatePaginationControls(kind, page) {
++  const pagination = el(`${kind}Pagination`);
++  const info = el(`${kind}PageInfo`);
++  const prev = el(`${kind}Prev`);
++  const next = el(`${kind}Next`);
++  if (!pagination || !info || !prev || !next) {
++    return;
++  }
++  if (!page || page.total === 0) {
++    pagination.style.display = "none";
++    return;
++  }
++
++  pagination.style.display = "flex";
++  const start = page.offset + 1;
++  const end = page.offset + page.items.length;
++  const totalPages = Math.max(1, Math.ceil(page.total / page.limit));
++  const current = Math.min(totalPages, Math.floor(page.offset / page.limit) + 1);
++  info.textContent = `${start}-${end} / ${page.total} (page ${current}/${totalPages})`;
++  prev.disabled = page.offset === 0;
++  next.disabled = end >= page.total;
++}
++
++function renderServices(result) {
++  const card = el('servicesCard');
++  const list = el('servicesList');
++  const filtersPanel = el('servicesFilters');
++  const pagination = el('servicesPagination');
++  const notExposed = el('servicesNotExposed');
++  if (!card || !list) return;
++
++  if (!result.exposed) {
++    card.style.display = "none";
++    if (pagination) pagination.style.display = "none";
++    if (filtersPanel) filtersPanel.style.display = "none";
++    if (notExposed) {
++      notExposed.style.display = "block";
++    }
++    return;
++  }
++
++  if (notExposed) notExposed.style.display = "none";
++  card.style.display = "block";
++  if (filtersPanel) filtersPanel.style.display = "flex";
++  clearChildren(list);
++
++  if (result.page.total === 0) {
++    if (
++      result.summary &&
++      typeof result.summary.total === "number" &&
++      result.summary.total > 0
++    ) {
++      const row = createEl('div', 'service-row');
++      row.appendChild(createEl('span', 'dot service-dot'));
++      const details = document.createElement('div');
++      details.appendChild(
++        createEl('div', 'service-name', `${result.summary.total} service(s) observé(s)`)
++      );
++      const meta = createEl('div', 'service-meta');
++      const byState = Array.isArray(result.summary.by_state)
++        ? result.summary.by_state
++        : [];
++      if (byState.length > 0) {
++        byState.forEach((item, index) => {
++          const badge = createEl('span', 'badge', `${item.state}: ${item.count}`);
++          meta.appendChild(badge);
++          if (index < byState.length - 1) {
++            meta.appendChild(document.createTextNode(' '));
++          }
++        });
++      } else {
++        meta.textContent = "Aucune donnée détaillée";
++      }
++      details.appendChild(meta);
++      row.appendChild(details);
++      list.appendChild(row);
++    } else {
++      const message =
++        result.originalTotal > 0
++          ? "Aucun service ne correspond aux filtres"
++          : "Aucun service actif rapporté";
++      list.appendChild(createServiceEmpty(message));
++    }
++    updatePaginationControls('services', result.page);
++    return;
++  }
++
++  result.page.items.forEach((svc) => {
++    const name = svc?.name ? String(svc.name) : "Service";
++    const stateRaw = svc?.state || "";
++    const state = stateRaw ? String(stateRaw) : "";
++    const summaryText = svc?.summary ? String(svc.summary) : "";
++    const dotClass = serviceStateClass(stateRaw);
++    const metaParts = [];
++    if (state) {
++      metaParts.push(state);
++    }
++    if (summaryText) {
++      metaParts.push(summaryText);
++    }
++
++    const row = createEl('div', 'service-row');
++    row.appendChild(createEl('span', `dot service-dot ${dotClass}`));
++
++    const details = document.createElement('div');
++    details.appendChild(createEl('div', 'service-name', name));
++    if (metaParts.length) {
++      details.appendChild(createEl('div', 'service-meta', metaParts.join(" • ")));
++    }
++
++    row.appendChild(details);
++    list.appendChild(row);
++  });
++
++  updatePaginationControls('services', result.page);
++}
++
++function renderSockets(result) {
++  const grid = el('socketsGrid');
++  const tcpCard = el('socketsTcpCard');
++  const udpCard = el('socketsUdpCard');
++  const tcpList = el('socketsTcp');
++  const udpList = el('socketsUdp');
++  const notExposed = el('socketsNotExposed');
++  const filtersPanel = el('socketsFilters');
++  const pagination = el('socketsPagination');
++  if (!grid || !tcpCard || !udpCard || !tcpList || !udpList) return;
++
++  if (!result.exposed) {
++    grid.style.display = "none";
++    tcpCard.style.display = "none";
++    udpCard.style.display = "none";
++    if (pagination) pagination.style.display = "none";
++    if (filtersPanel) filtersPanel.style.display = "none";
++    if (notExposed) {
++      notExposed.style.display = "block";
++    }
++    return;
++  }
++
++  if (notExposed) notExposed.style.display = "none";
++  if (filtersPanel) filtersPanel.style.display = "flex";
++  clearChildren(tcpList);
++  clearChildren(udpList);
++
++  if (result.page.total === 0) {
++    grid.style.display = "grid";
++    tcpCard.style.display = "block";
++    udpCard.style.display = "block";
++    const message =
++      result.originalTotal > 0
++        ? "Aucune socket après filtrage"
++        : "Aucune socket d’écoute";
++    tcpList.appendChild(createServiceEmpty(message));
++    udpList.appendChild(createServiceEmpty(message));
++    updatePaginationControls('sockets', result.page);
++    return;
++  }
++
++  const grouped = result.page.items.reduce(
++    (acc, sock) => {
++      const proto = (sock?.proto || "").toLowerCase() === "udp" ? "udp" : "tcp";
++      acc[proto].push(sock);
++      return acc;
++    },
++    { tcp: [], udp: [] }
++  );
++
++  grid.style.display = "grid";
++
++  const renderGroup = (list) => {
++    const fragment = document.createDocumentFragment();
++    list.forEach((sock) => {
++      const proto = sock?.proto ? String(sock.proto) : "?";
++      const addr = sock?.addr ? String(sock.addr) : "—";
++      const port = sock?.port != null ? Number(sock.port) : "—";
++      const pidValue =
++        typeof sock?.process === "number"
++          ? sock.process
++          : typeof sock?.pid === "number"
++            ? sock.pid
++            : null;
++      const pid = typeof pidValue === "number" ? `PID ${pidValue}` : "";
++      const procName = sock?.process_name ? String(sock.process_name) : "";
++      const detailsParts = [`${addr}:${port}`];
++      if (procName) {
++        detailsParts.push(procName);
++      }
++      if (pid) {
++        detailsParts.push(pid);
++      }
++
++      const row = createEl('div', 'service-row');
++      row.appendChild(createEl('span', 'dot service-dot ok'));
++
++      const details = document.createElement('div');
++      details.appendChild(createEl('div', 'service-name', proto.toUpperCase()));
++      details.appendChild(createEl('div', 'service-meta', detailsParts.join(" • ")));
++      row.appendChild(details);
++
++      fragment.appendChild(row);
++    });
++    return fragment;
++  };
++
++  if (grouped.tcp.length) {
++    tcpCard.style.display = "block";
++    tcpList.appendChild(renderGroup(grouped.tcp));
++  } else {
++    tcpCard.style.display = "block";
++    tcpList.appendChild(createServiceEmpty('Aucun port TCP'));
++  }
++
++  if (grouped.udp.length) {
++    udpCard.style.display = "block";
++    udpList.appendChild(renderGroup(grouped.udp));
++  } else {
++    udpCard.style.display = "block";
++    udpList.appendChild(createServiceEmpty('Aucun port UDP'));
++  }
++
++  updatePaginationControls('sockets', result.page);
++}
++
++function applyFiltersAndRender() {
++  if (!currentSnapshot || typeof currentSnapshot !== "object") {
++    return;
++  }
++
++  const tags = Array.isArray(currentSnapshot.server_tags)
++    ? currentSnapshot.server_tags
++    : [];
++
++  const normalizedTags = tags.map(normalizeText);
++  filterState.services.tags = (filterState.services.tags || []).filter((t) =>
++    normalizedTags.includes(t)
++  );
++  filterState.sockets.tags = (filterState.sockets.tags || []).filter((t) =>
++    normalizedTags.includes(t)
++  );
++
++  renderTagFilters(tags, 'servicesTags', 'services');
++  renderTagFilters(tags, 'socketsTags', 'sockets');
++
++  const hasServicesField = Object.prototype.hasOwnProperty.call(
++    currentSnapshot,
++    'services_running'
++  );
++  const rawServices = Array.isArray(currentSnapshot.services_running)
++    ? currentSnapshot.services_running
++    : null;
++  const filteredServices = sortServices(
++    filterServices(rawServices || [], filterState.services, tags)
++  );
++  let servicesPage = paginate(filteredServices, paginationState.services, MAX_PAGE_LIMIT);
++  if (
++    servicesPage.total > 0 &&
++    servicesPage.items.length === 0 &&
++    paginationState.services.offset > 0
++  ) {
++    paginationState.services.offset = Math.max(
++      servicesPage.total - servicesPage.limit,
++      0
++    );
++    servicesPage = paginate(filteredServices, paginationState.services, MAX_PAGE_LIMIT);
++  }
++
++  renderServices({
++    exposed: hasServicesField && rawServices !== null,
++    page: servicesPage,
++    originalTotal: rawServices ? rawServices.length : 0,
++    summary: currentSnapshot.services_summary,
++  });
++
++  const hasSocketsField = Object.prototype.hasOwnProperty.call(
++    currentSnapshot,
++    'listening_sockets'
++  );
++  const rawSockets = Array.isArray(currentSnapshot.listening_sockets)
++    ? currentSnapshot.listening_sockets
++    : null;
++  const filteredSockets = sortSockets(
++    filterSockets(rawSockets || [], filterState.sockets, tags)
++  );
++  let socketsPage = paginate(filteredSockets, paginationState.sockets, MAX_PAGE_LIMIT);
++  if (
++    socketsPage.total > 0 &&
++    socketsPage.items.length === 0 &&
++    paginationState.sockets.offset > 0
++  ) {
++    paginationState.sockets.offset = Math.max(
++      socketsPage.total - socketsPage.limit,
++      0
++    );
++    socketsPage = paginate(filteredSockets, paginationState.sockets, MAX_PAGE_LIMIT);
++  }
++
++  renderSockets({
++    exposed: hasSocketsField && rawSockets !== null,
++    page: socketsPage,
++    originalTotal: rawSockets ? rawSockets.length : 0,
++  });
++}
++
++const servicesSearchInput = el('servicesSearch');
++if (servicesSearchInput) {
++  servicesSearchInput.addEventListener('input', (event) => {
++    filterState.services.query = event.target.value || "";
++    paginationState.services.offset = 0;
++    applyFiltersAndRender();
++  });
++}
++
++const servicesStatusSelect = el('servicesStatus');
++if (servicesStatusSelect) {
++  servicesStatusSelect.addEventListener('change', (event) => {
++    filterState.services.status = event.target.value || "all";
++    paginationState.services.offset = 0;
++    applyFiltersAndRender();
++  });
++}
++
++const socketsSearchInput = el('socketsSearch');
++if (socketsSearchInput) {
++  socketsSearchInput.addEventListener('input', (event) => {
++    filterState.sockets.query = event.target.value || "";
++    paginationState.sockets.offset = 0;
++    applyFiltersAndRender();
++  });
++}
++
++const servicesPrev = el('servicesPrev');
++const servicesNext = el('servicesNext');
++if (servicesPrev && servicesNext) {
++  servicesPrev.addEventListener('click', () => {
++    const step = Math.max(paginationState.services.limit || DEFAULT_PAGE_LIMIT, 1);
++    paginationState.services.offset = Math.max(
++      paginationState.services.offset - step,
++      0
++    );
++    applyFiltersAndRender();
++  });
++  servicesNext.addEventListener('click', () => {
++    const step = Math.max(paginationState.services.limit || DEFAULT_PAGE_LIMIT, 1);
++    paginationState.services.offset += step;
++    applyFiltersAndRender();
++  });
++}
++
++const socketsPrev = el('socketsPrev');
++const socketsNext = el('socketsNext');
++if (socketsPrev && socketsNext) {
++  socketsPrev.addEventListener('click', () => {
++    const step = Math.max(paginationState.sockets.limit || DEFAULT_PAGE_LIMIT, 1);
++    paginationState.sockets.offset = Math.max(
++      paginationState.sockets.offset - step,
++      0
++    );
++    applyFiltersAndRender();
++  });
++  socketsNext.addEventListener('click', () => {
++    const step = Math.max(paginationState.sockets.limit || DEFAULT_PAGE_LIMIT, 1);
++    paginationState.sockets.offset += step;
++    applyFiltersAndRender();
++  });
++}
++
+ function updateUI(data) {
+   err.textContent = "";
+ 
+@@ -382,163 +955,6 @@ function updateUI(data) {
+     }
+   }
+ 
+-  const servicesCard = document.getElementById('servicesCard');
+-  const servicesList = document.getElementById('servicesList');
+-  if (servicesCard && servicesList) {
+-    const services = Array.isArray(data.services_running) ? data.services_running : [];
+-    const summary = data.services_summary;
+-    clearChildren(servicesList);
+-    if (services.length > 0) {
+-      servicesCard.style.display = "block";
+-      const fragment = document.createDocumentFragment();
+-      services.forEach((svc) => {
+-        const name = svc?.name ? String(svc.name) : "Service";
+-        const stateRaw = svc?.state || "";
+-        const state = stateRaw ? String(stateRaw) : "";
+-        const summaryText = svc?.summary ? String(svc.summary) : "";
+-        const dotClass = serviceStateClass(stateRaw);
+-        const metaParts = [];
+-        if (state) {
+-          metaParts.push(state);
+-        }
+-        if (summaryText) {
+-          metaParts.push(summaryText);
+-        }
+-
+-        const row = createEl('div', 'service-row');
+-        row.appendChild(createEl('span', `dot service-dot ${dotClass}`));
+-
+-        const details = document.createElement('div');
+-        details.appendChild(createEl('div', 'service-name', name));
+-        if (metaParts.length) {
+-          details.appendChild(createEl('div', 'service-meta', metaParts.join(" • ")));
+-        }
+-
+-        row.appendChild(details);
+-        fragment.appendChild(row);
+-      });
+-      servicesList.appendChild(fragment);
+-    } else if (summary && typeof summary.total === 'number') {
+-      servicesCard.style.display = "block";
+-      const items = Array.isArray(summary.by_state) ? summary.by_state : [];
+-      const row = createEl('div', 'service-row');
+-      row.appendChild(createEl('span', 'dot service-dot'));
+-
+-      const details = document.createElement('div');
+-      details.appendChild(
+-        createEl('div', 'service-name', `${summary.total} service(s) observé(s)`)
+-      );
+-
+-      const meta = createEl('div', 'service-meta');
+-      if (items.length > 0) {
+-        items.forEach((item, index) => {
+-          const badgeText = `${item.state}: ${item.count}`;
+-          const badge = createEl('span', 'badge', badgeText);
+-          meta.appendChild(badge);
+-          if (index < items.length - 1) {
+-            meta.appendChild(document.createTextNode(' '));
+-          }
+-        });
+-      } else {
+-        meta.textContent = "Aucune donnée détaillée";
+-      }
+-
+-      details.appendChild(meta);
+-      row.appendChild(details);
+-      servicesList.appendChild(row);
+-    } else if ('services_running' in data) {
+-      servicesCard.style.display = "block";
+-      servicesList.appendChild(createServiceEmpty('Aucun service actif rapporté'));
+-    } else {
+-      servicesCard.style.display = "none";
+-    }
+-  }
+-
+-  const socketsGrid = document.getElementById('socketsGrid');
+-  const socketsTcpCard = document.getElementById('socketsTcpCard');
+-  const socketsUdpCard = document.getElementById('socketsUdpCard');
+-  const socketsTcp = document.getElementById('socketsTcp');
+-  const socketsUdp = document.getElementById('socketsUdp');
+-  if (socketsGrid && socketsTcp && socketsUdp && socketsTcpCard && socketsUdpCard) {
+-    const sockets = Array.isArray(data.listening_sockets) ? data.listening_sockets : [];
+-    if (sockets.length > 0) {
+-      socketsGrid.style.display = "grid";
+-      const grouped = sockets.reduce(
+-        (acc, sock) => {
+-          const proto = (sock?.proto || "").toLowerCase();
+-          const normalized = proto === "udp" ? "udp" : "tcp";
+-          acc[normalized].push(sock);
+-          return acc;
+-        },
+-        { tcp: [], udp: [] }
+-      );
+-
+-      const renderSockets = (list) => {
+-        const fragment = document.createDocumentFragment();
+-        list.forEach((sock) => {
+-          const proto = sock?.proto ? String(sock.proto) : "?";
+-          const addr = sock?.addr ? String(sock.addr) : "—";
+-          const port = sock?.port != null ? Number(sock.port) : "—";
+-          const pid =
+-            sock && typeof sock.pid === "number"
+-              ? `PID ${sock.pid}`
+-              : "";
+-          const procName = sock?.process_name ? String(sock.process_name) : "";
+-          const detailsParts = [`${addr}:${port}`];
+-          if (procName) {
+-            detailsParts.push(procName);
+-          }
+-          if (pid) {
+-            detailsParts.push(pid);
+-          }
+-
+-          const row = createEl('div', 'service-row');
+-          row.appendChild(createEl('span', 'dot service-dot ok'));
+-
+-          const details = document.createElement('div');
+-          details.appendChild(createEl('div', 'service-name', proto.toUpperCase()));
+-          details.appendChild(createEl('div', 'service-meta', detailsParts.join(" • ")));
+-          row.appendChild(details);
+-
+-          fragment.appendChild(row);
+-        });
+-        return fragment;
+-      };
+-
+-      clearChildren(socketsTcp);
+-      if (grouped.tcp.length) {
+-        socketsTcpCard.style.display = "block";
+-        socketsTcp.appendChild(renderSockets(grouped.tcp));
+-      } else {
+-        socketsTcpCard.style.display = "block";
+-        socketsTcp.appendChild(createServiceEmpty('Aucun port TCP'));
+-      }
+-
+-      clearChildren(socketsUdp);
+-      if (grouped.udp.length) {
+-        socketsUdpCard.style.display = "block";
+-        socketsUdp.appendChild(renderSockets(grouped.udp));
+-      } else {
+-        socketsUdpCard.style.display = "block";
+-        socketsUdp.appendChild(createServiceEmpty('Aucun port UDP'));
+-      }
+-    } else if ('listening_sockets' in data) {
+-      socketsGrid.style.display = "grid";
+-      socketsTcpCard.style.display = "block";
+-      socketsUdpCard.style.display = "block";
+-      clearChildren(socketsTcp);
+-      clearChildren(socketsUdp);
+-      socketsTcp.appendChild(createServiceEmpty('Aucun port TCP'));
+-      socketsUdp.appendChild(createServiceEmpty('Aucun port UDP'));
+-    } else {
+-      socketsGrid.style.display = "none";
+-      socketsTcpCard.style.display = "none";
+-      socketsUdpCard.style.display = "none";
+-      clearChildren(socketsTcp);
+-      clearChildren(socketsUdp);
+-    }
+-  }
+-
+   if (
+     window.HistoryTrends &&
+     typeof window.HistoryTrends.handleSnapshot === "function"
+diff --git a/src/application/web/templates/partials/services.html b/src/application/web/templates/partials/services.html
+index 792fa03..df6ec89 100644
+--- a/src/application/web/templates/partials/services.html
++++ b/src/application/web/templates/partials/services.html
+@@ -1,6 +1,26 @@
+ <section class="card" id="servicesCard" style="display:none">
+   <h2>Services actifs</h2>
++  <div class="filters-panel" id="servicesFilters" style="display:none">
++    <input
++      type="search"
++      id="servicesSearch"
++      class="filter-input"
++      placeholder="Rechercher un service ou un tag" />
++    <select id="servicesStatus" class="filter-select">
++      <option value="all">Tous les statuts</option>
++      <option value="running">En cours</option>
++      <option value="exited">Arrêté</option>
++      <option value="failed">Échec</option>
++    </select>
++    <div class="filter-tags" id="servicesTags"></div>
++  </div>
+   <div class="services-list" id="servicesList">
+     <div class="service-empty">—</div>
+   </div>
++  <div class="pagination-controls" id="servicesPagination" style="display:none">
++    <button type="button" class="link-button small" id="servicesPrev">Page précédente</button>
++    <span class="pagination-info" id="servicesPageInfo">—</span>
++    <button type="button" class="link-button small" id="servicesNext">Page suivante</button>
++  </div>
+ </section>
++<div class="service-empty" id="servicesNotExposed" style="display:none">Services non exposés</div>
+diff --git a/src/application/web/templates/partials/sockets.html b/src/application/web/templates/partials/sockets.html
+index 93817fd..556dd05 100644
+--- a/src/application/web/templates/partials/sockets.html
++++ b/src/application/web/templates/partials/sockets.html
+@@ -1,3 +1,16 @@
++<div class="filters-panel" id="socketsFilters" style="display:none">
++  <input
++    type="search"
++    id="socketsSearch"
++    class="filter-input"
++    placeholder="Rechercher un port ou un tag" />
++  <div class="filter-tags" id="socketsTags"></div>
++</div>
++<div class="pagination-controls" id="socketsPagination" style="display:none">
++  <button type="button" class="link-button small" id="socketsPrev">Page précédente</button>
++  <span class="pagination-info" id="socketsPageInfo">—</span>
++  <button type="button" class="link-button small" id="socketsNext">Page suivante</button>
++</div>
+ <div class="grid" id="socketsGrid" style="display:none" data-draggable-zone>
+   <section class="card" id="socketsTcpCard">
+     <h2>Ports TCP en écoute</h2>
+@@ -12,3 +25,4 @@
+     </div>
+   </section>
+ </div>
++<div class="service-empty" id="socketsNotExposed" style="display:none">Sockets non exposées</div>
+diff --git a/src/application/web/templates/styles/components.css b/src/application/web/templates/styles/components.css
+index 84b8322..6d27275 100644
+--- a/src/application/web/templates/styles/components.css
++++ b/src/application/web/templates/styles/components.css
+@@ -25,6 +25,63 @@
+ #rawBody { margin-top: 10px; }
+ #rawBody.collapsed { display: none; }
+ .updates-details { margin-top: 12px; }
++.filters-panel {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 8px;
++  margin: 10px 0;
++}
++.filter-input,
++.filter-select {
++  border-radius: 8px;
++  border: 1px solid #2a3147;
++  background: #111727;
++  color: inherit;
++  font: inherit;
++  padding: 8px 10px;
++}
++.filter-input {
++  min-width: 160px;
++  flex: 1 1 220px;
++}
++.filter-select {
++  min-width: 140px;
++  flex: 0 0 auto;
++}
++.filter-tags {
++  display: flex;
++  align-items: center;
++  gap: 6px;
++  flex-wrap: wrap;
++  min-height: 32px;
++}
++.filter-chip {
++  display: inline-flex;
++  align-items: center;
++  gap: 6px;
++  padding: 6px 10px;
++  border-radius: 999px;
++  border: 1px solid #2a3147;
++  background: #1d2333;
++  color: inherit;
++  cursor: pointer;
++  font-size: 13px;
++}
++.filter-chip.active {
++  border-color: #3ad29f;
++  box-shadow: 0 0 0 1px rgba(58, 210, 159, 0.35);
++}
++.pagination-controls {
++  display: flex;
++  align-items: center;
++  justify-content: flex-end;
++  gap: 10px;
++  margin-top: 10px;
++}
++.pagination-info {
++  color: var(--muted);
++  font-size: 13px;
++}
+ .updates-details.collapsed { display: none; }
+ .description-text {
+   margin: 0;
+diff --git a/src/bin/describe-me.rs b/src/bin/describe-me.rs
+index e2b8124..ee3251e 100644
+--- a/src/bin/describe-me.rs
++++ b/src/bin/describe-me.rs
+@@ -10,7 +10,9 @@ mod exposure_cfg;
+ use anyhow::{bail, Result};
+ #[cfg(feature = "net")]
+ use describe_me::domain::{ListeningSocket, NetworkInterfaceTraffic};
+-use describe_me::{HistoryMode, HistoryProfile, HistorySettings, LogEvent};
++use describe_me::{
++    paginate_slice, HistoryMode, HistoryProfile, HistorySettings, LogEvent, PageRequest,
++};
+ #[cfg(all(unix, feature = "cli"))]
+ use nix::unistd::Uid;
+ #[cfg(feature = "cli")]
+@@ -19,6 +21,8 @@ use std::time::Duration;
+ 
+ const PLUGIN_DIR: &str = "/usr/lib/describe_me/plugins/";
+ const PLUGIN_BINARY_PREFIX: &str = "describe-me-plugin-";
++const SERVICES_PAGE_MAX: usize = 500;
++const SOCKETS_PAGE_MAX: usize = 500;
+ 
+ #[cfg(feature = "web")]
+ use allowlists::{resolve_web_list, CliListOrigin};
+@@ -236,6 +240,122 @@ fn approx_equal(a: f32, b: f32) -> bool {
+     (a - b).abs() < 0.05
+ }
+ 
++fn print_page_hint(total: usize, offset: usize, limit: usize, displayed: usize) {
++    if total == 0 || displayed == 0 {
++        return;
++    }
++    if total <= displayed && offset == 0 {
++        return;
++    }
++    let start = offset + 1;
++    let end = offset + displayed;
++    let page_idx = offset / limit + 1;
++    let total_pages = total.div_ceil(limit);
++    println!(
++        "(page {}/{} — entrées {}-{} sur {})",
++        page_idx, total_pages, start, end, total
++    );
++}
++
++#[cfg(feature = "systemd")]
++fn print_services_cli(view: &describe_me::SnapshotView, limit: Option<usize>, offset: usize) {
++    println!("{:<38} {:<14} INFO", "SERVICE", "STATUT");
++
++    if let Some(list) = view.services_running.as_ref() {
++        let services = list.as_slice();
++        if services.is_empty() {
++            println!("(aucun service actif rapporté)");
++            println!();
++            return;
++        }
++
++        let fallback_limit = services.len().clamp(1, SERVICES_PAGE_MAX);
++        let page = paginate_slice(
++            services,
++            PageRequest {
++                offset,
++                limit: limit.unwrap_or(fallback_limit),
++            },
++            SERVICES_PAGE_MAX,
++        );
++
++        for svc in &page.items {
++            let summary = svc.summary.as_deref().unwrap_or("");
++            if summary.is_empty() {
++                println!("{:<38} {:<14}", svc.name, svc.state);
++            } else {
++                println!("{:<38} {:<14} {}", svc.name, svc.state, summary);
++            }
++        }
++        print_page_hint(page.total, page.offset, page.limit, page.items.len());
++    } else if let Some(summary) = view.services_summary.as_ref() {
++        println!("{} service(s) observé(s)", summary.total);
++        if !summary.by_state.is_empty() {
++            let joined = summary
++                .by_state
++                .iter()
++                .map(|item| format!("{}: {}", item.state, item.count))
++                .collect::<Vec<_>>()
++                .join(" • ");
++            println!("Répartition: {joined}");
++        }
++    } else {
++        println!("(services non exposés)");
++    }
++    println!();
++}
++
++#[cfg(feature = "net")]
++fn print_sockets_cli(
++    sockets: &[ListeningSocket],
++    show_process: bool,
++    limit: Option<usize>,
++    offset: usize,
++) {
++    if show_process {
++        println!(
++            "{:<5} {:<15} {:<6} {:<8} {:<}",
++            "PROTO", "ADDR", "PORT", "PID", "PROCESS"
++        );
++    } else {
++        println!("{:<5} {:<15} {:<6}", "PROTO", "ADDR", "PORT");
++    }
++
++    if sockets.is_empty() {
++        println!("(aucune socket d’écoute trouvée)");
++        println!();
++        return;
++    }
++
++    let fallback_limit = sockets.len().clamp(1, SOCKETS_PAGE_MAX);
++    let page = paginate_slice(
++        sockets,
++        PageRequest {
++            offset,
++            limit: limit.unwrap_or(fallback_limit),
++        },
++        SOCKETS_PAGE_MAX,
++    );
++
++    for s in &page.items {
++        if show_process {
++            let pid = s
++                .process
++                .map(|p| p.to_string())
++                .unwrap_or_else(|| "-".into());
++            let name = s.process_name.as_deref().unwrap_or("?");
++            println!(
++                "{:<5} {:<15} {:<6} {:<8} {}",
++                s.proto, s.addr, s.port, pid, name
++            );
++        } else {
++            println!("{:<5} {:<15} {:<6}", s.proto, s.addr, s.port);
++        }
++    }
++    print_page_hint(page.total, page.offset, page.limit, page.items.len());
++    println!();
++}
++
+ fn run_plugin(cmd: PluginRunCommand) -> Result<()> {
+     validate_plugin_name(&cmd.name)?;
+     let timeout = Duration::from_secs(cmd.timeout_secs.max(1));
+@@ -689,43 +809,27 @@ fn main() -> Result<()> {
+         println!();
+     }
+ 
++    #[cfg(feature = "systemd")]
++    if opts.with_services {
++        print_services_cli(&snapshot_view, opts.services_limit, opts.services_offset);
++    }
++
+     // --- Mode non-JSON (comportement existant + snapshot JSON à la fin) ---
+ 
+     // 1) NET — tableau lisible
+     #[cfg(feature = "net")]
+     if opts.net_listen {
+-        if opts.show_process {
+-            println!(
+-                "{:<5} {:<15} {:<6} {:<8} {:<}",
+-                "PROTO", "ADDR", "PORT", "PID", "PROCESS"
++        if let Some(list) = snapshot_view.listening_sockets.as_ref() {
++            print_sockets_cli(
++                list.as_slice(),
++                opts.show_process,
++                opts.sockets_limit,
++                opts.sockets_offset,
+             );
+         } else {
+-            println!("{:<5} {:<15} {:<6}", "PROTO", "ADDR", "PORT");
+-        }
+-
+-        if let Some(list) = snapshot_view.listening_sockets.as_ref() {
+-            let slice = list.as_slice();
+-            if slice.is_empty() {
+-                println!("(aucune socket d’écoute trouvée)");
+-            } else {
+-                for s in slice {
+-                    if opts.show_process {
+-                        let pid = s
+-                            .process
+-                            .map(|p| p.to_string())
+-                            .unwrap_or_else(|| "-".into());
+-                        let name = s.process_name.as_deref().unwrap_or("?");
+-                        println!(
+-                            "{:<5} {:<15} {:<6} {:<8} {}",
+-                            s.proto, s.addr, s.port, pid, name
+-                        );
+-                    } else {
+-                        println!("{:<5} {:<15} {:<6}", s.proto, s.addr, s.port);
+-                    }
+-                }
+-            }
++            println!("(listening sockets non exposées)");
++            println!();
+         }
+-        println!();
+     }
+ 
+     #[cfg(feature = "net")]
+diff --git a/src/bin/describe_me/args.rs b/src/bin/describe_me/args.rs
+index c277320..dcd4c99 100644
+--- a/src/bin/describe_me/args.rs
++++ b/src/bin/describe_me/args.rs
+@@ -13,6 +13,14 @@ pub struct Opts {
+     #[arg(long)]
+     pub with_services: bool,
+ 
++    /// Limite d'affichage pour les services (mode CLI human-readable).
++    #[arg(long = "services-limit", value_name = "N")]
++    pub services_limit: Option<usize>,
++
++    /// Décalage de pagination pour les services.
++    #[arg(long = "services-offset", value_name = "N", default_value_t = 0)]
++    pub services_offset: usize,
++
+     /// Afficher l'usage disque (agrégé + partitions)
+     /// (Note: l'usage disque est de toute façon présent dans le snapshot JSON)
+     #[arg(long)]
+@@ -26,6 +34,14 @@ pub struct Opts {
+     #[arg(long = "net-listen", action = ArgAction::SetTrue)]
+     pub net_listen: bool,
+ 
++    /// Limite d'affichage pour les sockets (mode CLI human-readable).
++    #[arg(long = "sockets-limit", value_name = "N")]
++    pub sockets_limit: Option<usize>,
++
++    /// Décalage de pagination pour les sockets.
++    #[arg(long = "sockets-offset", value_name = "N", default_value_t = 0)]
++    pub sockets_offset: usize,
++
+     /// Affiche le trafic réseau agrégé par interface — nécessite la feature `net`
+     #[arg(long = "net-traffic", action = ArgAction::SetTrue)]
+     pub net_traffic: bool,
+diff --git a/src/lib.rs b/src/lib.rs
+index f0c1cb2..5cfc501 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -31,6 +31,7 @@ pub use application::history::{
+     query_series as history_query_series, settings_snapshot as history_settings_snapshot,
+     HistoryMode, HistoryPoint, HistoryQueryError, HistorySeries, HistorySettings, MetricAggregate,
+ };
++pub use application::pagination::{paginate_slice, Page, PageRequest};
+ 
+ #[cfg(feature = "config")]
+ pub use application::{filter_services, load_config_from_path};

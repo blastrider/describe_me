@@ -33,3 +33,23 @@ qui renforce la robustesse du parsing `systemctl`.
 - `cargo fmt` garantit le style.
 - `cargo clippy --all-targets --all-features -D warnings` garde le code
   propre (testé lors du refactoring).
+
+## Front (UI web)
+
+Il n’y a pas encore de harnais de tests automatisés pour les assets
+JavaScript (UI SSE). Les filtres/tri/pagination des services et sockets
+sont purement côté client et doivent être vérifiés manuellement :
+
+- lancer `describe-me` en mode web avec exposition des services/sockets
+  (`--web-expose-services --web-expose-network-traffic` si besoin),
+  puis vérifier la barre de recherche, le select de statut et les puces
+  de tags dans la tuile Services ; idem pour la tuile Sockets.
+- tester la pagination (précédent/suivant) et le message « non exposé »
+  lorsque `services_running`/`listening_sockets` ne sont pas présents
+  dans le SnapshotView (exposure redacted).
+
+Pour ajouter des tests auto JS, prévoir l’introduction d’un runner Node
+(`node --test` + jsdom ou Vitest/Jest) et extraire les fonctions pures
+de filtrage/tri dans un module commun. Aucune dépendance Node n’est
+encore versionnée dans ce dépôt, il faudra donc ajouter le tooling le
+moment venu.

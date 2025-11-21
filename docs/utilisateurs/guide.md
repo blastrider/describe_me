@@ -156,6 +156,12 @@ chmod 600 ./certs/server-key.pem
 
 > ⚠️ Le cookie d’authentification `describe_me_session` est toujours émis en `HttpOnly; Secure`. Il n’est donc renvoyé par le navigateur qu’en HTTPS ou derrière un proxy qui termine TLS. Déclare `allow_origins`/`trusted_proxies` lorsque tu passes par Caddy/Nginx/Traefik. Pour un développement local en HTTP uniquement, active explicitement `--web-dev` (ou `web.dev_insecure_session_cookie = true`) afin de retirer `Secure` côté session — et désactive ce mode en production.
 
+### Filtres et pagination côté UI
+
+- La tuile « Services » dispose d’une barre de recherche plein texte, d’un sélecteur de statut (running/exited/failed/tous) et de puces de tags basées sur `server_tags`. Le filtrage est immédiat et ne requiert aucune requête supplémentaire côté serveur.
+- La tuile « Sockets » propose une recherche (proto/adresse/port/processus) et un filtrage par tags. Les sockets sont triées par protocole/port avant pagination.
+- Les deux tuiles exposent des contrôles de pagination client (page précédente/suivante). Quand les services ou sockets ne sont pas exposés (exposure.redacted), les panneaux sont masqués et un message “non exposé” s’affiche sans erreur JS.
+
 6. Configuration TOML
 ---------------------
 

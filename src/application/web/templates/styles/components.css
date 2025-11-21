@@ -25,6 +25,63 @@
 #rawBody { margin-top: 10px; }
 #rawBody.collapsed { display: none; }
 .updates-details { margin-top: 12px; }
+.filters-panel {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0;
+}
+.filter-input,
+.filter-select {
+  border-radius: 8px;
+  border: 1px solid #2a3147;
+  background: #111727;
+  color: inherit;
+  font: inherit;
+  padding: 8px 10px;
+}
+.filter-input {
+  min-width: 160px;
+  flex: 1 1 220px;
+}
+.filter-select {
+  min-width: 140px;
+  flex: 0 0 auto;
+}
+.filter-tags {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-height: 32px;
+}
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid #2a3147;
+  background: #1d2333;
+  color: inherit;
+  cursor: pointer;
+  font-size: 13px;
+}
+.filter-chip.active {
+  border-color: #3ad29f;
+  box-shadow: 0 0 0 1px rgba(58, 210, 159, 0.35);
+}
+.pagination-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 10px;
+}
+.pagination-info {
+  color: var(--muted);
+  font-size: 13px;
+}
 .updates-details.collapsed { display: none; }
 .description-text {
   margin: 0;
