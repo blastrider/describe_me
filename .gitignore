@@ -7,3 +7,4 @@
 /plugin-examples/certificates/target
 /packaging/alpine/src
 /images
+/docker/data/state/*

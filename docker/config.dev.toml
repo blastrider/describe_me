@@ -1,0 +1,41 @@
+# Config de base pour le compose dev (HTTP, token requis, state local).
+
+[runtime]
+rust_log = "info"
+state_dir = "/var/lib/describe-me"
+
+# Pas de TLS ici : lance en HTTP via --web-dev. Pour la prod, ajoutez un bloc
+# [web.tls] avec vos certificats montés sous /etc/describe_me/certs/.
+
+[exposure]
+expose_hostname = true
+expose_os = true
+expose_kernel = true
+expose_services = true
+expose_disk_partitions = true
+expose_listening_sockets = true
+expose_network_traffic = true
+expose_updates = true
+expose_extensions = true
+redacted = true
+
+[web]
+# Jeton par défaut (bcrypt) — correspond au secret "monsecret".
+token = "$2b$12$vCzSiaTPOrZsElMX4kT/3.Cg6xHjY7izW.SK0hOUWikqWWQZc1zWS"
+# Autorise toutes les IP en dev (ajustez pour restreindre)
+allow_ips = ["0.0.0.0/0", "::/0"]
+allow_origins = ["http://localhost:8080", "http://127.0.0.1:8080"]
+dev_insecure_session_cookie = true
+
+[history]
+enabled = true
+# Profil par défaut : plus verbeux (ops) ou plus strict (paranoid) possibles.
+profile = "default"
+retention_points = 256
+max_window_seconds = 3600
+rounding_seconds = 10
+
+# Uncomment if you mount certs under ./certs -> /etc/describe_me/certs
+# [web.tls]
+# cert_path = "/etc/describe_me/certs/server.pem"
+# key_path = "/etc/describe_me/certs/server-key.pem"

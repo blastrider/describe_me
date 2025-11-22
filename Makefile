@@ -14,6 +14,15 @@ RPM_GID ?= $(shell id -g)
 CONTAINER_VOLUME := -v "$(CURDIR)":/workspace -w /workspace
 RPM_IMAGE_EL9 ?= rockylinux:9
 RPM_IMAGE_FEDORA ?= fedora:40
+DOCKER_IMAGE ?= blstrdr/describe_me
+DOCKER_RUST_VERSION ?= $(MSRV)
+DOCKER_BUILD_ARGS ?=
+DOCKER_TAG_CMD = $(shell awk -F\" '/^version *=/{print $$2; exit}' Cargo.toml)
+
+# Si DOCKER_TAG est vide ou non défini (même via l'env), on l'initialise depuis Cargo.toml
+ifeq ($(strip $(DOCKER_TAG)),)
+DOCKER_TAG := $(DOCKER_TAG_CMD)
+endif
 
 RELEASE_SIGN_TAG ?= 0
 RELEASE_HELPER ?= cargo run --quiet --manifest-path scripts/release-helper/Cargo.toml --
@@ -22,7 +31,7 @@ ifneq ($(RELEASE_SIGN_TAG),0)
 RELEASE_SIGN_FLAG := --sign-tag
 endif
 
-.PHONY: all deb fmt fmt-check clippy test test-release doc audit deny bench ci msrv-build tools build-complete sbom supply-chain release-patch release-minor release-major build-plugins vagrant-up-debian rpm-el9 rpm-fedora
+.PHONY: all deb fmt fmt-check clippy test test-release doc audit deny bench ci msrv-build tools build-complete sbom supply-chain release-patch release-minor release-major build-plugins vagrant-up-debian rpm-el9 rpm-fedora docker-image docker-push
 
 all: deb
 
@@ -139,3 +148,20 @@ release-major:
 
 vagrant-up-debian:
 	cd infras && vagrant up debian
+
+docker-image:
+	@set -e; \
+	tag="$(if $(strip $(DOCKER_TAG)),$(strip $(DOCKER_TAG)),$(DOCKER_TAG_CMD))"; \
+	if [ -z "$$tag" ]; then echo "DOCKER_TAG is empty; set DOCKER_TAG or ensure Cargo.toml has a version."; exit 1; fi; \
+	$(CONTAINER_RUNTIME) build -f docker/Dockerfile \
+		--build-arg RUST_VERSION=$(DOCKER_RUST_VERSION) \
+		$(DOCKER_BUILD_ARGS) \
+		-t $(DOCKER_IMAGE):$$tag \
+		-t $(DOCKER_IMAGE):latest .
+
+docker-push: docker-image
+	@set -e; \
+	tag="$(if $(strip $(DOCKER_TAG)),$(strip $(DOCKER_TAG)),$(DOCKER_TAG_CMD))"; \
+	if [ -z "$$tag" ]; then echo "DOCKER_TAG is empty; set DOCKER_TAG or ensure Cargo.toml has a version."; exit 1; fi; \
+	$(CONTAINER_RUNTIME) push $(DOCKER_IMAGE):$$tag; \
+	$(CONTAINER_RUNTIME) push $(DOCKER_IMAGE):latest

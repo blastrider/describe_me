@@ -4,6 +4,8 @@ use std::env;
 use std::path::Path;
 #[cfg(feature = "systemd")]
 use std::process::{Command, Stdio};
+#[cfg(feature = "systemd")]
+use tracing::warn;
 
 use crate::domain::{DescribeError, ServiceInfo};
 
@@ -17,6 +19,10 @@ pub(crate) fn list_systemd_services() -> Result<Vec<ServiceInfo>, DescribeError>
     ensure_systemctl_allowed()?;
 
     if !Path::new(SYSTEMCTL_PATH).exists() {
+        if container_mode_enabled() {
+            warn!("systemctl introuvable (mode conteneur actif) : skip des services systemd");
+            return Ok(Vec::new());
+        }
         return Err(DescribeError::External(format!(
             "systemctl introuvable à l'emplacement attendu ({SYSTEMCTL_PATH})"
         )));
@@ -137,5 +143,16 @@ fn running_as_root() -> bool {
     #[cfg(not(target_os = "linux"))]
     {
         false
+    }
+}
+
+#[cfg(feature = "systemd")]
+fn container_mode_enabled() -> bool {
+    match env::var("DESCRIBE_ME_CONTAINER") {
+        Ok(val) => {
+            let normalized = val.trim().to_ascii_lowercase();
+            matches!(normalized.as_str(), "1" | "true" | "yes")
+        }
+        Err(_) => false,
     }
 }
