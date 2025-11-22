@@ -1,0 +1,37 @@
+version: "3.9"
+
+services:
+  describe-me:
+    image: ${DESCRIBE_ME_IMAGE:-blstrdr/describe_me:latest}
+    # Si tu préfères reconstruire localement : décommente le bloc build ci-dessous
+    # build:
+    #   context: .
+    #   dockerfile: docker/Dockerfile
+    ports:
+      - "8080:8080"
+    command:
+      - "--config"
+      - "/etc/describe_me/config.toml"
+      - "--web"
+      - "0.0.0.0:8080"
+      - "--web-dev"
+      - "--web-expose-all"
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+      DESCRIBE_ME_STATE_DIR: /var/lib/describe-me
+      DESCRIBE_ME_CONTAINER: "1"
+    user: "1000:1000"
+    volumes:
+      - ./data/state:/var/lib/describe-me
+      - ./config.dev.toml:/etc/describe_me/config.toml:ro
+      # Pour activer TLS, montez vos certificats :
+      # - ./certs:/etc/describe_me/certs:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/usr/bin/describe-me", "--summary"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes: {}

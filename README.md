@@ -88,6 +88,14 @@ Et pour toutes les variantes, le helper reste accessible directement :
 
 Le paquet embarque l’unité systemd durcie fournie dans `packaging/systemd/describe-me.service` et gère automatiquement le rechargement/preset du service lors de l’installation.
 
+## Image Docker & compose
+
+- Build local : `make docker-image` (tags `describe_me:<version>` + `latest`, override via `DOCKER_IMAGE/DOCKER_TAG/DOCKER_RUST_VERSION/DOCKER_BUILD_ARGS`). Push : `DOCKER_IMAGE=<registry/describe_me> make docker-push`.
+- Mode conteneur : définir `DESCRIBE_ME_CONTAINER=1` pour ignorer l'absence de systemd dans un conteneur (services systemd simplement vidés).
+- Compose dev : `docker/docker-compose.yml` expose 8080, monte `docker/config.dev.toml` (token par défaut `monsecret`, historique activé) et le state `docker/data/state` (ajuster les droits en 1000:1000 avant de lancer : `mkdir -p docker/data/state && chown -R 1000:1000 docker/data/state`).
+- Secrets : remplace le hash `[web].token` dans `docker/config.dev.toml` via `describe-me --hash-web-token '<ton-secret>'`, puis `docker compose -f docker/docker-compose.yml up -d`.
+- TLS : monte tes certs (`./certs:/etc/describe_me/certs:ro`) et décommente `[web.tls]` dans `docker/config.dev.toml`.
+
 ## Documentation
 
 - Guide utilisateur complet : `docs/utilisateurs/guide.md`
