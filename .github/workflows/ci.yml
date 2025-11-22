@@ -58,6 +58,32 @@ jobs:
           name: describe-me-deb
           path: target/debian/*.deb
 
+  rpm_el9:
+    runs-on: ubuntu-latest
+    needs: build-test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build RPM (EL9)
+        run: make rpm-el9
+      - name: Upload RPM artifact (EL9)
+        uses: actions/upload-artifact@v4
+        with:
+          name: describe-me-rpm-el9
+          path: target/rpmbuild-el9/RPMS/**/*.rpm
+
+  rpm_fedora:
+    runs-on: ubuntu-latest
+    needs: build-test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build RPM (Fedora)
+        run: make rpm-fedora
+      - name: Upload RPM artifact (Fedora)
+        uses: actions/upload-artifact@v4
+        with:
+          name: describe-me-rpm-fedora
+          path: target/rpmbuild-fedora/RPMS/**/*.rpm
+
   # supply-chain:
   #   runs-on: ubuntu-latest
   #   needs: build-test
