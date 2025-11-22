@@ -4,7 +4,10 @@
 
 ## v0.2.2 - 2025-11-21
 
-- Ajoutez vos changements ici.
+- UI web : filtres temps réel (recherche plein texte, statut, tags) et pagination locale pour les cartes Services/Sockets, avec gestion propre du mode redacted (« non exposé »).
+- CLI : options `--services-limit/--services-offset` et `--sockets-limit/--sockets-offset` pour paginer l’affichage human-readable sans toucher au JSON.
+- Noyau : utilitaire générique de pagination (`PageRequest`, `Page`, `paginate_slice`) partagé entre CLI et front.
+- Docs : mise à jour du guide utilisateur, du CLI et de la roadmap, plus une note dans `docs/testing.md` sur l’absence de harnais JS et les vérifications manuelles à faire sur les filtres/pagination.
 
 ## v0.2.1 - 2025-11-20
 
