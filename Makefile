@@ -6,6 +6,14 @@ MSRV ?= 1.90.0
 DEB_FEATURES ?= cli web config systemd net journald
 DEB_FEATURE_ARGS ?= --features "$(DEB_FEATURES)"
 DEB_USE_CONTAINER ?= 1
+RPM_FEATURES ?= cli web config systemd net journald
+CONTAINER_RUNTIME ?= docker
+CONTAINER_OPTS ?= --rm
+RPM_UID ?= $(shell id -u)
+RPM_GID ?= $(shell id -g)
+CONTAINER_VOLUME := -v "$(CURDIR)":/workspace -w /workspace
+RPM_IMAGE_EL9 ?= rockylinux:9
+RPM_IMAGE_FEDORA ?= fedora:40
 
 RELEASE_SIGN_TAG ?= 0
 RELEASE_HELPER ?= cargo run --quiet --manifest-path scripts/release-helper/Cargo.toml --
@@ -14,7 +22,7 @@ ifneq ($(RELEASE_SIGN_TAG),0)
 RELEASE_SIGN_FLAG := --sign-tag
 endif
 
-.PHONY: all deb fmt fmt-check clippy test test-release doc audit deny bench ci msrv-build tools build-complete sbom supply-chain release-patch release-minor release-major build-plugins vagrant-up-debian
+.PHONY: all deb fmt fmt-check clippy test test-release doc audit deny bench ci msrv-build tools build-complete sbom supply-chain release-patch release-minor release-major build-plugins vagrant-up-debian rpm-el9 rpm-fedora
 
 all: deb
 
@@ -113,6 +121,12 @@ endif
 
 deb-bookworm:
 	DEB_FEATURES="$(DEB_FEATURES)" ./scripts/deb-bookworm-build.sh
+
+rpm-el9:
+	$(CONTAINER_RUNTIME) run $(CONTAINER_OPTS) $(CONTAINER_VOLUME) -e RPM_FEATURES="$(RPM_FEATURES)" -e HOST_UID="$(RPM_UID)" -e HOST_GID="$(RPM_GID)" $(RPM_IMAGE_EL9) ./scripts/build-rpm-el9.sh
+
+rpm-fedora:
+	$(CONTAINER_RUNTIME) run $(CONTAINER_OPTS) $(CONTAINER_VOLUME) -e RPM_FEATURES="$(RPM_FEATURES)" -e HOST_UID="$(RPM_UID)" -e HOST_GID="$(RPM_GID)" $(RPM_IMAGE_FEDORA) ./scripts/build-rpm-fedora.sh
 
 release-patch:
 	$(RELEASE_HELPER) patch $(RELEASE_SIGN_FLAG)
