@@ -87,6 +87,15 @@ function formatExecutionScope(scope) {
   return "—";
 }
 
+function formatContainerId(id) {
+  if (!id) return "—";
+  const str = String(id);
+  if (str.length > 16) {
+    return str.slice(0, 16) + "…";
+  }
+  return str;
+}
+
 function normalizeText(value) {
   return typeof value === "string" ? value.toLowerCase() : "";
 }
@@ -753,6 +762,11 @@ function updateUI(data) {
   el('kernel').textContent = data.kernel || data.kernel_release || "—";
   el('version').textContent = data.version || "—";
   el('executionScope').textContent = formatExecutionScope(data.execution_scope);
+  const containerInfo = data.container_info || null;
+  el('containerRuntime').textContent = containerInfo?.runtime || "—";
+  el('containerId').textContent = formatContainerId(containerInfo?.container_id);
+  el('containerOrchestrator').textContent =
+    containerInfo?.orchestrator || containerInfo?.k8s_pod || "—";
   el('uptime').textContent = fmtSecs(data.uptime_seconds || 0);
   el('cpus').textContent = data.cpu_count ?? "—";
   const updatesPendingEl = el('updatesPending');
