@@ -803,6 +803,20 @@ fn main() -> Result<()> {
     }
 
     println!("Version : {}", snapshot_view.version);
+    if let Some(info) = snapshot_view.container_info.as_ref() {
+        println!(
+            "Container : {}{}{}",
+            info.runtime,
+            info.container_id
+                .as_deref()
+                .map(|id| format!(" ({id})"))
+                .unwrap_or_default(),
+            info.orchestrator
+                .as_deref()
+                .map(|o| format!(", orchestrateur: {o}"))
+                .unwrap_or_default()
+        );
+    }
     println!();
 
     if let Some(desc) = snapshot_view.server_description.as_deref() {
@@ -954,6 +968,7 @@ mod tests {
             used_memory_bytes: 0,
             total_swap_bytes: 0,
             used_swap_bytes: 0,
+            container_info: None,
             disk_usage: None,
             #[cfg(feature = "systemd")]
             services_running: describe_me::SharedSlice::from_vec(Vec::new()),
@@ -990,6 +1005,7 @@ mod tests {
             used_memory_bytes: 0,
             total_swap_bytes: 0,
             used_swap_bytes: 0,
+            container_info: None,
             disk_usage: None,
             #[cfg(feature = "systemd")]
             services_running: describe_me::SharedSlice::from_vec(Vec::new()),
