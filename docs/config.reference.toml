@@ -21,6 +21,10 @@ web = "0.0.0.0:8080"
 # Active `--with-services` par défaut.
 with_services = true
 
+# Capture les journaux système (journald) lors de chaque snapshot CLI/web.
+# Si activé, les logs sont affichés sur stderr (CLI) et dans l’UI web (section Journaux).
+capture_logs = false
+
 # Active `--web-expose-all` par défaut pour la partie web.
 web_expose_all = false
 
