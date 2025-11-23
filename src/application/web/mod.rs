@@ -149,6 +149,7 @@ struct AppState {
     web_debug: bool,
     security: Arc<WebSecurity>,
     exposure: Exposure,
+    capture_logs: bool,
     shutdown: Arc<Notify>,
     updates_cache: UpdatesCache,
     logo: LogoAsset,
@@ -534,6 +535,7 @@ pub async fn serve_http<A: Into<SocketAddr>>(
     web_debug: bool,
     access: WebAccess,
     exposure: Exposure,
+    capture_logs: bool,
 ) -> Result<(), DescribeError> {
     let origin_policy = OriginPolicy::from_allowlist(access.allow_origins.clone())?;
     let tls_settings = access.tls.clone();
@@ -594,6 +596,7 @@ pub async fn serve_http<A: Into<SocketAddr>>(
         updates_cache,
         logo,
         session_cookie_secure,
+        capture_logs,
     };
 
     let router = Router::new()
