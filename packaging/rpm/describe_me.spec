@@ -2,7 +2,7 @@
 %{!?cargo_features:%global cargo_features cli web config systemd net journald}
 
 Name:           describe-me
-Version:        0.3.6
+Version:        0.3.7
 Release:        1%{?dist}
 Summary:        Server snapshot & health CLI/dashboard
 License:        Apache-2.0
@@ -62,7 +62,7 @@ install -Dm644 packaging/systemd/describe-me.service %{buildroot}%{_unitdir}/des
 %{_unitdir}/describe-me.service
 
 %changelog
-* Sun Nov 23 2025 Maxime Guillemin <guimaxali@gmail.com> - 0.3.6-1
+* Sun Nov 23 2025 Maxime Guillemin <guimaxali@gmail.com> - 0.3.7-1
 - Bump version to 0.3.0 (sync with Cargo.toml)
 * Tue Feb 25 2025 Maxime Guillemin <guimaxali@gmail.com> - 0.2.2-1
 - Première version RPM pour describe-me
