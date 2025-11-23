@@ -751,6 +751,7 @@ function updateUI(data) {
   el('hostname').textContent = data.hostname || "—";
   el('os').textContent = data.os || data.os_name || "—";
   el('kernel').textContent = data.kernel || data.kernel_release || "—";
+  el('version').textContent = data.version || "—";
   el('executionScope').textContent = formatExecutionScope(data.execution_scope);
   el('uptime').textContent = fmtSecs(data.uptime_seconds || 0);
   el('cpus').textContent = data.cpu_count ?? "—";

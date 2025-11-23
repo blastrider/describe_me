@@ -28,6 +28,7 @@ pub struct SystemSnapshot {
     pub hostname: String,
     pub os: Option<String>,
     pub kernel: Option<String>,
+    pub version: String,
     pub execution_scope: ExecutionScope,
     pub uptime_seconds: u64,
     pub cpu_count: usize,

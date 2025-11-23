@@ -802,6 +802,9 @@ fn main() -> Result<()> {
         print_summary_line(&snapshot_view);
     }
 
+    println!("Version : {}", snapshot_view.version);
+    println!();
+
     if let Some(desc) = snapshot_view.server_description.as_deref() {
         print_description_block(desc);
         println!();
@@ -942,6 +945,7 @@ mod tests {
             hostname: "host".into(),
             os: None,
             kernel: None,
+            version: "0.0.0".into(),
             execution_scope: describe_me::ExecutionScope::Host,
             uptime_seconds: 0,
             cpu_count: 1,
@@ -977,6 +981,7 @@ mod tests {
             hostname: "host".into(),
             os: None,
             kernel: None,
+            version: "0.0.0".into(),
             execution_scope: describe_me::ExecutionScope::Host,
             uptime_seconds: 0,
             cpu_count: 1,
