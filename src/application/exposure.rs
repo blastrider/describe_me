@@ -223,6 +223,8 @@ pub struct SnapshotView {
     pub version: String,
     pub execution_scope: ExecutionScope,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub logs: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub container_info: Option<crate::domain::ContainerInfo>,
     pub uptime_seconds: u64,
     pub cpu_count: usize,
@@ -290,6 +292,7 @@ impl SnapshotView {
             kernel,
             version: snapshot.version.clone(),
             execution_scope: snapshot.execution_scope,
+            logs: snapshot.logs.clone(),
             container_info: snapshot.container_info.clone(),
             uptime_seconds: snapshot.uptime_seconds,
             cpu_count: snapshot.cpu_count,
@@ -465,6 +468,7 @@ mod tests {
                 kernel: None,
                 version: "0.0.0".into(),
                 execution_scope: ExecutionScope::Host,
+                logs: None,
                 container_info: None,
                 uptime_seconds: 0,
                 cpu_count: 1,
@@ -506,6 +510,7 @@ mod tests {
             kernel: None,
             version: "0.0.0".into(),
             execution_scope: ExecutionScope::Host,
+            logs: None,
             container_info: None,
             uptime_seconds: 0,
             cpu_count: 1,
