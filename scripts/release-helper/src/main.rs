@@ -30,9 +30,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     let updated_lock = rewrite_lock_version(&lock_src, "describe_me", &new_version)?;
     fs::write("Cargo.lock", updated_lock)?;
 
+    update_rpm_spec(
+        Path::new("packaging/rpm/describe_me.spec"),
+        &current_version,
+        &new_version,
+    )?;
+
     promote_changelog(Path::new("CHANGELOG.md"), &new_version)?;
 
-    stage_files(&["Cargo.toml", "Cargo.lock", "CHANGELOG.md"])?;
+    stage_files(&[
+        "Cargo.toml",
+        "Cargo.lock",
+        "CHANGELOG.md",
+        "packaging/rpm/describe_me.spec",
+    ])?;
     create_release_commit(&new_version)?;
     create_tag(&new_version, opts.sign_tag)?;
 
@@ -230,6 +241,51 @@ fn rewrite_lock_version(
         return Err(format!("package {crate_name} introuvable dans Cargo.lock").into());
     }
     Ok(result)
+}
+
+fn update_rpm_spec(path: &Path, current_version: &str, new_version: &str) -> Result<(), Box<dyn Error>> {
+    if !path.exists() {
+        return Ok(()); // pas d'erreur si le packaging RPM est absent
+    }
+
+    let src = fs::read_to_string(path)?;
+    let mut out = String::with_capacity(src.len());
+    let mut version_replaced = false;
+    let mut changelog_replaced = false;
+    let current_tag = format!("{}-1", current_version);
+    let new_tag = format!("{}-1", new_version);
+
+    for line in src.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+
+        if !version_replaced && trimmed.starts_with("Version:") {
+            let indent_len = line.len() - trimmed.len();
+            let indent = &line[..indent_len];
+            let newline = if line.ends_with('\n') { "\n" } else { "" };
+            out.push_str(indent);
+            out.push_str("Version:        ");
+            out.push_str(new_version);
+            out.push_str(newline);
+            version_replaced = true;
+            continue;
+        }
+
+        if !changelog_replaced && trimmed.starts_with("* ") && trimmed.contains(&current_tag) {
+            let replaced = line.replacen(&current_tag, &new_tag, 1);
+            out.push_str(&replaced);
+            changelog_replaced = true;
+            continue;
+        }
+
+        out.push_str(line);
+    }
+
+    if !version_replaced {
+        return Err("champ Version introuvable dans packaging/rpm/describe_me.spec".into());
+    }
+
+    fs::write(path, out)?;
+    Ok(())
 }
 
 fn promote_changelog(path: &Path, new_version: &str) -> Result<(), Box<dyn Error>> {
