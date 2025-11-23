@@ -71,6 +71,12 @@ body.has-bg-canvas::after {
   opacity: 0;
   transition: opacity 0.6s ease;
 }
+@media (prefers-reduced-motion: reduce) {
+  body::before,
+  body::after {
+    animation: none;
+  }
+}
 .sr-only {
   position: absolute;
   width: 1px;
