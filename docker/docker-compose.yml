@@ -16,6 +16,7 @@ services:
       - "0.0.0.0:8080"
       - "--web-dev"
       - "--web-expose-all"
+      - "--capture-logs"
     environment:
       RUST_LOG: ${RUST_LOG:-info}
       DESCRIBE_ME_STATE_DIR: /var/lib/describe-me
