@@ -1,5 +1,6 @@
 #[cfg(feature = "config")]
 pub mod config;
+pub mod container;
 pub mod error;
 pub mod execution_scope;
 pub mod history_profile;
@@ -11,6 +12,7 @@ pub use config::{
     PluginDefinition, RouteLimitConfig, RuntimeConfig, ServiceSelection, SseLimitConfig,
     WebAccessConfig, WebSecurityConfig,
 };
+pub use container::ContainerInfo;
 pub use error::DescribeError;
 pub use execution_scope::ExecutionScope;
 pub use history_profile::HistoryProfile;
