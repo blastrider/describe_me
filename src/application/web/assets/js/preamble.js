@@ -85,6 +85,7 @@ const hideIdsJson = [
   'historyCard',
   'networkCard',
   'extensionsCard',
+  'systemCard',
 ];
 if (UI_MODE === "summary") {
   hideIdsSummary.forEach((id) => {
