@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SPEC_FILE="${ROOT_DIR}/packaging/rpm/describe_me.spec.spec"
+SPEC_FILE="${ROOT_DIR}/packaging/rpm/describe_me.spec"
 TOPDIR="${ROOT_DIR}/target/rpmbuild-fedora"
 RPM_FEATURES="${RPM_FEATURES:-cli web config systemd net journald}"
 HOST_UID="${HOST_UID:-0}"
