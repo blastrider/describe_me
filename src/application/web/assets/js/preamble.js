@@ -46,8 +46,9 @@ const num = (value) => {
   return Number.isFinite(n) ? n : 0;
 };
 
-if (WEB_DEBUG && rawCard) {
-  rawCard.style.display = "block";
+// Raw JSON uniquement en mode "json"
+if (rawCard) {
+  rawCard.style.display = UI_MODE === "json" ? "block" : "none";
 }
 if (rawToggle && rawBody) {
   rawToggle.setAttribute('aria-controls', 'rawBody');
@@ -86,6 +87,10 @@ const hideIdsJson = [
   'networkCard',
   'extensionsCard',
   'systemCard',
+  'descriptionCard',
+  'updatesCard',
+  'memoryCard',
+  'diskCard',
 ];
 if (UI_MODE === "summary") {
   hideIdsSummary.forEach((id) => {
@@ -96,9 +101,6 @@ if (UI_MODE === "summary") {
   });
 }
 if (UI_MODE === "json") {
-  if (rawCard) {
-    rawCard.style.display = "block";
-  }
   hideIdsJson.forEach((id) => {
     const el = document.getElementById(id);
     if (el) {
