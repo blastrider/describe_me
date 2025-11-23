@@ -22,6 +22,12 @@ const tokenErrorEl = document.getElementById('tokenError');
 const tokenForget = document.getElementById('tokenForget');
 const tokenOpen = document.getElementById('tokenOpen');
 
+const setHidden = (element, shouldHide) => {
+  if (element) {
+    element.hidden = !!shouldHide;
+  }
+};
+
 const createEl = (tag, className, text) => {
   const element = document.createElement(tag);
   if (className) {
@@ -48,7 +54,7 @@ const num = (value) => {
 
 // Raw JSON uniquement en mode "json"
 if (rawCard) {
-  rawCard.style.display = UI_MODE === "json" ? "block" : "none";
+  setHidden(rawCard, UI_MODE !== "json");
 }
 if (rawToggle && rawBody) {
   rawToggle.setAttribute('aria-controls', 'rawBody');
@@ -96,7 +102,7 @@ if (UI_MODE === "summary") {
   hideIdsSummary.forEach((id) => {
     const el = document.getElementById(id);
     if (el) {
-      el.style.display = 'none';
+      setHidden(el, true);
     }
   });
 }
@@ -104,7 +110,7 @@ if (UI_MODE === "json") {
   hideIdsJson.forEach((id) => {
     const el = document.getElementById(id);
     if (el) {
-      el.style.display = 'none';
+      setHidden(el, true);
     }
   });
 }
