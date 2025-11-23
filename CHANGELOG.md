@@ -2,6 +2,10 @@
 
 - Ajoutez vos changements ici.
 
+## v0.3.10 - 2025-11-23
+
+- Ajoutez vos changements ici.
+
 ## v0.3.9 - 2025-11-23
 
 - Ajoutez vos changements ici.
