@@ -1,5 +1,5 @@
 const WEB_DEBUG = __WEB_DEBUG__;
-const SUMMARY_MODE = __SUMMARY_MODE__;
+const UI_MODE = "__UI_MODE__";
 const TOKEN_COOKIE_NAME = "describe_me_token";
 const SESSION_COOKIE_NAME = "describe_me_session";
 const dot = document.getElementById('statusDot');
@@ -67,18 +67,38 @@ if (updatesToggle && updatesDetails) {
     updatesToggle.setAttribute('aria-expanded', (!collapsed).toString());
   });
 }
-if (SUMMARY_MODE) {
-  const hideIds = [
-    'servicesCard',
-    'socketsTcpCard',
-    'socketsUdpCard',
-    'rawCard',
-    'logsCard',
-    'historyCard',
-    'networkCard',
-    'extensionsCard',
-  ];
-  hideIds.forEach((id) => {
+const hideIdsSummary = [
+  'servicesCard',
+  'socketsTcpCard',
+  'socketsUdpCard',
+  'rawCard',
+  'logsCard',
+  'historyCard',
+  'networkCard',
+  'extensionsCard',
+];
+const hideIdsJson = [
+  'servicesCard',
+  'socketsTcpCard',
+  'socketsUdpCard',
+  'logsCard',
+  'historyCard',
+  'networkCard',
+  'extensionsCard',
+];
+if (UI_MODE === "summary") {
+  hideIdsSummary.forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.style.display = 'none';
+    }
+  });
+}
+if (UI_MODE === "json") {
+  if (rawCard) {
+    rawCard.style.display = "block";
+  }
+  hideIdsJson.forEach((id) => {
     const el = document.getElementById(id);
     if (el) {
       el.style.display = 'none';
