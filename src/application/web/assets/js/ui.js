@@ -96,6 +96,19 @@ function formatContainerId(id) {
   return str;
 }
 
+function renderLogs(logs) {
+  const card = document.getElementById('logsCard');
+  const body = document.getElementById('logsBody');
+  if (!card || !body) return;
+  if (logs && typeof logs === "string" && logs.trim().length) {
+    card.style.display = "block";
+    body.textContent = logs;
+  } else {
+    card.style.display = "none";
+    body.textContent = "—";
+  }
+}
+
 function normalizeText(value) {
   return typeof value === "string" ? value.toLowerCase() : "";
 }
@@ -767,6 +780,7 @@ function updateUI(data) {
   el('containerId').textContent = formatContainerId(containerInfo?.container_id);
   el('containerOrchestrator').textContent =
     containerInfo?.orchestrator || containerInfo?.k8s_pod || "—";
+  renderLogs(data.logs);
   el('uptime').textContent = fmtSecs(data.uptime_seconds || 0);
   el('cpus').textContent = data.cpu_count ?? "—";
   const updatesPendingEl = el('updatesPending');
