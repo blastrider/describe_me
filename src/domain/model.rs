@@ -1,3 +1,4 @@
+use crate::domain::ContainerInfo;
 use crate::domain::ExecutionScope;
 use crate::SharedSlice;
 use describe_me_plugin_sdk::PluginOutput;
@@ -37,6 +38,8 @@ pub struct SystemSnapshot {
     pub used_memory_bytes: u64,
     pub total_swap_bytes: u64,
     pub used_swap_bytes: u64,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub container_info: Option<ContainerInfo>,
     /// Usage disque agrégé + détail (optionnel pour limiter le coût).
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub disk_usage: Option<DiskUsage>,
