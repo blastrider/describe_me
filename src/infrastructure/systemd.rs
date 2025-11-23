@@ -24,9 +24,9 @@ pub(crate) fn list_systemd_services() -> Result<Vec<ServiceInfo>, DescribeError>
             scope,
             ExecutionScope::ContainerSelf | ExecutionScope::HostFromContainer
         ) {
-            warn!("systemctl introuvable (mode conteneur actif) : skip des services systemd");
             return Ok(Vec::new());
         }
+        warn!("systemctl introuvable (scope hôte) : services systemd indisponibles");
         return Err(DescribeError::External(format!(
             "systemctl introuvable à l'emplacement attendu ({SYSTEMCTL_PATH})"
         )));
