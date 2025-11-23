@@ -1,4 +1,5 @@
-<div class="filters-panel" id="socketsFilters" style="display:none">
+<div class="filters-panel" id="socketsFilters" hidden>
+  <label class="sr-only" for="socketsSearch">Rechercher un port ou un tag</label>
   <input
     type="search"
     id="socketsSearch"
@@ -6,12 +7,12 @@
     placeholder="Rechercher un port ou un tag" />
   <div class="filter-tags" id="socketsTags"></div>
 </div>
-<div class="pagination-controls" id="socketsPagination" style="display:none">
+<div class="pagination-controls" id="socketsPagination" hidden>
   <button type="button" class="link-button small" id="socketsPrev">Page précédente</button>
   <span class="pagination-info" id="socketsPageInfo">—</span>
   <button type="button" class="link-button small" id="socketsNext">Page suivante</button>
 </div>
-<div class="grid" id="socketsGrid" style="display:none" data-draggable-zone>
+<div class="grid" id="socketsGrid" hidden data-draggable-zone>
   <section class="card" id="socketsTcpCard">
     <h2>Ports TCP en écoute</h2>
     <div class="services-list" id="socketsTcp">
@@ -25,4 +26,4 @@
     </div>
   </section>
 </div>
-<div class="service-empty" id="socketsNotExposed" style="display:none">Sockets non exposées</div>
+<div class="service-empty" id="socketsNotExposed" hidden>Sockets non exposées</div>
