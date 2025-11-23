@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 #[cfg(all(feature = "systemd", feature = "serde"))]
 use crate::domain::ServiceInfo;
 #[cfg(feature = "serde")]
-use crate::domain::{DiskPartition, SystemSnapshot, UpdatesInfo};
+use crate::domain::{DiskPartition, ExecutionScope, SystemSnapshot, UpdatesInfo};
 #[cfg(all(feature = "serde", feature = "net"))]
 use crate::domain::{ListeningSocket, NetworkInterfaceTraffic};
 #[cfg(feature = "serde")]
@@ -220,6 +220,7 @@ pub struct SnapshotView {
     pub os: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kernel: Option<String>,
+    pub execution_scope: ExecutionScope,
     pub uptime_seconds: u64,
     pub cpu_count: usize,
     pub load_average: (f64, f64, f64),
@@ -284,6 +285,7 @@ impl SnapshotView {
             hostname: exposure.hostname().then(|| snapshot.hostname.clone()),
             os,
             kernel,
+            execution_scope: snapshot.execution_scope,
             uptime_seconds: snapshot.uptime_seconds,
             cpu_count: snapshot.cpu_count,
             load_average: snapshot.load_average,
@@ -444,7 +446,7 @@ fn truncate_version(token: &str) -> Option<String> {
 mod tests {
     use super::*;
     #[cfg(feature = "serde")]
-    use crate::domain::{SystemSnapshot, UpdatesInfo};
+    use crate::domain::{ExecutionScope, SystemSnapshot, UpdatesInfo};
 
     #[test]
     fn updates_hidden_when_not_exposed() {
@@ -456,6 +458,7 @@ mod tests {
                 hostname: "host".into(),
                 os: None,
                 kernel: None,
+                execution_scope: ExecutionScope::Host,
                 uptime_seconds: 0,
                 cpu_count: 1,
                 load_average: (0.0, 0.0, 0.0),
@@ -494,6 +497,7 @@ mod tests {
             hostname: "host".into(),
             os: None,
             kernel: None,
+            execution_scope: ExecutionScope::Host,
             uptime_seconds: 0,
             cpu_count: 1,
             load_average: (0.0, 0.0, 0.0),
