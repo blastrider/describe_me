@@ -1,4 +1,4 @@
-use crate::domain::{ContainerInfo, ExecutionScope};
+use crate::domain::{ContainerInfo, ExecutionScope, VolumeMount};
 use std::fs;
 use std::path::Path;
 use std::str::FromStr;
@@ -61,6 +61,9 @@ pub(crate) fn detect_container_info(scope: ExecutionScope) -> Option<ContainerIn
             orchestrator: None,
             k8s_namespace: None,
             k8s_pod: None,
+            isolated_namespaces: Vec::new(),
+            mounted_volumes: Vec::new(),
+            capabilities: Vec::new(),
         });
     }
 
@@ -120,6 +123,9 @@ pub(crate) fn detect_container_info(scope: ExecutionScope) -> Option<ContainerIn
 
         let container_name = hostname.clone();
         let image = image_from_env();
+        let isolated_namespaces = detect_namespaces();
+        let mounted_volumes = list_container_volumes();
+        let capabilities = list_capabilities();
 
         Some(ContainerInfo {
             runtime: runtime.unwrap_or_else(|| "unknown".into()),
@@ -129,6 +135,9 @@ pub(crate) fn detect_container_info(scope: ExecutionScope) -> Option<ContainerIn
             orchestrator,
             k8s_namespace,
             k8s_pod,
+            isolated_namespaces,
+            mounted_volumes,
+            capabilities,
         })
     }
 }
@@ -368,4 +377,175 @@ fn image_from_env() -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(target_os = "linux")]
+fn detect_namespaces() -> Vec<String> {
+    const NAMES: [&str; 6] = ["pid", "net", "ipc", "mnt", "uts", "user"];
+    let mut isolated = Vec::new();
+    for name in NAMES {
+        let self_ns = read_ns_inode("/proc/self/ns", name);
+        let init_ns = read_ns_inode("/proc/1/ns", name);
+        if let (Some(a), Some(b)) = (self_ns, init_ns) {
+            if a != b {
+                isolated.push(name.to_string());
+            }
+        }
+    }
+    isolated
+}
+
+#[cfg(not(target_os = "linux"))]
+fn detect_namespaces() -> Vec<String> {
+    Vec::new()
+}
+
+#[cfg(target_os = "linux")]
+fn read_ns_inode(base: &str, name: &str) -> Option<u64> {
+    let path = format!("{}/{}", base, name);
+    let link = std::fs::read_link(path).ok()?;
+    let txt = link.to_string_lossy();
+    let start = txt.find('[')? + 1;
+    let end = txt.find(']')?;
+    txt[start..end].parse::<u64>().ok()
+}
+
+#[cfg(target_os = "linux")]
+fn list_container_volumes() -> Vec<VolumeMount> {
+    let Ok(content) = fs::read_to_string("/proc/self/mountinfo") else {
+        return Vec::new();
+    };
+    let mut vols = Vec::new();
+    for line in content.lines() {
+        if let Some((target, fstype, source)) = parse_mountinfo_line(line) {
+            if is_pseudo_fs(fstype.as_deref()) {
+                continue;
+            }
+            vols.push(VolumeMount {
+                source: source.unwrap_or_else(|| "-".to_string()),
+                target,
+            });
+        }
+    }
+    vols
+}
+
+#[cfg(not(target_os = "linux"))]
+fn list_container_volumes() -> Vec<VolumeMount> {
+    Vec::new()
+}
+
+#[cfg(target_os = "linux")]
+fn parse_mountinfo_line(line: &str) -> Option<(String, Option<String>, Option<String>)> {
+    // ID parent maj:min root mount_point opts - fstype source superopts
+    let (left, right) = line.split_once(" - ")?;
+    let mut l = left.split_whitespace();
+    let _id = l.next()?;
+    let _parent = l.next()?;
+    let _majmin = l.next()?;
+    let _root = l.next()?;
+    let mount_point = l.next()?.to_string();
+
+    let mut r = right.split_whitespace();
+    let fstype = r.next().map(|s| s.to_string());
+    let source = r.next().map(|s| s.to_string());
+    Some((mount_point, fstype, source))
+}
+
+#[cfg(target_os = "linux")]
+fn is_pseudo_fs(fs: Option<&str>) -> bool {
+    matches!(
+        fs,
+        Some(
+            "proc"
+                | "sysfs"
+                | "tmpfs"
+                | "devtmpfs"
+                | "devpts"
+                | "cgroup"
+                | "cgroup2"
+                | "overlay"
+                | "mqueue"
+                | "pstore"
+                | "autofs"
+                | "securityfs"
+        )
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn list_capabilities() -> Vec<String> {
+    let Ok(status) = fs::read_to_string("/proc/self/status") else {
+        return Vec::new();
+    };
+    let mut capeff_hex = None;
+    for line in status.lines() {
+        if let Some(rest) = line.strip_prefix("CapEff:") {
+            capeff_hex = rest.split_whitespace().next().map(|s| s.to_string());
+            break;
+        }
+    }
+    let Some(hex_str) = capeff_hex else {
+        return Vec::new();
+    };
+    let Ok(mask) = u64::from_str_radix(hex_str.trim_start_matches("0x"), 16) else {
+        return Vec::new();
+    };
+
+    const CAPS: [&str; 41] = [
+        "CAP_CHOWN",
+        "CAP_DAC_OVERRIDE",
+        "CAP_DAC_READ_SEARCH",
+        "CAP_FOWNER",
+        "CAP_FSETID",
+        "CAP_KILL",
+        "CAP_SETGID",
+        "CAP_SETUID",
+        "CAP_SETPCAP",
+        "CAP_LINUX_IMMUTABLE",
+        "CAP_NET_BIND_SERVICE",
+        "CAP_NET_BROADCAST",
+        "CAP_NET_ADMIN",
+        "CAP_NET_RAW",
+        "CAP_IPC_LOCK",
+        "CAP_IPC_OWNER",
+        "CAP_SYS_MODULE",
+        "CAP_SYS_RAWIO",
+        "CAP_SYS_CHROOT",
+        "CAP_SYS_PTRACE",
+        "CAP_SYS_PACCT",
+        "CAP_SYS_ADMIN",
+        "CAP_SYS_BOOT",
+        "CAP_SYS_NICE",
+        "CAP_SYS_RESOURCE",
+        "CAP_SYS_TIME",
+        "CAP_SYS_TTY_CONFIG",
+        "CAP_MKNOD",
+        "CAP_LEASE",
+        "CAP_AUDIT_WRITE",
+        "CAP_AUDIT_CONTROL",
+        "CAP_SETFCAP",
+        "CAP_MAC_OVERRIDE",
+        "CAP_MAC_ADMIN",
+        "CAP_SYSLOG",
+        "CAP_WAKE_ALARM",
+        "CAP_BLOCK_SUSPEND",
+        "CAP_AUDIT_READ",
+        "CAP_PERFMON",
+        "CAP_BPF",
+        "CAP_CHECKPOINT_RESTORE",
+    ];
+
+    let mut res = Vec::new();
+    for (i, name) in CAPS.iter().enumerate() {
+        if mask & (1u64 << i) != 0 {
+            res.push(name.to_string());
+        }
+    }
+    res
+}
+
+#[cfg(not(target_os = "linux"))]
+fn list_capabilities() -> Vec<String> {
+    Vec::new()
 }
