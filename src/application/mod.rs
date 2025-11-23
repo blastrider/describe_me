@@ -97,6 +97,7 @@ impl SystemSnapshot {
             hostname: base.hostname,
             os: base.os,
             kernel: base.kernel,
+            execution_scope,
             uptime_seconds: base.uptime_seconds,
             cpu_count: base.cpu_count,
             load_average: base.load_average,
