@@ -10,7 +10,7 @@ use crate::domain::{CaptureOptions, DescribeError, DiskUsage, SystemSnapshot};
 use crate::SharedSlice;
 use std::borrow::Cow;
 use std::time::Instant;
-use tracing::debug;
+use tracing::{debug, info};
 
 impl SystemSnapshot {
     pub fn capture() -> Result<Self, DescribeError> {
@@ -29,6 +29,16 @@ impl SystemSnapshot {
         })?;
         let container_info =
             crate::infrastructure::container::detect_container_info(execution_scope);
+        if let Some(ref info) = container_info {
+            info!(
+                runtime = info.runtime.as_str(),
+                container_id = info.container_id.as_deref(),
+                orchestrator = info.orchestrator.as_deref(),
+                image = info.image.as_deref(),
+                name = info.container_name.as_deref(),
+                "container_context_detected"
+            );
+        }
         let disk_usage = if opts.with_disk_usage {
             Some(
                 crate::infrastructure::sysinfo::gather_disks().inspect_err(|err| {
