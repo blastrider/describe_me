@@ -12,7 +12,7 @@ Outil Rust minimaliste pour capturer l’état d’un serveur (CPU, RAM, disques
 
 ## Points clés
 
-- **Snapshot complet** : hostname, OS, uptime, charge, disques, services, sockets, trafic réseau, mises à jour, **scope d’exécution** (hôte/contener/host-from-container).
+- **Snapshot complet** : hostname, OS, uptime, charge, disques, services, sockets, trafic réseau, mises à jour, **scope d’exécution** (hôte/contener/host-from-container) et métadonnées conteneur (runtime/id/orchestrateur).
 - **CLI & Healthchecks** : sortie JSON lisible, `--check` (Nagios/Icinga), filtres config TOML, pagination CLI pour services/sockets.
 - **Mode Web** : UI SSE auto-hébergée, rate limiting, jetons Argon2/bcrypt, HTTPS natif via `[web.tls]`, filtres temps réel et pagination pour services/sockets/tags, **affichage du scope détecté**.
 - **Extensions/plugins** : SDK `describe_me_plugin_sdk`, commande `describe-me plugin run`, exécution automatique configurable.
