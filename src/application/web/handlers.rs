@@ -113,7 +113,23 @@ pub(super) async fn index(
     Extension(csp_nonce): Extension<CspNonce>,
 ) -> impl IntoResponse {
     let session = guard.into_session();
-    let mut response = Html(render_index(state.web_debug, csp_nonce.as_str())).into_response();
+    let mut response =
+        Html(render_index(state.web_debug, true, csp_nonce.as_str())).into_response();
+    if let Some(token) = session.session_cookie() {
+        set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
+    }
+    mark_response_no_store(response.headers_mut());
+    response
+}
+
+pub(super) async fn details(
+    State(state): State<AppState>,
+    guard: AuthGuard,
+    Extension(csp_nonce): Extension<CspNonce>,
+) -> impl IntoResponse {
+    let session = guard.into_session();
+    let mut response =
+        Html(render_index(state.web_debug, false, csp_nonce.as_str())).into_response();
     if let Some(token) = session.session_cookie() {
         set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
     }
