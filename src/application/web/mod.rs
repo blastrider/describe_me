@@ -54,7 +54,9 @@ use crate::domain::DescribeError;
 #[cfg(feature = "config")]
 use crate::domain::{DescribeConfig, WebSecurityConfig};
 
-use handlers::{history_series, index, logo_asset, update_description, update_tags, updates_page};
+use handlers::{
+    details, history_series, index, logo_asset, update_description, update_tags, updates_page,
+};
 use security::WebSecurity;
 use sse::sse_stream;
 use updates_cache::UpdatesCache;
@@ -601,6 +603,7 @@ pub async fn serve_http<A: Into<SocketAddr>>(
 
     let router = Router::new()
         .route("/", get(index))
+        .route("/details", get(details))
         .route("/assets/logo.svg", get(logo_asset))
         .route("/updates", get(updates_page))
         .route("/sse", get(sse_stream))
