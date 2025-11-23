@@ -8,5 +8,6 @@ pub mod net;
 
 pub mod container;
 pub mod history;
+pub mod logs;
 pub mod storage;
 pub mod updates;
