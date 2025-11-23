@@ -1,6 +1,7 @@
 <div class="grid" data-draggable-zone>
   <section
     class="card tile"
+    id="descriptionCard"
     data-tags-editor="true"
     data-description-endpoint="/api/description"
     data-tags-endpoint="/api/tags"
@@ -98,13 +99,13 @@
     </div>
   </section>
 
-  <section class="card">
+  <section class="card" id="memoryCard">
     <h2>Mémoire</h2>
     <div class="row"><span class="k">Total</span><span class="v" id="memTotal">—</span></div>
     <div class="row"><span class="k">Utilisée</span><span class="v" id="memUsed">—</span></div>
   </section>
 
-  <section class="card">
+  <section class="card" id="diskCard">
     <h2>Disque</h2>
     <div class="row"><span class="k">Total</span><span class="v" id="diskTotal">—</span></div>
     <div class="row"><span class="k">Libre</span><span class="v" id="diskAvail">—</span></div>
