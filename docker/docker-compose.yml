@@ -19,7 +19,8 @@ services:
     environment:
       RUST_LOG: ${RUST_LOG:-info}
       DESCRIBE_ME_STATE_DIR: /var/lib/describe-me
-      DESCRIBE_ME_CONTAINER: "1"
+      # Forcer la détection conteneur (utile pour tester le mode container-aware en local)
+      DESCRIBE_ME_SCOPE: ${DESCRIBE_ME_SCOPE:-container}
     user: "1000:1000"
     volumes:
       - ./data/state:/var/lib/describe-me
