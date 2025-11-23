@@ -1,3 +1,4 @@
+use crate::domain::ExecutionScope;
 use crate::SharedSlice;
 use describe_me_plugin_sdk::PluginOutput;
 #[cfg(feature = "serde")]
@@ -27,6 +28,7 @@ pub struct SystemSnapshot {
     pub hostname: String,
     pub os: Option<String>,
     pub kernel: Option<String>,
+    pub execution_scope: ExecutionScope,
     pub uptime_seconds: u64,
     pub cpu_count: usize,
     pub load_average: (f64, f64, f64),
