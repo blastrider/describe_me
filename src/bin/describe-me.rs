@@ -497,6 +497,11 @@ fn main() -> Result<()> {
                         opts.with_services = true;
                     }
                 }
+                if !opts.capture_logs {
+                    if let Some(true) = cli.capture_logs {
+                        opts.capture_logs = true;
+                    }
+                }
                 if !opts.web_expose_all {
                     if let Some(true) = cli.web_expose_all {
                         opts.web_expose_all = true;
@@ -728,6 +733,7 @@ fn main() -> Result<()> {
                 web_debug,
                 access,
                 exposure_for_web,
+                opts.capture_logs,
             )
             .await
         })?;
