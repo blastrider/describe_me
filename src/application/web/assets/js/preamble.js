@@ -1,4 +1,5 @@
 const WEB_DEBUG = __WEB_DEBUG__;
+const SUMMARY_MODE = __SUMMARY_MODE__;
 const TOKEN_COOKIE_NAME = "describe_me_token";
 const SESSION_COOKIE_NAME = "describe_me_session";
 const dot = document.getElementById('statusDot');
@@ -64,6 +65,24 @@ if (updatesToggle && updatesDetails) {
     const collapsed = updatesDetails.classList.toggle('collapsed');
     updatesToggle.textContent = collapsed ? "Détails" : "Masquer";
     updatesToggle.setAttribute('aria-expanded', (!collapsed).toString());
+  });
+}
+if (SUMMARY_MODE) {
+  const hideIds = [
+    'servicesCard',
+    'socketsTcpCard',
+    'socketsUdpCard',
+    'rawCard',
+    'logsCard',
+    'historyCard',
+    'networkCard',
+    'extensionsCard',
+  ];
+  hideIds.forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.style.display = 'none';
+    }
   });
 }
 const el = (id) => document.getElementById(id);
