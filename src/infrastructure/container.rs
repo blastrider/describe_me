@@ -1,4 +1,4 @@
-use crate::domain::ExecutionScope;
+use crate::domain::{ContainerInfo, ExecutionScope};
 use std::fs;
 use std::path::Path;
 use std::str::FromStr;
@@ -43,6 +43,92 @@ pub(crate) fn detect_execution_scope() -> ExecutionScope {
         } else {
             ExecutionScope::ContainerSelf
         }
+    }
+}
+
+pub(crate) fn detect_container_info(scope: ExecutionScope) -> Option<ContainerInfo> {
+    if matches!(scope, ExecutionScope::Host) {
+        return None;
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        return Some(ContainerInfo {
+            runtime: "unknown".into(),
+            container_id: None,
+            image: None,
+            container_name: hostname_fallback(),
+            orchestrator: None,
+            k8s_namespace: None,
+            k8s_pod: None,
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let cgroup_content = fs::read_to_string("/proc/1/cgroup")
+            .unwrap_or_else(|_| fs::read_to_string("/proc/self/cgroup").unwrap_or_default());
+        let mountinfo = fs::read_to_string("/proc/self/mountinfo").unwrap_or_default();
+        let hostname = hostname_fallback();
+        let env_container = std::env::var("container").ok();
+        let kube_env = kube_hint();
+
+        let mut runtime = runtime_from_env(env_container.as_deref());
+        let mut orchestrator = if kube_env {
+            Some("Kubernetes".to_string())
+        } else {
+            None
+        };
+
+        if runtime.is_none() && cgroup_content.contains("libpod") {
+            runtime = Some("podman".into());
+        }
+        if runtime.is_none()
+            && (cgroup_content.contains("/docker/")
+                || mountinfo.contains("/docker/containers/")
+                || cgroup_content.contains("docker-")
+                || cgroup_content.contains("docker.slice"))
+        {
+            runtime = Some("docker".into());
+        }
+        if runtime.is_none() && cgroup_content.contains("/kubepods/") {
+            runtime = Some("containerd".into());
+            orchestrator = Some("Kubernetes".into());
+        }
+        if runtime.is_none() && cgroup_content.contains("/crio/") {
+            runtime = Some("cri-o".into());
+        }
+        if runtime.is_none() && mountinfo.contains("/libpod-") {
+            runtime = Some("podman".into());
+        }
+        if runtime.is_none() && mountinfo.contains("/lxc/") {
+            runtime = Some("lxc".into());
+        }
+
+        let container_id =
+            detect_container_id(&cgroup_content, &mountinfo).or_else(|| hostname.clone());
+
+        let (k8s_namespace, k8s_pod) = if orchestrator.is_some() {
+            let pod = hostname.clone();
+            let ns = std::env::var("POD_NAMESPACE")
+                .ok()
+                .or_else(|| std::env::var("K8S_NAMESPACE").ok());
+            (ns, pod)
+        } else {
+            (None, None)
+        };
+
+        let container_name = hostname.clone();
+
+        Some(ContainerInfo {
+            runtime: runtime.unwrap_or_else(|| "unknown".into()),
+            container_id,
+            image: None,
+            container_name,
+            orchestrator,
+            k8s_namespace,
+            k8s_pod,
+        })
     }
 }
 
@@ -189,4 +275,78 @@ fn hostlike_interfaces() -> bool {
     }
 
     interfaces > 3 || hostish_seen
+}
+
+fn runtime_from_env(val: Option<&str>) -> Option<String> {
+    let normalized = val.unwrap_or_default().to_ascii_lowercase();
+    match normalized.as_str() {
+        "podman" | "libpod" => Some("podman".into()),
+        "docker" => Some("docker".into()),
+        "lxc" => Some("lxc".into()),
+        "systemd-nspawn" => Some("systemd-nspawn".into()),
+        "" => None,
+        other => Some(other.to_string()),
+    }
+}
+
+fn hostname_fallback() -> Option<String> {
+    fs::read_to_string("/etc/hostname").ok().and_then(|s| {
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+fn detect_container_id(cgroup: &str, mountinfo: &str) -> Option<String> {
+    let mut best: Option<String> = None;
+
+    for line in cgroup.lines() {
+        if let Some(candidate) = extract_id_candidate(line) {
+            best = choose_best(best, candidate);
+        }
+    }
+
+    if let Some(idx) = mountinfo.find("/docker/containers/") {
+        let slice = &mountinfo[idx + "/docker/containers/".len()..];
+        if let Some(id) = slice.split('/').next() {
+            if let Some(candidate) = extract_id_candidate(id) {
+                best = choose_best(best, candidate);
+            }
+        }
+    }
+
+    for line in mountinfo.lines() {
+        if let Some(candidate) = extract_id_candidate(line) {
+            best = choose_best(best, candidate);
+        }
+    }
+
+    best
+}
+
+fn extract_id_candidate(input: &str) -> Option<String> {
+    let mut best: Option<String> = None;
+    for token in input.split(|c: char| !c.is_ascii_alphanumeric()) {
+        let len = token.len();
+        if len >= 12 && token.chars().all(|c| c.is_ascii_alphanumeric()) {
+            best = choose_best(best, token.to_string());
+        }
+    }
+    best
+}
+
+fn choose_best(current: Option<String>, candidate: String) -> Option<String> {
+    match current {
+        Some(cur) => {
+            if candidate.len() > cur.len() {
+                Some(candidate)
+            } else {
+                Some(cur)
+            }
+        }
+        None => Some(candidate),
+    }
 }
