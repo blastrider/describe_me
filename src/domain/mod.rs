@@ -12,7 +12,7 @@ pub use config::{
     PluginDefinition, RouteLimitConfig, RuntimeConfig, ServiceSelection, SseLimitConfig,
     WebAccessConfig, WebSecurityConfig,
 };
-pub use container::ContainerInfo;
+pub use container::{ContainerInfo, VolumeMount};
 pub use error::DescribeError;
 pub use execution_scope::ExecutionScope;
 pub use history_profile::HistoryProfile;
