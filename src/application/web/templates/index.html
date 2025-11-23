@@ -5,13 +5,21 @@
   <meta
     name="viewport"
     content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="description" content="describe_me affiche en direct l'état de votre serveur : système, ressources, services, réseaux et mises à jour.">
+  <meta property="og:title" content="describe_me — Live">
+  <meta property="og:description" content="Tableau de bord temps réel pour surveiller votre serveur sans framework frontend.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="/">
+  <meta name="twitter:card" content="summary">
   <title>describe_me — Live</title>
   <style nonce="__CSP_NONCE__">
 __INLINE_CSS__
   </style>
 </head>
 <body>
-  <noscript class="no-js-banner">JavaScript est requis pour afficher les métriques en direct.</noscript>
+  <noscript class="no-js-banner">
+    JavaScript est requis pour afficher les métriques en direct. Vous pouvez consulter une vue JSON brute via l'endpoint `/json`.
+  </noscript>
   <canvas id="backgroundGridCanvas" aria-hidden="true"></canvas>
   __HEADER__
   __MAIN_CONTENT__
