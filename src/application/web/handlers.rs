@@ -113,8 +113,9 @@ pub(super) async fn index(
     Extension(csp_nonce): Extension<CspNonce>,
 ) -> impl IntoResponse {
     let session = guard.into_session();
+    let ui_mode = "summary";
     let mut response =
-        Html(render_index(state.web_debug, true, csp_nonce.as_str())).into_response();
+        Html(render_index(state.web_debug, ui_mode, csp_nonce.as_str())).into_response();
     if let Some(token) = session.session_cookie() {
         set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
     }
@@ -128,8 +129,25 @@ pub(super) async fn details(
     Extension(csp_nonce): Extension<CspNonce>,
 ) -> impl IntoResponse {
     let session = guard.into_session();
+    let ui_mode = "container";
     let mut response =
-        Html(render_index(state.web_debug, false, csp_nonce.as_str())).into_response();
+        Html(render_index(state.web_debug, ui_mode, csp_nonce.as_str())).into_response();
+    if let Some(token) = session.session_cookie() {
+        set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
+    }
+    mark_response_no_store(response.headers_mut());
+    response
+}
+
+pub(super) async fn json_view(
+    State(state): State<AppState>,
+    guard: AuthGuard,
+    Extension(csp_nonce): Extension<CspNonce>,
+) -> impl IntoResponse {
+    let session = guard.into_session();
+    let ui_mode = "json";
+    let mut response =
+        Html(render_index(state.web_debug, ui_mode, csp_nonce.as_str())).into_response();
     if let Some(token) = session.session_cookie() {
         set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
     }
