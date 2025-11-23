@@ -62,6 +62,10 @@ pub struct Opts {
     #[arg(long, action = ArgAction::SetTrue)]
     pub summary: bool,
 
+    /// Capture les journaux système (journald) et les affiche sur stderr
+    #[arg(long = "capture-logs", action = ArgAction::SetTrue)]
+    pub capture_logs: bool,
+
     /// Profil d'historique à activer (default, ops, paranoid).
     #[arg(long = "history-profile", value_enum)]
     pub history_profile: Option<HistoryProfileArg>,
