@@ -1,9 +1,23 @@
-<div id="tokenOverlay" class="token-overlay">
+<div
+  id="tokenOverlay"
+  class="token-overlay"
+  role="dialog"
+  aria-modal="true"
+  aria-labelledby="tokenDialogTitle"
+  aria-describedby="tokenDialogDesc tokenError"
+  aria-hidden="true">
   <div class="token-dialog">
-    <h2>Jeton requis</h2>
-    <p>Ce serveur nécessite un jeton pour accéder aux métriques en direct.</p>
+    <h2 id="tokenDialogTitle">Jeton requis</h2>
+    <p id="tokenDialogDesc">Ce serveur nécessite un jeton pour accéder aux métriques en direct.</p>
     <form id="tokenForm">
-      <input id="tokenInput" type="password" placeholder="Jeton d'accès" autocomplete="off" />
+      <label class="sr-only" for="tokenInput">Jeton d'accès</label>
+      <input
+        id="tokenInput"
+        type="password"
+        name="token"
+        placeholder="Jeton d'accès"
+        autocomplete="current-password"
+        required />
       <div class="actions">
         <button type="submit">Valider</button>
         <button type="button" id="tokenForget" class="secondary">Effacer</button>
