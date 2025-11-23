@@ -17,6 +17,7 @@ use describe_me::{
 use nix::unistd::Uid;
 #[cfg(feature = "cli")]
 use serde::Serialize;
+use std::borrow::Cow;
 use std::time::Duration;
 
 const PLUGIN_DIR: &str = "/usr/lib/describe_me/plugins/";
@@ -757,6 +758,7 @@ fn main() -> Result<()> {
         resolve_socket_processes: opts.net_listen || exposure.listening_sockets(),
         with_network_traffic: opts.net_traffic || exposure.network_traffic(),
         with_updates: true,
+        with_logs: opts.capture_logs,
     };
 
     let (snap, snapshot_view) = describe_me::capture_snapshot_with_view(
@@ -826,6 +828,19 @@ fn main() -> Result<()> {
     if !snapshot_view.server_tags.is_empty() {
         print_tags_line(&snapshot_view.server_tags);
         println!();
+    }
+
+    if opts.capture_logs {
+        match describe_me::capture_logs(execution_scope) {
+            Ok(logs) => eprintln!("{logs}"),
+            Err(err) => {
+                LogEvent::SystemError {
+                    location: Cow::Borrowed("capture_logs"),
+                    error: Cow::Owned(err.to_string()),
+                }
+                .emit();
+            }
+        }
     }
 
     #[cfg(feature = "systemd")]
