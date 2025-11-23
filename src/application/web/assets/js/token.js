@@ -90,6 +90,7 @@ function showTokenPrompt(message) {
     tokenErrorEl.textContent = message;
   }
   tokenOverlay.classList.add('visible');
+  tokenOverlay.setAttribute('aria-hidden', 'false');
   setTimeout(() => tokenInput.focus(), 0);
   if (!overlayTimeout) {
     overlayTimeout = setTimeout(() => {
@@ -100,6 +101,7 @@ function showTokenPrompt(message) {
 
 function hideTokenPrompt() {
   tokenOverlay.classList.remove('visible');
+  tokenOverlay.setAttribute('aria-hidden', 'true');
   tokenErrorEl.textContent = "";
   if (overlayTimeout) {
     clearTimeout(overlayTimeout);
