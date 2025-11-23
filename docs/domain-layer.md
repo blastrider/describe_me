@@ -9,8 +9,10 @@ par des consommateurs externes.
 - `model.rs`
   - `ServiceInfo` : description d’un service systemd (nom, état, résumé).
   - `SystemSnapshot` : état complet du serveur (hostname, OS, load, mémoire,
-    disques, services). Des options (`CaptureOptions`) déterminent si les
+    disques, services, scope d’exécution). Des options (`CaptureOptions`) déterminent si les
     informations disque/services/sockets doivent être collectées.
+    - `execution_scope` décrit le contexte (host, container, host_from_container) et est
+      sérialisé dans le JSON/`SnapshotView` pour l’UI web/CLI.
   - `UpdatesInfo` : nombre de mises à jour détectées + besoin de reboot. Inclus
     dans `SystemSnapshot::updates` lorsque la collecte a réussi.
   - `DiskPartition` / `DiskUsage` : modèles partagés entre capture disque,
