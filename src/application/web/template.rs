@@ -95,12 +95,11 @@ pub(super) fn render_auth_required(message: &str, csp_nonce: &str) -> String {
     })
 }
 
-pub(super) fn render_index(web_debug: bool, summary_mode: bool, csp_nonce: &str) -> String {
+pub(super) fn render_index(web_debug: bool, ui_mode: &str, csp_nonce: &str) -> String {
     let debug_flag = if web_debug { "true" } else { "false" };
-    let summary_flag = if summary_mode { "true" } else { "false" };
     let main_js = MAIN_JS
         .replace("__WEB_DEBUG__", debug_flag)
-        .replace("__SUMMARY_MODE__", summary_flag);
+        .replace("__UI_MODE__", ui_mode);
     let main_content = fill_template(
         MAIN_LAYOUT_TEMPLATE,
         PRIMARY_GRID.len() + SERVICES_SECTION.len() + SOCKETS_SECTION.len() + RAW_SECTION.len(),
@@ -127,7 +126,7 @@ pub(super) fn render_index(web_debug: bool, summary_mode: bool, csp_nonce: &str)
         "BACKGROUND_CANVAS_JS" => Some(BACKGROUND_CANVAS_JS),
         "MAIN_JS" => Some(main_js.as_str()),
         "WEB_DEBUG" => Some(debug_flag),
-        "SUMMARY_MODE" => Some(summary_flag),
+        "UI_MODE" => Some(ui_mode),
         "CSP_NONCE" => Some(csp_nonce),
         "HEADER" => Some(HEADER_SECTION),
         "MAIN_CONTENT" => Some(main_content.as_str()),
@@ -338,7 +337,7 @@ mod tests {
 
     #[test]
     fn render_index_injects_dynamic_values() {
-        let html = render_index(true, false, "nonce-value");
+        let html = render_index(true, "default", "nonce-value");
         assert!(html.contains("nonce=\"nonce-value\""));
         assert!(html.contains("const WEB_DEBUG = true;") || html.contains(">true<"));
         assert!(!html.contains("__CSP_NONCE__"));
