@@ -19,6 +19,12 @@
   let lastFetch = 0;
   let paranoidBlocked = false;
 
+  const setHidden = (element, shouldHide) => {
+    if (element) {
+      element.hidden = !!shouldHide;
+    }
+  };
+
   function init() {
     card = document.getElementById("historyCard");
     if (!card) {
@@ -171,7 +177,7 @@
     if (!card) {
       return;
     }
-    card.style.display = visible ? "block" : "none";
+    setHidden(card, !visible);
   }
 
   function showError(message) {
