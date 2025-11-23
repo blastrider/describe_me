@@ -1,5 +1,13 @@
 .bar { position: relative; height: 10px; background: #1d2333; border:1px solid #2a3147; border-radius:6px; overflow:hidden; }
-.bar > span { position:absolute; left:0; top:0; bottom:0; background:#3ad29f55; border-right:2px solid #3ad29f; }
+.bar > span {
+  position:absolute;
+  left:0;
+  top:0;
+  bottom:0;
+  width: 0;
+  background:#3ad29f55;
+  border-right:2px solid #3ad29f;
+}
 .mono .line { margin: 6px 0 10px; }
 .services-list { display: flex; flex-direction: column; gap: 10px; }
 #networkCard { grid-column: 1 / -1; }
