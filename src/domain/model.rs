@@ -31,6 +31,8 @@ pub struct SystemSnapshot {
     pub kernel: Option<String>,
     pub version: String,
     pub execution_scope: ExecutionScope,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub logs: Option<String>,
     pub uptime_seconds: u64,
     pub cpu_count: usize,
     pub load_average: (f64, f64, f64),
@@ -65,6 +67,7 @@ pub struct CaptureOptions {
     pub resolve_socket_processes: bool,
     pub with_network_traffic: bool,
     pub with_updates: bool,
+    pub with_logs: bool,
 }
 
 impl Default for CaptureOptions {
@@ -76,6 +79,7 @@ impl Default for CaptureOptions {
             resolve_socket_processes: true,
             with_network_traffic: false,
             with_updates: true,
+            with_logs: false,
         }
     }
 }
