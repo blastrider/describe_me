@@ -27,6 +27,8 @@ impl SystemSnapshot {
             }
             .emit();
         })?;
+        let container_info =
+            crate::infrastructure::container::detect_container_info(execution_scope);
         let disk_usage = if opts.with_disk_usage {
             Some(
                 crate::infrastructure::sysinfo::gather_disks().inspect_err(|err| {
@@ -106,6 +108,7 @@ impl SystemSnapshot {
             used_memory_bytes: base.used_memory_bytes,
             total_swap_bytes: base.total_swap_bytes,
             used_swap_bytes: base.used_swap_bytes,
+            container_info,
             disk_usage,
             #[cfg(feature = "systemd")]
             services_running,
@@ -147,6 +150,11 @@ impl SystemSnapshot {
             updates_reboot,
             updates_packages,
             execution_scope = execution_scope.as_str(),
+            container_runtime = snapshot.container_info.as_ref().map(|c| c.runtime.as_str()),
+            container_id = snapshot
+                .container_info
+                .as_ref()
+                .and_then(|c| c.container_id.as_deref()),
             "snapshot_captured"
         );
 
