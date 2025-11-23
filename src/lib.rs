@@ -63,6 +63,7 @@ pub use application::exposure::Exposure;
 pub use application::extensions::{run_ad_hoc_plugin, PluginExecutionError};
 
 pub use application::logging::{init_logging, LogEvent};
+pub use application::logs::capture_logs;
 
 pub use application::execution_scope::current_scope as execution_scope;
 pub use application::metadata::{
