@@ -8,6 +8,18 @@ body {
   min-height: 100vh;
 }
 [hidden] { display: none !important; }
+.no-js-banner {
+  display: block;
+  padding: 12px 16px;
+  text-align: center;
+  background: #3ad29f;
+  color: #0b111f;
+  font-weight: 600;
+}
+:focus-visible {
+  outline: 2px solid #3ad29f;
+  outline-offset: 3px;
+}
 body::before,
 body::after {
   content: "";
