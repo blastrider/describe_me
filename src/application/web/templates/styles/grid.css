@@ -50,6 +50,11 @@ h2 { font-size: 16px; margin: 0 0 10px; color: var(--muted); }
   text-decoration: underline; cursor: pointer; padding: 0;
 }
 .link-button:hover { text-decoration: none; }
+.link-button:focus-visible,
+.primary-button:focus-visible {
+  outline: 2px solid #3ad29f;
+  outline-offset: 2px;
+}
 .link-button.small { font-size: 13px; color: var(--muted); }
 .link-button.small:hover { color: var(--text); }
 .primary-button {
