@@ -12,8 +12,8 @@ pub use config::{
     WebAccessConfig, WebSecurityConfig,
 };
 pub use error::DescribeError;
-pub use history_profile::HistoryProfile;
 pub use execution_scope::ExecutionScope;
+pub use history_profile::HistoryProfile;
 pub use model::{
     CaptureOptions,
     DiskPartition,
