@@ -40,16 +40,15 @@ impl SystemSnapshot {
             );
         }
         let logs = if opts.with_logs {
-            match crate::infrastructure::logs::capture_logs(execution_scope).inspect_err(|err| {
-                LogEvent::SystemError {
-                    location: Cow::Borrowed("capture_logs"),
-                    error: Cow::Owned(err.to_string()),
-                }
-                .emit();
-            }) {
-                Ok(val) => Some(val),
-                Err(_) => None,
-            }
+            crate::infrastructure::logs::capture_logs(execution_scope)
+                .inspect_err(|err| {
+                    LogEvent::SystemError {
+                        location: Cow::Borrowed("capture_logs"),
+                        error: Cow::Owned(err.to_string()),
+                    }
+                    .emit();
+                })
+                .ok()
         } else {
             None
         };
