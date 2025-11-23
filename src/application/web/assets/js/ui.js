@@ -70,6 +70,23 @@ function basename(path) {
   return idx === -1 ? path : path.slice(idx + 1);
 }
 
+function formatExecutionScope(scope) {
+  const normalized = typeof scope === "string" ? scope.toLowerCase() : "";
+  if (normalized === "host") {
+    return "Hôte";
+  }
+  if (normalized === "container" || normalized === "containerself" || normalized === "container_self") {
+    return "Conteneur";
+  }
+  if (normalized.includes("host") && normalized.includes("container")) {
+    return "Hôte depuis conteneur";
+  }
+  if (normalized) {
+    return scope;
+  }
+  return "—";
+}
+
 function normalizeText(value) {
   return typeof value === "string" ? value.toLowerCase() : "";
 }
@@ -734,6 +751,7 @@ function updateUI(data) {
   el('hostname').textContent = data.hostname || "—";
   el('os').textContent = data.os || data.os_name || "—";
   el('kernel').textContent = data.kernel || data.kernel_release || "—";
+  el('executionScope').textContent = formatExecutionScope(data.execution_scope);
   el('uptime').textContent = fmtSecs(data.uptime_seconds || 0);
   el('cpus').textContent = data.cpu_count ?? "—";
   const updatesPendingEl = el('updatesPending');
