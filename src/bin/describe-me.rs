@@ -664,6 +664,7 @@ fn main() -> Result<()> {
     #[cfg(not(feature = "web"))]
     let web_expose_all_effective = false;
 
+    let execution_scope = describe_me::execution_scope();
     let mode = if opts.web.is_some() {
         "web"
     } else if opts.pretty {
@@ -676,6 +677,7 @@ fn main() -> Result<()> {
 
     LogEvent::Startup {
         mode: mode.into(),
+        execution_scope: execution_scope.as_str().into(),
         with_services: opts.with_services,
         net_listen: opts.net_listen,
         net_traffic: opts.net_traffic,

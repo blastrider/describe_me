@@ -57,6 +57,7 @@ pub fn init_logging() {
 pub enum LogEvent<'a> {
     Startup {
         mode: Cow<'a, str>,
+        execution_scope: Cow<'a, str>,
         with_services: bool,
         net_listen: bool,
         net_traffic: bool,
@@ -141,6 +142,7 @@ impl LogEvent<'_> {
         match self {
             LogEvent::Startup {
                 mode,
+                execution_scope,
                 with_services,
                 net_listen,
                 net_traffic,
@@ -150,14 +152,16 @@ impl LogEvent<'_> {
             } => {
                 info!(
                     mode = mode.as_ref(),
+                    execution_scope = execution_scope.as_ref(),
                     with_services,
                     net_listen,
                     net_traffic,
                     expose_all,
                     web_expose_all,
                     checks = ?checks,
-                    "startup mode={} with_services={} net_listen={} net_traffic={} expose_all={} web_expose_all={} checks={:?}",
+                    "startup mode={} execution_scope={} with_services={} net_listen={} net_traffic={} expose_all={} web_expose_all={} checks={:?}",
                     mode,
+                    execution_scope,
                     with_services,
                     net_listen,
                     net_traffic,

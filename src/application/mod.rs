@@ -19,6 +19,7 @@ impl SystemSnapshot {
 
     pub fn capture_with(opts: CaptureOptions) -> Result<Self, DescribeError> {
         let started_at = Instant::now();
+        let execution_scope = crate::application::execution_scope::current_scope();
         let base = crate::infrastructure::sysinfo::gather().inspect_err(|err| {
             LogEvent::SystemError {
                 location: Cow::Borrowed("gather"),
@@ -143,6 +144,7 @@ impl SystemSnapshot {
             updates_pending,
             updates_reboot,
             updates_packages,
+            execution_scope = execution_scope.as_str(),
             "snapshot_captured"
         );
 
@@ -276,6 +278,7 @@ pub mod web;
 
 pub mod health;
 
+pub mod execution_scope;
 pub mod exposure;
 pub mod extensions;
 pub mod history;

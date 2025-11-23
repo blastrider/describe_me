@@ -1,6 +1,7 @@
 #[cfg(feature = "config")]
 pub mod config;
 pub mod error;
+pub mod execution_scope;
 pub mod history_profile;
 pub mod model;
 
@@ -12,6 +13,7 @@ pub use config::{
 };
 pub use error::DescribeError;
 pub use history_profile::HistoryProfile;
+pub use execution_scope::ExecutionScope;
 pub use model::{
     CaptureOptions,
     DiskPartition,

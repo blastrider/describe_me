@@ -16,8 +16,8 @@ mod shared;
 
 pub use describe_me_plugin_sdk::PluginOutput;
 pub use domain::{
-    CaptureOptions, DescribeError, DiskPartition, DiskUsage, NetworkInterfaceTraffic, ServiceInfo,
-    SystemSnapshot, UpdatePackage, UpdatesInfo,
+    CaptureOptions, DescribeError, DiskPartition, DiskUsage, ExecutionScope,
+    NetworkInterfaceTraffic, ServiceInfo, SystemSnapshot, UpdatePackage, UpdatesInfo,
 };
 
 pub use domain::HistoryProfile;
@@ -64,6 +64,7 @@ pub use application::extensions::{run_ad_hoc_plugin, PluginExecutionError};
 
 pub use application::logging::{init_logging, LogEvent};
 
+pub use application::execution_scope::current_scope as execution_scope;
 pub use application::metadata::{
     add_server_tags, clear_server_description, clear_server_tags, load_server_description,
     load_server_tags, override_state_directory, remove_server_tags, set_server_description,

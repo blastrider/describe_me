@@ -7,7 +7,7 @@ use std::process::{Command, Stdio};
 #[cfg(feature = "systemd")]
 use tracing::warn;
 
-use crate::domain::{DescribeError, ServiceInfo};
+use crate::domain::{DescribeError, ExecutionScope, ServiceInfo};
 
 #[cfg(feature = "systemd")]
 const SYSTEMCTL_PATH: &str = "/usr/bin/systemctl";
@@ -16,10 +16,14 @@ const SYSTEMCTL_SAFE_PATH: &str = "/usr/bin:/bin";
 
 #[cfg(feature = "systemd")]
 pub(crate) fn list_systemd_services() -> Result<Vec<ServiceInfo>, DescribeError> {
-    ensure_systemctl_allowed()?;
+    let scope = crate::application::execution_scope::current_scope();
+    ensure_systemctl_allowed(scope)?;
 
     if !Path::new(SYSTEMCTL_PATH).exists() {
-        if container_mode_enabled() {
+        if matches!(
+            scope,
+            ExecutionScope::ContainerSelf | ExecutionScope::HostFromContainer
+        ) {
             warn!("systemctl introuvable (mode conteneur actif) : skip des services systemd");
             return Ok(Vec::new());
         }
@@ -102,7 +106,11 @@ pub fn __parse_systemctl_line_for_tests(line: &str) -> Result<ServiceInfo, Descr
 }
 
 #[cfg(feature = "systemd")]
-fn ensure_systemctl_allowed() -> Result<(), DescribeError> {
+fn ensure_systemctl_allowed(scope: ExecutionScope) -> Result<(), DescribeError> {
+    if matches!(scope, ExecutionScope::HostFromContainer) {
+        return Ok(());
+    }
+
     if running_as_root() && !allow_root_systemctl() {
         return Err(DescribeError::External(
             "refus d'exécuter /usr/bin/systemctl en root (exporter DESCRIBE_ME_ALLOW_ROOT_SYSTEMCTL=1 pour forcer)"
@@ -143,16 +151,5 @@ fn running_as_root() -> bool {
     #[cfg(not(target_os = "linux"))]
     {
         false
-    }
-}
-
-#[cfg(feature = "systemd")]
-fn container_mode_enabled() -> bool {
-    match env::var("DESCRIBE_ME_CONTAINER") {
-        Ok(val) => {
-            let normalized = val.trim().to_ascii_lowercase();
-            matches!(normalized.as_str(), "1" | "true" | "yes")
-        }
-        Err(_) => false,
     }
 }
