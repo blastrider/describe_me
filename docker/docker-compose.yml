@@ -26,6 +26,10 @@ services:
     volumes:
       - ./data/state:/var/lib/describe-me
       - ./config.dev.toml:/etc/describe_me/config.toml:ro
+      # Journald de l'hôte (lecture seule) pour alimenter --capture-logs
+      - /run/systemd/journal/socket:/run/systemd/journal/socket:ro
+      # Variante journald persistante (si présente sur l'hôte) :
+      # - /run/log/journal:/run/log/journal:ro
       # Pour activer TLS, montez vos certificats :
       # - ./certs:/etc/describe_me/certs:ro
     restart: unless-stopped
