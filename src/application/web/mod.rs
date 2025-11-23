@@ -605,6 +605,7 @@ pub async fn serve_http<A: Into<SocketAddr>>(
     let router = Router::new()
         .route("/", get(index))
         .route("/details", get(details))
+        .route("/container", get(details))
         .route("/json", get(json_view))
         .route("/assets/logo.svg", get(logo_asset))
         .route("/updates", get(updates_page))
