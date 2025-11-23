@@ -81,6 +81,8 @@ pub struct CliDefaults {
     pub web: Option<String>,
     /// Active --with-services si true.
     pub with_services: Option<bool>,
+    /// Active --capture-logs si true.
+    pub capture_logs: Option<bool>,
     /// Active --web-expose-all si true.
     pub web_expose_all: Option<bool>,
     /// Valeurs par défaut pour --web-allow-ip.
