@@ -18,6 +18,14 @@ const paginationState = {
   sockets: { offset: 0, limit: DEFAULT_PAGE_LIMIT },
 };
 
+const setHidden = (element, shouldHide) => {
+  if (element) {
+    element.hidden = !!shouldHide;
+  }
+};
+const show = (element) => setHidden(element, false);
+const hide = (element) => setHidden(element, true);
+
 function getWidthFromBytes(totalBytes, availableBytes) {
   if (typeof widthFromBytes === "function") {
     return widthFromBytes(totalBytes, availableBytes);
@@ -101,10 +109,10 @@ function renderLogs(logs) {
   const body = document.getElementById('logsBody');
   if (!card || !body) return;
   if (logs && typeof logs === "string" && logs.trim().length) {
-    card.style.display = "block";
+    show(card);
     body.textContent = logs;
   } else {
-    card.style.display = "none";
+    hide(card);
     body.textContent = "—";
   }
 }
@@ -402,11 +410,11 @@ function updatePaginationControls(kind, page) {
     return;
   }
   if (!page || page.total === 0) {
-    pagination.style.display = "none";
+    hide(pagination);
     return;
   }
 
-  pagination.style.display = "flex";
+  show(pagination);
   const start = page.offset + 1;
   const end = page.offset + page.items.length;
   const totalPages = Math.max(1, Math.ceil(page.total / page.limit));
@@ -425,18 +433,18 @@ function renderServices(result) {
   if (!card || !list) return;
 
   if (!result.exposed) {
-    card.style.display = "none";
-    if (pagination) pagination.style.display = "none";
-    if (filtersPanel) filtersPanel.style.display = "none";
+    hide(card);
+    if (pagination) hide(pagination);
+    if (filtersPanel) hide(filtersPanel);
     if (notExposed) {
-      notExposed.style.display = "block";
+      show(notExposed);
     }
     return;
   }
 
-  if (notExposed) notExposed.style.display = "none";
-  card.style.display = "block";
-  if (filtersPanel) filtersPanel.style.display = "flex";
+  if (notExposed) hide(notExposed);
+  show(card);
+  if (filtersPanel) show(filtersPanel);
   clearChildren(list);
 
   if (result.page.total === 0) {
@@ -522,26 +530,26 @@ function renderSockets(result) {
   if (!grid || !tcpCard || !udpCard || !tcpList || !udpList) return;
 
   if (!result.exposed) {
-    grid.style.display = "none";
-    tcpCard.style.display = "none";
-    udpCard.style.display = "none";
-    if (pagination) pagination.style.display = "none";
-    if (filtersPanel) filtersPanel.style.display = "none";
+    hide(grid);
+    hide(tcpCard);
+    hide(udpCard);
+    if (pagination) hide(pagination);
+    if (filtersPanel) hide(filtersPanel);
     if (notExposed) {
-      notExposed.style.display = "block";
+      show(notExposed);
     }
     return;
   }
 
-  if (notExposed) notExposed.style.display = "none";
-  if (filtersPanel) filtersPanel.style.display = "flex";
+  if (notExposed) hide(notExposed);
+  if (filtersPanel) show(filtersPanel);
   clearChildren(tcpList);
   clearChildren(udpList);
 
   if (result.page.total === 0) {
-    grid.style.display = "grid";
-    tcpCard.style.display = "block";
-    udpCard.style.display = "block";
+    show(grid);
+    show(tcpCard);
+    show(udpCard);
     const message =
       result.originalTotal > 0
         ? "Aucune socket après filtrage"
@@ -561,7 +569,7 @@ function renderSockets(result) {
     { tcp: [], udp: [] }
   );
 
-  grid.style.display = "grid";
+  show(grid);
 
   const renderGroup = (list) => {
     const fragment = document.createDocumentFragment();
@@ -599,18 +607,18 @@ function renderSockets(result) {
   };
 
   if (grouped.tcp.length) {
-    tcpCard.style.display = "block";
+    show(tcpCard);
     tcpList.appendChild(renderGroup(grouped.tcp));
   } else {
-    tcpCard.style.display = "block";
+    show(tcpCard);
     tcpList.appendChild(createServiceEmpty('Aucun port TCP'));
   }
 
   if (grouped.udp.length) {
-    udpCard.style.display = "block";
+    show(udpCard);
     udpList.appendChild(renderGroup(grouped.udp));
   } else {
-    udpCard.style.display = "block";
+    show(udpCard);
     udpList.appendChild(createServiceEmpty('Aucun port UDP'));
   }
 
@@ -791,7 +799,7 @@ function updateUI(data) {
     const info = data.updates;
     if (info && typeof info.pending !== 'undefined') {
       if (updatesCard) {
-        updatesCard.style.display = "block";
+        show(updatesCard);
       }
       const pendingRaw = Number(info.pending);
       if (Number.isFinite(pendingRaw) && pendingRaw >= 0) {
@@ -817,7 +825,7 @@ function updateUI(data) {
         const packages = Array.isArray(info.packages) ? info.packages : [];
         clearChildren(updatesList);
         if (packages.length > 0) {
-          updatesToggle.style.display = "inline-flex";
+          show(updatesToggle);
           const collapsed = updatesDetails.classList.contains('collapsed');
           updatesToggle.textContent = collapsed ? "Détails" : "Masquer";
           updatesToggle.setAttribute('aria-expanded', (!collapsed).toString());
@@ -825,7 +833,7 @@ function updateUI(data) {
           packages.forEach((pkg) => fragment.appendChild(formatUpdatePackage(pkg)));
           updatesList.appendChild(fragment);
         } else {
-          updatesToggle.style.display = "none";
+          hide(updatesToggle);
           updatesDetails.classList.add('collapsed');
           updatesToggle.textContent = "Détails";
           updatesToggle.setAttribute('aria-expanded', 'false');
@@ -834,13 +842,13 @@ function updateUI(data) {
       }
     } else if (Object.prototype.hasOwnProperty.call(data, 'updates')) {
       if (updatesCard) {
-        updatesCard.style.display = "block";
+        show(updatesCard);
       }
       updatesPendingEl.textContent = "—";
       updatesRebootEl.textContent = "—";
       updatesStatusEl.textContent = "Collecte indisponible";
       if (updatesToggle && updatesDetails && updatesList) {
-        updatesToggle.style.display = "none";
+        hide(updatesToggle);
         updatesDetails.classList.add('collapsed');
         updatesToggle.textContent = "Détails";
         updatesToggle.setAttribute('aria-expanded', 'false');
@@ -849,13 +857,13 @@ function updateUI(data) {
       }
     } else {
       if (updatesCard) {
-        updatesCard.style.display = "none";
+        hide(updatesCard);
       }
       updatesPendingEl.textContent = "—";
       updatesRebootEl.textContent = "—";
       updatesStatusEl.textContent = "—";
       if (updatesToggle && updatesDetails && updatesList) {
-        updatesToggle.style.display = "none";
+        hide(updatesToggle);
         updatesDetails.classList.add('collapsed');
         updatesToggle.textContent = "Détails";
         updatesToggle.setAttribute('aria-expanded', 'false');
@@ -916,7 +924,7 @@ function updateUI(data) {
     const entries = Array.isArray(data.network_traffic) ? data.network_traffic : [];
     clearChildren(networkList);
     if (entries.length > 0) {
-      networkCard.style.display = "block";
+      show(networkCard);
       const fragment = document.createDocumentFragment();
       entries.forEach((entry) => {
         const name = entry?.name ? String(entry.name) : "interface";
@@ -943,11 +951,11 @@ function updateUI(data) {
       });
       networkList.appendChild(fragment);
     } else if (Object.prototype.hasOwnProperty.call(data, 'network_traffic')) {
-      networkCard.style.display = "block";
+      show(networkCard);
       networkList.appendChild(createServiceEmpty('Aucune interface réseau observée'));
     } else {
-      networkCard.style.display = "none";
-      networkList.appendChild(createServiceEmpty());
+      hide(networkCard);
+      return;
     }
   }
 
@@ -964,7 +972,7 @@ function updateUI(data) {
     ) {
       const entries = Object.entries(rawExtensions);
       if (entries.length > 0) {
-        extensionsCard.style.display = 'block';
+        show(extensionsCard);
         const fragment = document.createDocumentFragment();
         entries
           .sort(([aName], [bName]) => aName.localeCompare(bName))
@@ -987,18 +995,18 @@ function updateUI(data) {
           });
         extensionsList.appendChild(fragment);
       } else if (hasField) {
-        extensionsCard.style.display = 'block';
+        show(extensionsCard);
         extensionsList.appendChild(createServiceEmpty('Aucune extension active'));
       } else {
-        extensionsCard.style.display = 'none';
-        extensionsList.appendChild(createServiceEmpty());
+        hide(extensionsCard);
+        return;
       }
     } else if (hasField) {
-      extensionsCard.style.display = 'block';
+      show(extensionsCard);
       extensionsList.appendChild(createServiceEmpty('Aucune donnée extension'));
     } else {
-      extensionsCard.style.display = 'none';
-      extensionsList.appendChild(createServiceEmpty());
+      hide(extensionsCard);
+      return;
     }
   }
 
