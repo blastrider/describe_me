@@ -1,4 +1,5 @@
 const TOKEN_STORAGE_KEY = 'describe_me_token';
+let lastFocusedBeforeOverlay = null;
 
 function loadPersistedToken() {
   try {
@@ -85,7 +86,51 @@ if (tokenOpen) {
 const sensitiveNodes = Array.from(document.querySelectorAll('[data-sensitive]'));
 let overlayTimeout = null;
 
+const getFocusableOverlayNodes = () => {
+  if (!tokenOverlay) return [];
+  const candidates = tokenOverlay.querySelectorAll(
+    'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+  );
+  return Array.from(candidates).filter((el) => {
+    const rect = el.getBoundingClientRect();
+    return !(el.offsetParent === null && rect.width === 0 && rect.height === 0);
+  });
+};
+
+if (tokenOverlay) {
+  tokenOverlay.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      hideTokenPrompt();
+      return;
+    }
+    if (event.key !== 'Tab') {
+      return;
+    }
+    const focusables = getFocusableOverlayNodes();
+    if (focusables.length === 0) {
+      return;
+    }
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    const active = document.activeElement;
+    if (event.shiftKey) {
+      if (active === first || !tokenOverlay.contains(active)) {
+        event.preventDefault();
+        last.focus();
+      }
+    } else if (active === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  });
+}
+
 function showTokenPrompt(message) {
+  lastFocusedBeforeOverlay =
+    document.activeElement && typeof document.activeElement.focus === "function"
+      ? document.activeElement
+      : null;
   if (typeof message === "string" && message) {
     tokenErrorEl.textContent = message;
   }
@@ -108,6 +153,12 @@ function hideTokenPrompt() {
     overlayTimeout = null;
   }
   sensitiveNodes.forEach((node) => node.classList.remove('blurred'));
+  if (lastFocusedBeforeOverlay && document.contains(lastFocusedBeforeOverlay)) {
+    lastFocusedBeforeOverlay.focus();
+  } else if (tokenOpen) {
+    tokenOpen.focus();
+  }
+  lastFocusedBeforeOverlay = null;
 }
 
 function clearSessionCookie() {
