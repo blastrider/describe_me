@@ -119,11 +119,12 @@ pub(crate) fn detect_container_info(scope: ExecutionScope) -> Option<ContainerIn
         };
 
         let container_name = hostname.clone();
+        let image = image_from_env();
 
         Some(ContainerInfo {
             runtime: runtime.unwrap_or_else(|| "unknown".into()),
             container_id,
-            image: None,
+            image,
             container_name,
             orchestrator,
             k8s_namespace,
@@ -349,4 +350,22 @@ fn choose_best(current: Option<String>, candidate: String) -> Option<String> {
         }
         None => Some(candidate),
     }
+}
+
+fn image_from_env() -> Option<String> {
+    const KEYS: [&str; 4] = [
+        "CONTAINER_IMAGE",
+        "IMAGE",
+        "DOCKER_IMAGE",
+        "K8S_CONTAINER_IMAGE",
+    ];
+    for key in KEYS {
+        if let Ok(val) = std::env::var(key) {
+            let trimmed = val.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
 }
