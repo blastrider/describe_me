@@ -39,6 +39,20 @@ impl SystemSnapshot {
                 "container_context_detected"
             );
         }
+        let logs = if opts.with_logs {
+            match crate::infrastructure::logs::capture_logs(execution_scope).inspect_err(|err| {
+                LogEvent::SystemError {
+                    location: Cow::Borrowed("capture_logs"),
+                    error: Cow::Owned(err.to_string()),
+                }
+                .emit();
+            }) {
+                Ok(val) => Some(val),
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
         let disk_usage = if opts.with_disk_usage {
             Some(
                 crate::infrastructure::sysinfo::gather_disks().inspect_err(|err| {
@@ -111,6 +125,7 @@ impl SystemSnapshot {
             kernel: base.kernel,
             version: env!("CARGO_PKG_VERSION").to_string(),
             execution_scope,
+            logs,
             uptime_seconds: base.uptime_seconds,
             cpu_count: base.cpu_count,
             load_average: base.load_average,
@@ -303,5 +318,6 @@ pub mod exposure;
 pub mod extensions;
 pub mod history;
 pub mod logging;
+pub mod logs;
 pub mod metadata;
 pub mod pagination;
