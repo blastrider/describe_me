@@ -54,7 +54,10 @@ use crate::domain::DescribeError;
 #[cfg(feature = "config")]
 use crate::domain::{DescribeConfig, WebSecurityConfig};
 
-use handlers::{history_series, index, logo_asset, update_description, update_tags, updates_page};
+use handlers::{
+    history_series, host_logs, index, logo_asset, logs_page, update_description, update_tags,
+    updates_page,
+};
 use security::WebSecurity;
 use sse::sse_stream;
 use updates_cache::UpdatesCache;
@@ -600,8 +603,10 @@ pub async fn serve_http<A: Into<SocketAddr>>(
         .route("/", get(index))
         .route("/assets/logo.svg", get(logo_asset))
         .route("/updates", get(updates_page))
+        .route("/logs", get(logs_page))
         .route("/sse", get(sse_stream))
         .route("/api/history", get(history_series))
+        .route("/api/logs", get(host_logs))
         .route("/api/description", post(update_description))
         .route("/api/tags", post(update_tags))
         .layer(middleware::from_fn_with_state(
