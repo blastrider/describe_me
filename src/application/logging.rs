@@ -40,18 +40,12 @@ pub fn init_logging() {
     if std::path::Path::new("/run/systemd/journal/socket").exists() {
         // Envoie structuré vers journald
         if let Ok(layer) = tracing_journald::layer() {
-            let registry = if log_to_stderr {
-                tracing_subscriber::registry()
-                    .with(filter.clone())
-                    .with(layer)
-                    .with(fmt_layer())
-            } else {
-                tracing_subscriber::registry()
-                    .with(filter.clone())
-                    .with(layer)
-            };
-
-            if registry.try_init().is_ok() {
+            let base = tracing_subscriber::registry().with(filter.clone());
+            if log_to_stderr {
+                if base.with(layer).with(fmt_layer()).try_init().is_ok() {
+                    return;
+                }
+            } else if base.with(layer).try_init().is_ok() {
                 return;
             }
         }
