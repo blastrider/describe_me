@@ -254,7 +254,13 @@ pub(super) async fn sse_stream(
     guard: AuthGuard,
 ) -> impl IntoResponse {
     #[cfg(feature = "systemd")]
-    let with_services = true;
+    let with_services = {
+        // Dans un conteneur sans systemd, on évite d'appeler systemctl.
+        let container = std::env::var("DESCRIBE_ME_CONTAINER")
+            .ok()
+            .map(|v| v.trim().eq_ignore_ascii_case("1") || v.trim().eq_ignore_ascii_case("true"));
+        !matches!(container, Some(true))
+    };
     #[cfg(not(feature = "systemd"))]
     let with_services = false;
 
