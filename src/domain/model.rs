@@ -124,6 +124,28 @@ pub struct NetworkInterfaceTraffic {
     pub tx_dropped: u64,
 }
 
+/// Entrée de log hôte (journalctl).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct HostLogEntry {
+    /// Timestamp ISO produit par journalctl (short-iso-precise).
+    pub timestamp: String,
+    /// Source/identifiant du service (si parsé).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub source: Option<String>,
+    /// Message textuel.
+    pub message: String,
+}
+
+/// Tranche de logs hôtes récupérée (borne en taille côté appelant).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct HostLogsPage {
+    pub entries: Vec<HostLogEntry>,
+    /// `true` si la requête est bornée et qu'il reste potentiellement d'autres lignes.
+    pub truncated: bool,
+}
+
 /// Détail d’une mise à jour disponible.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
