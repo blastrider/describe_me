@@ -92,8 +92,9 @@ impl FromRequestParts<AppState> for AuthGuard {
         match state.security.authorize(parts, route).await {
             Ok(session) => Ok(AuthGuard { session }),
             Err(rejection) => {
-                let wants_styled_html =
-                    route == WebRoute::Html && rejection.is_auth_failure() && accepts_html(parts);
+                let wants_styled_html = matches!(route, WebRoute::Html | WebRoute::Logs)
+                    && rejection.is_auth_failure()
+                    && accepts_html(parts);
                 let html_body = if wants_styled_html {
                     let nonce = parts
                         .extensions
@@ -356,12 +357,15 @@ pub(super) enum WebRoute {
     Html,
     Sse,
     History,
+    Logs,
 }
 
 impl WebRoute {
     pub fn from_path(path: &str) -> Self {
         if path == "/sse" {
             WebRoute::Sse
+        } else if path.starts_with("/api/logs") || path == "/logs" {
+            WebRoute::Logs
         } else if path.starts_with("/api/history") {
             WebRoute::History
         } else {
@@ -374,6 +378,7 @@ impl WebRoute {
             WebRoute::Html => "/",
             WebRoute::Sse => "/sse",
             WebRoute::History => "/api/history",
+            WebRoute::Logs => "/api/logs",
         }
     }
 
