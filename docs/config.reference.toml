@@ -157,6 +157,13 @@ per_ip = 6
 per_token = 4
 global = 40
 
+[web.security.logs]
+# Rate limiting pour `/api/logs` et la page `/logs`.
+window_seconds = 60
+per_ip = 6
+per_token = 4
+global = 40
+
 [web.security.brute_force]
 # Politique anti-bruteforce (authentification/token).
 window_seconds = 600
