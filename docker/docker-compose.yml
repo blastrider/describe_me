@@ -24,6 +24,8 @@ services:
     volumes:
       - ./data/state:/var/lib/describe-me
       - ./config.dev.toml:/etc/describe_me/config.toml:ro
+      # Journald : monte le socket pour expédier les logs host
+      - /run/systemd/journal/socket:/run/systemd/journal/socket:ro
       # Pour activer TLS, montez vos certificats :
       # - ./certs:/etc/describe_me/certs:ro
     restart: unless-stopped
