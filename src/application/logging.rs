@@ -29,38 +29,12 @@ pub fn init_logging() {
         .unwrap();
 
     #[cfg(feature = "journald")]
-    if std::path::Path::new("/run/systemd/journal/socket").exists() {
-        // Envoie structuré vers journald
-        if let Ok(layer) = tracing_journald::layer() {
-            let fmt = tracing_subscriber::fmt::layer()
-                .with_target(false)
-                .with_thread_ids(false)
-                .with_thread_names(false)
-                .with_writer(std::io::stderr);
-
-            if log_to_stderr {
-                if tracing_subscriber::registry()
-                    .with(filter.clone())
-                    .with(layer)
-                    .with(fmt)
-                    .try_init()
-                    .is_ok()
-                {
-                    return;
-                }
-            } else if tracing_subscriber::registry()
-                .with(filter.clone())
-                .with(layer)
-                .try_init()
-                .is_ok()
-            {
-                return;
-            }
-        }
+    if try_init_journald(&filter, log_to_stderr) {
+        return;
     }
 
     // Fallback: stderr lisible (pas d’ANSI forcé)
-    let fmt = tracing_subscriber::fmt::layer()
+    let fmt_layer = tracing_subscriber::fmt::layer()
         .with_target(false)
         .with_thread_ids(false)
         .with_thread_names(false)
@@ -68,8 +42,40 @@ pub fn init_logging() {
 
     let _ = tracing_subscriber::registry()
         .with(filter)
-        .with(fmt)
+        .with(fmt_layer)
         .try_init();
+}
+
+#[cfg(feature = "journald")]
+fn try_init_journald(filter: &EnvFilter, log_to_stderr: bool) -> bool {
+    if !std::path::Path::new("/run/systemd/journal/socket").exists() {
+        return false;
+    }
+
+    if let Ok(layer) = tracing_journald::layer() {
+        if log_to_stderr {
+            let fmt_layer = tracing_subscriber::fmt::layer()
+                .with_target(false)
+                .with_thread_ids(false)
+                .with_thread_names(false)
+                .with_writer(std::io::stderr);
+
+            return tracing_subscriber::registry()
+                .with(filter.clone())
+                .with(layer)
+                .with(fmt_layer)
+                .try_init()
+                .is_ok();
+        }
+
+        return tracing_subscriber::registry()
+            .with(filter.clone())
+            .with(layer)
+            .try_init()
+            .is_ok();
+    }
+
+    false
 }
 
 /// Énumération centralisée des événements de log applicatifs.
