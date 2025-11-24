@@ -28,33 +28,49 @@ pub fn init_logging() {
         .or_else(|_| EnvFilter::try_new("info"))
         .unwrap();
 
-    let fmt_layer = || {
-        tracing_subscriber::fmt::layer()
-            .with_target(false)
-            .with_thread_ids(false)
-            .with_thread_names(false)
-            .with_writer(std::io::stderr)
-    };
-
     #[cfg(feature = "journald")]
     if std::path::Path::new("/run/systemd/journal/socket").exists() {
         // Envoie structuré vers journald
         if let Ok(layer) = tracing_journald::layer() {
-            let base = tracing_subscriber::registry().with(filter.clone());
+            let fmt = tracing_subscriber::fmt::layer()
+                .with_target(false)
+                .with_thread_ids(false)
+                .with_thread_names(false)
+                .with_writer(std::io::stderr);
+
             if log_to_stderr {
-                if base.with(layer).with(fmt_layer()).try_init().is_ok() {
+                if tracing_subscriber::registry()
+                    .with(filter.clone())
+                    .with(layer)
+                    .with(fmt)
+                    .try_init()
+                    .is_ok()
+                {
                     return;
                 }
-            } else if base.with(layer).try_init().is_ok() {
-                return;
+            } else {
+                if tracing_subscriber::registry()
+                    .with(filter.clone())
+                    .with(layer)
+                    .try_init()
+                    .is_ok()
+                {
+                    return;
+                }
             }
         }
     }
 
     // Fallback: stderr lisible (pas d’ANSI forcé)
+    let fmt = tracing_subscriber::fmt::layer()
+        .with_target(false)
+        .with_thread_ids(false)
+        .with_thread_names(false)
+        .with_writer(std::io::stderr);
+
     let _ = tracing_subscriber::registry()
         .with(filter)
-        .with(fmt_layer())
+        .with(fmt)
         .try_init();
 }
 
