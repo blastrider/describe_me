@@ -1,0 +1,39 @@
+# Config local (hors conteneur) équivalente à docker/config.dev.toml.
+# Lance le binaire avec : ./target/release/describe-me --config ./config.local.toml --web 127.0.0.1:8080 --web-dev
+
+[runtime]
+rust_log = "info"
+# Chemin d'état local (modifiable) : créez-le avant de lancer.
+state_dir = "./data/state"
+
+[exposure]
+expose_hostname = true
+expose_os = true
+expose_kernel = true
+expose_services = true
+expose_disk_partitions = true
+expose_listening_sockets = true
+expose_network_traffic = true
+expose_updates = true
+expose_extensions = true
+redacted = true
+
+[web]
+# Jeton bcrypt pour le secret "monsecret" (identique au compose dev).
+token = "$2b$12$vCzSiaTPOrZsElMX4kT/3.Cg6xHjY7izW.SK0hOUWikqWWQZc1zWS"
+# Autorise localhost (ajoutez d’autres réseaux si besoin).
+allow_ips = ["127.0.0.1/32", "::1/128"]
+allow_origins = ["http://localhost:8080", "http://127.0.0.1:8080"]
+dev_insecure_session_cookie = true
+
+[history]
+enabled = true
+profile = "default"
+retention_points = 256
+max_window_seconds = 3600
+rounding_seconds = 10
+
+# Activez ce bloc si vous avez des certificats locaux.
+# [web.tls]
+# cert_path = "/chemin/vers/cert.pem"
+# key_path = "/chemin/vers/cle.pem"
