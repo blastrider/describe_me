@@ -64,6 +64,12 @@ Le mode CLI assemble :
 Le serveur web réutilise ces mêmes structures, cadencées par `tokio` et
 l’intervalle `--web-interval`.
 
+## Logs journald
+
+- `describe-me logs --lines 200` lit les dernières entrées via `journalctl --output=short-iso-precise` (borne interne à `HOST_LOGS_MAX_LINES` pour éviter les abus).
+- La feature `journald` est requise et, en conteneur, le socket `/run/systemd/journal/socket` doit être monté en lecture.
+- Les messages sont affichés au format `TIMESTAMP [source] message`; en cas d’indisponibilité de journald, une erreur explicite est renvoyée.
+
 ## Métadonnées persistées (redb)
 
 Le binaire embarque maintenant un mini-stockage redb (`metadata.redb`) pour
