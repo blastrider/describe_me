@@ -993,6 +993,7 @@ mod tests {
             listening_sockets: None,
             #[cfg(feature = "net")]
             network_traffic: None,
+            containers: None,
             updates: Some(describe_me::UpdatesInfo {
                 pending: 5,
                 reboot_required: true,
@@ -1027,6 +1028,7 @@ mod tests {
             listening_sockets: None,
             #[cfg(feature = "net")]
             network_traffic: None,
+            containers: None,
             updates: None,
             extensions: None,
         };

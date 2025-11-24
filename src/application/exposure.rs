@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 #[cfg(all(feature = "systemd", feature = "serde"))]
 use crate::domain::ServiceInfo;
 #[cfg(feature = "serde")]
-use crate::domain::{DiskPartition, SystemSnapshot, UpdatesInfo};
+use crate::domain::{ContainersSnapshot, DiskPartition, SystemSnapshot, UpdatesInfo};
 #[cfg(all(feature = "serde", feature = "net"))]
 use crate::domain::{ListeningSocket, NetworkInterfaceTraffic};
 #[cfg(feature = "serde")]
@@ -247,6 +247,8 @@ pub struct SnapshotView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub services_summary: Option<ServiceSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub containers: Option<ContainersSnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub updates: Option<UpdatesInfo>,
     #[cfg(feature = "net")]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -308,6 +310,7 @@ impl SnapshotView {
                 .then(|| snapshot.services_running.clone()),
             #[cfg(feature = "systemd")]
             services_summary,
+            containers: snapshot.containers.clone(),
             updates: if exposure.updates() {
                 snapshot.updates.clone()
             } else {
@@ -470,6 +473,7 @@ mod tests {
                 listening_sockets: None,
                 #[cfg(feature = "net")]
                 network_traffic: None,
+                containers: None,
                 updates: Some(UpdatesInfo {
                     pending: 3,
                     reboot_required: true,
@@ -508,6 +512,7 @@ mod tests {
             listening_sockets: None,
             #[cfg(feature = "net")]
             network_traffic: None,
+            containers: None,
             updates: Some(UpdatesInfo {
                 pending: 2,
                 reboot_required: false,

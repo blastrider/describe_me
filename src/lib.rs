@@ -16,8 +16,9 @@ mod shared;
 
 pub use describe_me_plugin_sdk::PluginOutput;
 pub use domain::{
-    CaptureOptions, DescribeError, DiskPartition, DiskUsage, NetworkInterfaceTraffic, ServiceInfo,
-    SystemSnapshot, UpdatePackage, UpdatesInfo,
+    CaptureOptions, ContainerInfo, ContainersSnapshot, ContainersSummary, DescribeError,
+    DiskPartition, DiskUsage, NetworkInterfaceTraffic, ServiceInfo, SystemSnapshot, UpdatePackage,
+    UpdatesInfo,
 };
 
 pub use domain::HistoryProfile;
@@ -59,6 +60,11 @@ pub use application::web::{serve_http, WebAccess, WebTlsConfig};
 
 pub use application::health::{eval_checks, parse_check, Severity};
 
+#[cfg(feature = "serde")]
+pub use application::containers::{parse_plugin_output, ContainersContractError};
+pub use application::containers::{
+    ContainersPluginExitCode, CONTAINERS_CONTRACT_VERSION, CONTAINERS_PLUGIN_TIMEOUT,
+};
 pub use application::exposure::Exposure;
 pub use application::extensions::{run_ad_hoc_plugin, PluginExecutionError};
 

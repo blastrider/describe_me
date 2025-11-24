@@ -13,8 +13,9 @@ pub use config::{
 pub use error::DescribeError;
 pub use history_profile::HistoryProfile;
 pub use model::{
-    CaptureOptions, DiskPartition, DiskUsage, HostLogEntry, HostLogsPage, NetworkInterfaceTraffic,
-    ServiceInfo, SystemSnapshot, UpdatePackage, UpdatesInfo,
+    CaptureOptions, ContainerInfo, ContainersSnapshot, ContainersSummary, DiskPartition, DiskUsage,
+    HostLogEntry, HostLogsPage, NetworkInterfaceTraffic, ServiceInfo, SystemSnapshot,
+    UpdatePackage, UpdatesInfo,
 };
 
 #[cfg(feature = "serde")]

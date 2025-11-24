@@ -21,6 +21,35 @@ pub struct UpdatesInfo {
     pub packages: Option<SharedSlice<UpdatePackage>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct ContainerInfo {
+    pub name: String,
+    pub runtime: String,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub ip: Option<String>,
+    pub state: String,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub image: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct ContainersSummary {
+    pub total: usize,
+    pub running: usize,
+}
+
+/// Ensemble validé d'informations conteneurs collectées par le plugin dédié.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct ContainersSnapshot {
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub summary: Option<ContainersSummary>,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub containers: Option<SharedSlice<ContainerInfo>>,
+}
+
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct SystemSnapshot {
@@ -45,6 +74,8 @@ pub struct SystemSnapshot {
     #[cfg(feature = "net")]
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub network_traffic: Option<SharedSlice<crate::domain::NetworkInterfaceTraffic>>,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub containers: Option<ContainersSnapshot>,
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub updates: Option<UpdatesInfo>,
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
