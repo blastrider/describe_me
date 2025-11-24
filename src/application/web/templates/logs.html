@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>describe_me — Logs hôte</title>
+  <style nonce="__CSP_NONCE__">
+__INLINE_CSS__
+  </style>
+</head>
+<body>
+  <canvas id="backgroundGridCanvas" aria-hidden="true"></canvas>
+  <header>
+    <div>
+      <h1>Logs du système</h1>
+      <p class="muted">Dernières lignes journald exposées par describe_me.</p>
+    </div>
+    <div class="header-actions">
+      <button class="primary-button" type="button" data-role="logs-refresh">Rafraîchir</button>
+      <a class="link-button" href="/">← Retour au tableau de bord</a>
+    </div>
+  </header>
+  <main id="logsPage" data-lines="400">
+    <section class="card">
+      <p class="muted small">Lecture via <code>journalctl --output=short-iso-precise</code> (socket monté si conteneur).</p>
+      <p class="logs-error" data-role="logs-error" hidden></p>
+      <pre class="logs-body mono" data-role="logs-full">Chargement…</pre>
+    </section>
+  </main>
+  <div class="footer">describe_me • affichage ponctuel (pas d'auto-refresh)</div>
+  <script nonce="__CSP_NONCE__">
+__BACKGROUND_CANVAS_JS__
+  </script>
+  <script nonce="__CSP_NONCE__">
+__LOGS_JS__
+  </script>
+</body>
+</html>
