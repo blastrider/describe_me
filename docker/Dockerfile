@@ -46,17 +46,35 @@ RUN --mount=type=cache,target=/app/target \
     chown -R 1000:1000 /dist/var/lib/describe-me /dist/etc/describe_me /dist/usr/lib/describe_me
 
 ############################
-# Étape 2 : image finale
+# Étape 1b : récupérer journalctl (optionnel)
 ############################
-FROM scratch
+FROM debian:12-slim AS journalctl
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends systemd ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+    mkdir -p /dist/usr/bin; \
+    cp /usr/bin/journalctl /dist/usr/bin/journalctl; \
+    ldd /usr/bin/journalctl | awk '{print $3}' | grep '^/' | xargs -r -I{} cp --parents {} /dist
+
+############################
+# Étape 2 : image finale (debian-slim pour disposer de journalctl/libsystemd)
+############################
+FROM debian:13-slim
 
 LABEL org.opencontainers.image.title="describe-me"
 LABEL org.opencontainers.image.description="Server snapshot & health CLI + web dashboard"
 LABEL org.opencontainers.image.source="https://github.com/Max-Perso/describe_me"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 
+# Certificats + binaires statiques
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /dist/ /
+
+# journalctl + libs (installés dans l'image finale)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends systemd ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
 
 ENV RUST_LOG=info \
     DESCRIBE_ME_STATE_DIR=/var/lib/describe-me
