@@ -1,5 +1,7 @@
 pub const BACKGROUND_CANVAS_JS: &str = include_str!("js/background-grid.js");
 
+pub const LOGS_JS: &str = include_str!("js/logs.js");
+
 pub const MAIN_JS: &str = concat!(
     include_str!("js/preamble.js"),
     "\n",
@@ -16,6 +18,8 @@ pub const MAIN_JS: &str = concat!(
     include_str!("js/disk-utils.js"),
     "\n",
     include_str!("js/history-trends.js"),
+    "\n",
+    include_str!("js/logs.js"),
     "\n",
     include_str!("js/ui.js"),
     "\n",
