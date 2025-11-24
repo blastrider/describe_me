@@ -2,6 +2,10 @@
 
 - Ajoutez vos changements ici.
 
+## v0.2.3 - 2025-11-24
+
+- Ajoutez vos changements ici.
+
 ## v0.2.2 - 2025-11-21
 
 - UI web : filtres temps réel (recherche plein texte, statut, tags) et pagination locale pour les cartes Services/Sockets, avec gestion propre du mode redacted (« non exposé »).
