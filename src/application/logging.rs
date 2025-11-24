@@ -48,15 +48,13 @@ pub fn init_logging() {
                 {
                     return;
                 }
-            } else {
-                if tracing_subscriber::registry()
-                    .with(filter.clone())
-                    .with(layer)
-                    .try_init()
-                    .is_ok()
-                {
-                    return;
-                }
+            } else if tracing_subscriber::registry()
+                .with(filter.clone())
+                .with(layer)
+                .try_init()
+                .is_ok()
+            {
+                return;
             }
         }
     }
