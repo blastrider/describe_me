@@ -11,7 +11,7 @@ state_dir = "/var/lib/describe-me"
 expose_hostname = true
 expose_os = true
 expose_kernel = true
-expose_services = true
+expose_services = false
 expose_disk_partitions = true
 expose_listening_sockets = true
 expose_network_traffic = true
@@ -26,6 +26,16 @@ token = "$2b$12$vCzSiaTPOrZsElMX4kT/3.Cg6xHjY7izW.SK0hOUWikqWWQZc1zWS"
 allow_ips = ["0.0.0.0/0", "::/0"]
 allow_origins = ["http://localhost:8080", "http://127.0.0.1:8080"]
 dev_insecure_session_cookie = true
+
+[web.security]
+allowlist_multiplier = 10
+token_ip_affinity_limit = 0
+
+[web.security.logs]
+window_seconds = 60
+per_ip = 120
+per_token = 120
+global = 240
 
 [history]
 enabled = true
