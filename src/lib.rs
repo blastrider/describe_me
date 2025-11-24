@@ -62,6 +62,8 @@ pub use application::health::{eval_checks, parse_check, Severity};
 pub use application::exposure::Exposure;
 pub use application::extensions::{run_ad_hoc_plugin, PluginExecutionError};
 
+pub use application::logs::{tail_host_logs, HOST_LOGS_DEFAULT_LINES, HOST_LOGS_MAX_LINES};
+
 pub use application::logging::{init_logging, LogEvent};
 
 pub use application::metadata::{
