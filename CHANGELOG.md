@@ -1,22 +1,13 @@
 ## Unreleased
 
-- Ajoutez vos changements ici.
+
 
 ## v0.2.6 - 2025-11-24
 
-- Ajoutez vos changements ici.
-
-## v0.2.5 - 2025-11-24
-
-- Ajoutez vos changements ici.
-
-## v0.2.4 - 2025-11-24
-
-- Ajoutez vos changements ici.
-
-## v0.2.3 - 2025-11-24
-
-- Ajoutez vos changements ici.
+- Logs journald : nouvelle API/CLI (`describe-me logs`) et UI (tuile + page `/logs`) pour lire les logs de l'hôte ; support journald côté conteneur avec socket monté et image Debian 13.
+- Docker : image finale basée sur `debian:13-slim` (inclut journalctl/libsystemd) ; compose dev ajusté pour monter le socket journald, utiliser PID host en non-root, ignorer systemctl en conteneur et assouplir les limites `/api/logs`.
+- SSE : désactivation de la collecte systemd quand `DESCRIBE_ME_CONTAINER=1` pour éviter les erreurs `systemctl` en conteneur.
+- Docs : ajout d'une section complète sur la lecture des logs en Docker (`docs/logs.md`), config locale `config.local.toml` pour lancer le binaire hors conteneur, et mises à jour README/CLI.
 
 ## v0.2.2 - 2025-11-21
 
