@@ -1,4 +1,4 @@
-use super::assets::{BACKGROUND_CANVAS_JS, MAIN_JS};
+use super::assets::{BACKGROUND_CANVAS_JS, LOGS_JS, MAIN_JS};
 use crate::domain::{UpdatePackage, UpdatesInfo};
 
 const INDEX_HTML_TEMPLATE: &str = include_str!("templates/index.html");
@@ -50,6 +50,8 @@ __INLINE_CSS__
 "#;
 const UPDATES_HTML_TEMPLATE: &str = include_str!("templates/updates.html");
 const UPDATES_CSS: &str = include_str!("templates/updates.css");
+const LOGS_HTML_TEMPLATE: &str = include_str!("templates/logs.html");
+const LOGS_CSS: &str = include_str!("templates/logs.css");
 
 fn fill_template<'a, F>(template: &str, extra_capacity: usize, mut resolver: F) -> String
 where
@@ -158,6 +160,19 @@ pub(super) fn render_updates_page(
         "DETAILS" => Some(details_html.as_str()),
         "MESSAGE" => Some(message_html.as_str()),
         "BACKGROUND_CANVAS_JS" => Some(BACKGROUND_CANVAS_JS),
+        _ => None,
+    })
+}
+
+pub(super) fn render_logs_page(csp_nonce: &str) -> String {
+    let extra_capacity =
+        LOGS_CSS.len() + BACKGROUND_CANVAS_JS.len() + LOGS_JS.len() + csp_nonce.len();
+
+    fill_template(LOGS_HTML_TEMPLATE, extra_capacity, |key| match key {
+        "INLINE_CSS" => Some(LOGS_CSS),
+        "BACKGROUND_CANVAS_JS" => Some(BACKGROUND_CANVAS_JS),
+        "LOGS_JS" => Some(LOGS_JS),
+        "CSP_NONCE" => Some(csp_nonce),
         _ => None,
     })
 }

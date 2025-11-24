@@ -15,4 +15,6 @@
   .token-dialog { background: #ffffff; border-color: #d6dbeb; }
   .token-dialog input { background: #ffffff; border-color: #d0d6e5; color: #1d2330; }
   .token-dialog button.secondary { border-color: #d0d6e5; color: #1d2330; }
+  .logs-preview { background: #f5f7ff; border-color: #d6dbeb; }
+  .log-src { color: #1b734f; }
 }

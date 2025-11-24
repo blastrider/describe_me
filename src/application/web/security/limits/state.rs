@@ -338,6 +338,7 @@ enum RouteKey {
     Html,
     Sse,
     History,
+    Logs,
 }
 
 impl From<WebRoute> for RouteKey {
@@ -346,6 +347,7 @@ impl From<WebRoute> for RouteKey {
             WebRoute::Html => RouteKey::Html,
             WebRoute::Sse => RouteKey::Sse,
             WebRoute::History => RouteKey::History,
+            WebRoute::Logs => RouteKey::Logs,
         }
     }
 }

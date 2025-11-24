@@ -8,3 +8,4 @@
 /packaging/alpine/src
 /images
 /docker/data/state/*
+/data

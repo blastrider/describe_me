@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   describe-me:
     image: ${DESCRIBE_ME_IMAGE:-blstrdr/describe_me:latest}
@@ -19,11 +17,23 @@ services:
     environment:
       RUST_LOG: ${RUST_LOG:-info}
       DESCRIBE_ME_STATE_DIR: /var/lib/describe-me
+      # Informe l'app qu'on est en conteneur pour ignorer systemctl (pas de services collectés).
       DESCRIBE_ME_CONTAINER: "1"
-    user: "1000:1000"
+    pid: host
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    # Donne accès en lecture au journal système de l'hôte.
+    group_add:
+      - systemd-journal
+      - adm
     volumes:
       - ./data/state:/var/lib/describe-me
       - ./config.dev.toml:/etc/describe_me/config.toml:ro
+      # Journald : monte le socket pour expédier les logs host
+      - /run/systemd/journal/socket:/run/systemd/journal/socket:ro
+      # Laisser voir l'hôte : proc/sys/machine-id en lecture seule
+      - /proc:/proc:ro
+      - /sys:/sys:ro
+      - /etc/machine-id:/etc/machine-id:ro
       # Pour activer TLS, montez vos certificats :
       # - ./certs:/etc/describe_me/certs:ro
     restart: unless-stopped
@@ -33,5 +43,3 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
-
-volumes: {}

@@ -108,3 +108,54 @@ h2 { font-size: 16px; margin: 0 0 10px; color: var(--muted); }
 .history-error.history-error-visible {
   display: block;
 }
+
+.card.wide {
+  grid-column: 1 / -1;
+}
+
+.logs-preview {
+  background: #0d111a;
+  border: 1px solid #222838;
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.log-line {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  font-family: var(--mono);
+  line-height: 1.35;
+}
+
+.log-ts {
+  color: var(--muted);
+  min-width: 180px;
+  flex: 0 0 auto;
+}
+
+.log-src {
+  color: var(--ok);
+  flex: 0 0 auto;
+}
+
+.log-msg {
+  flex: 1 1 auto;
+  word-break: break-word;
+}
+
+.logs-error {
+  color: var(--warn);
+  font-size: 13px;
+  margin: 0 0 8px;
+}
+
+.log-empty {
+  color: var(--muted);
+  font-style: italic;
+}

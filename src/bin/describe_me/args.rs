@@ -259,6 +259,8 @@ pub enum CliCommand {
     Plugin(PluginCommand),
     /// Interroge l'historique local (mini time-series).
     History(HistoryCommand),
+    /// Affiche les logs journald de l'hôte (dern. lignes).
+    Logs(LogsCommand),
 }
 
 #[derive(Debug, Subcommand)]
@@ -337,6 +339,13 @@ pub struct PluginRunCommand {
     /// Timeout maximum (secondes) avant d'interrompre le plugin.
     #[arg(long = "timeout", value_name = "SECS", default_value_t = 10)]
     pub timeout_secs: u64,
+}
+
+#[derive(Debug, Args)]
+pub struct LogsCommand {
+    /// Nombre de lignes à lire (borné côté programme).
+    #[arg(long = "lines", value_name = "N", default_value_t = 200)]
+    pub lines: usize,
 }
 
 pub fn parse() -> Opts {

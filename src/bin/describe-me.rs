@@ -28,8 +28,8 @@ const SOCKETS_PAGE_MAX: usize = 500;
 use allowlists::{resolve_web_list, CliListOrigin};
 use args::{
     hash_web_token, parse as parse_opts, read_token_from_stdin, CliCommand, DescriptionCommand,
-    HistoryCommand, HistoryProfileArg, MetadataCommand, PluginCommand, PluginRunCommand,
-    TagsCommand,
+    HistoryCommand, HistoryProfileArg, LogsCommand, MetadataCommand, PluginCommand,
+    PluginRunCommand, TagsCommand,
 };
 use exposure_cfg::apply_cli_exposure_flags;
 #[cfg(feature = "web")]
@@ -67,6 +67,7 @@ fn handle_command(cmd: CliCommand) -> Result<()> {
         CliCommand::Metadata(metadata) => handle_metadata_command(metadata),
         CliCommand::Plugin(plugin) => handle_plugin_command(plugin),
         CliCommand::History(history) => handle_history_command(history),
+        CliCommand::Logs(logs) => handle_logs_command(logs),
     }
 }
 
@@ -193,6 +194,44 @@ fn handle_history_command(cmd: HistoryCommand) -> Result<()> {
     };
 
     print_history_series(&series);
+    Ok(())
+}
+
+fn handle_logs_command(cmd: LogsCommand) -> Result<()> {
+    let requested = cmd.lines.max(1);
+    let cap = describe_me::HOST_LOGS_MAX_LINES;
+    let lines = requested.min(cap);
+
+    #[cfg(feature = "journald")]
+    {
+        let page = describe_me::tail_host_logs(lines)?;
+        if page.entries.is_empty() {
+            println!("(aucune entrée journald disponible)");
+            return Ok(());
+        }
+
+        for entry in page.entries {
+            if let Some(source) = entry.source.as_deref() {
+                println!("{} [{}] {}", entry.timestamp, source, entry.message);
+            } else {
+                println!("{} {}", entry.timestamp, entry.message);
+            }
+        }
+
+        if page.truncated || requested > cap {
+            println!(
+                "\n(affiche les {} dernières lignes — borne max: {})",
+                lines, cap
+            );
+        }
+    }
+
+    #[cfg(not(feature = "journald"))]
+    {
+        let _ = lines;
+        bail!("La lecture des logs journald requiert la feature `journald`.");
+    }
+
     Ok(())
 }
 

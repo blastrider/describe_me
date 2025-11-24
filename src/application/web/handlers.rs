@@ -16,6 +16,7 @@ use crate::{
     application::{
         history::{self, HistoryQueryError},
         logging::LogEvent,
+        logs::{self, HOST_LOGS_DEFAULT_LINES, HOST_LOGS_MAX_LINES},
         metadata::{
             add_server_tags, clear_server_tags, remove_server_tags, set_server_description,
             set_server_tags,
@@ -28,7 +29,7 @@ use super::{
     mark_response_no_store,
     security::AuthGuard,
     set_session_cookie,
-    template::{render_index, render_updates_page},
+    template::{render_index, render_logs_page, render_updates_page},
     AppState, CspNonce,
 };
 
@@ -75,6 +76,11 @@ pub(super) struct HistoryRequestQuery {
     server: Option<String>,
     window: Option<u64>,
     limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct LogsRequestQuery {
+    lines: Option<usize>,
 }
 
 #[derive(Serialize)]
@@ -337,6 +343,66 @@ pub(super) async fn history_series(
         set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
     }
     response
+}
+
+pub(super) async fn logs_page(
+    State(state): State<AppState>,
+    guard: AuthGuard,
+    Extension(csp_nonce): Extension<CspNonce>,
+) -> impl IntoResponse {
+    let session = guard.into_session();
+    let mut response = Html(render_logs_page(csp_nonce.as_str())).into_response();
+    if let Some(token) = session.session_cookie() {
+        set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
+    }
+    mark_response_no_store(response.headers_mut());
+    response
+}
+
+pub(super) async fn host_logs(
+    State(state): State<AppState>,
+    guard: AuthGuard,
+    Query(query): Query<LogsRequestQuery>,
+) -> impl IntoResponse {
+    let requested = query
+        .lines
+        .unwrap_or(HOST_LOGS_DEFAULT_LINES)
+        .clamp(1, HOST_LOGS_MAX_LINES);
+
+    let logs = tokio::task::spawn_blocking(move || logs::tail_host_logs(requested)).await;
+
+    match logs {
+        Ok(Ok(page)) => {
+            let session = guard.into_session();
+            let mut response = Json(page).into_response();
+            if let Some(token) = session.session_cookie() {
+                set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
+            }
+            response
+        }
+        Ok(Err(err)) => {
+            LogEvent::SystemError {
+                location: Cow::Borrowed("logs_read"),
+                error: Cow::Owned(err.to_string()),
+            }
+            .emit();
+            json_error(
+                StatusCode::BAD_GATEWAY,
+                format!("Impossible de lire les logs journald: {err}"),
+            )
+        }
+        Err(err) => {
+            LogEvent::SystemError {
+                location: Cow::Borrowed("logs_join"),
+                error: Cow::Owned(err.to_string()),
+            }
+            .emit();
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Erreur interne lors de la lecture des logs.",
+            )
+        }
+    }
 }
 
 pub(super) fn normalize_description(input: &str) -> Result<String, &'static str> {

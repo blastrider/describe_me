@@ -21,23 +21,16 @@ pub fn init_logging() {
         return;
     }
 
+    let log_to_stderr = std::env::var_os("DESCRIBE_ME_LOG_STDERR").is_some()
+        || std::env::var_os("DESCRIBE_ME_CONTAINER").is_some();
+
     let filter = EnvFilter::try_from_env("RUST_LOG")
         .or_else(|_| EnvFilter::try_new("info"))
         .unwrap();
 
     #[cfg(feature = "journald")]
-    if std::path::Path::new("/run/systemd/journal/socket").exists() {
-        // Envoie structuré vers journald
-        if let Ok(layer) = tracing_journald::layer() {
-            if tracing_subscriber::registry()
-                .with(filter.clone())
-                .with(layer)
-                .try_init()
-                .is_ok()
-            {
-                return;
-            }
-        }
+    if try_init_journald(&filter, log_to_stderr) {
+        return;
     }
 
     // Fallback: stderr lisible (pas d’ANSI forcé)
@@ -51,6 +44,38 @@ pub fn init_logging() {
         .with(filter)
         .with(fmt_layer)
         .try_init();
+}
+
+#[cfg(feature = "journald")]
+fn try_init_journald(filter: &EnvFilter, log_to_stderr: bool) -> bool {
+    if !std::path::Path::new("/run/systemd/journal/socket").exists() {
+        return false;
+    }
+
+    if let Ok(layer) = tracing_journald::layer() {
+        if log_to_stderr {
+            let fmt_layer = tracing_subscriber::fmt::layer()
+                .with_target(false)
+                .with_thread_ids(false)
+                .with_thread_names(false)
+                .with_writer(std::io::stderr);
+
+            return tracing_subscriber::registry()
+                .with(filter.clone())
+                .with(layer)
+                .with(fmt_layer)
+                .try_init()
+                .is_ok();
+        }
+
+        return tracing_subscriber::registry()
+            .with(filter.clone())
+            .with(layer)
+            .try_init()
+            .is_ok();
+    }
+
+    false
 }
 
 /// Énumération centralisée des événements de log applicatifs.

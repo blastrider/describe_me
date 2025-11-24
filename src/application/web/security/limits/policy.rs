@@ -9,6 +9,7 @@ pub(crate) struct SecurityPolicy {
     html: RoutePolicy,
     sse: SsePolicy,
     history: RoutePolicy,
+    logs: RoutePolicy,
     allow_multiplier: u32,
     brute_force: BruteForcePolicy,
     token_affinity_limit: u32,
@@ -20,6 +21,7 @@ impl SecurityPolicy {
             html: RoutePolicy::new(Duration::from_secs(60), 30, 10, 120),
             sse: SsePolicy::default(),
             history: RoutePolicy::new(Duration::from_secs(60), 6, 4, 40),
+            logs: RoutePolicy::new(Duration::from_secs(60), 6, 4, 40),
             allow_multiplier: 2,
             brute_force: BruteForcePolicy::default(),
             token_affinity_limit: DEFAULT_TOKEN_AFFINITY_LIMIT,
@@ -41,6 +43,12 @@ impl SecurityPolicy {
             cfg.history.per_token,
             cfg.history.global,
         );
+        let logs = RoutePolicy::new(
+            duration_from_secs(cfg.logs.window_seconds, 60),
+            cfg.logs.per_ip,
+            cfg.logs.per_token,
+            cfg.logs.global,
+        );
         let brute_force = BruteForcePolicy::from_config(&cfg.brute_force);
         let affinity_limit = if cfg.token_ip_affinity_limit == 0 {
             DEFAULT_TOKEN_AFFINITY_LIMIT
@@ -52,6 +60,7 @@ impl SecurityPolicy {
             html,
             sse,
             history,
+            logs,
             allow_multiplier: cfg.allowlist_multiplier.max(1),
             brute_force,
             token_affinity_limit: affinity_limit,
@@ -63,6 +72,7 @@ impl SecurityPolicy {
             WebRoute::Html => &self.html,
             WebRoute::Sse => &self.sse.route,
             WebRoute::History => &self.history,
+            WebRoute::Logs => &self.logs,
         }
     }
 

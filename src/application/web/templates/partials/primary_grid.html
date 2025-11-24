@@ -64,6 +64,26 @@
     <div class="row"><span class="k">CPU(s)</span><span class="v" id="cpus">—</span></div>
   </section>
 
+  <section
+    class="card wide"
+    id="logsCard"
+    data-role="logs-card"
+    data-lines="20"
+  >
+    <div class="card-header">
+      <h2>Logs de l'hôte (journald)</h2>
+      <div class="card-actions">
+        <button type="button" class="link-button small" data-role="logs-refresh">Rafraîchir</button>
+        <a href="/logs" class="link-button small">Détails</a>
+      </div>
+    </div>
+    <p class="muted small">Aperçu des dernières lignes (journalctl).</p>
+    <p class="logs-error" data-role="logs-error" hidden></p>
+    <div class="logs-preview" data-role="logs-list">
+      <div class="log-empty">Chargement…</div>
+    </div>
+  </section>
+
   <section class="card" id="updatesCard" style="display:none">
     <div class="card-header">
       <h2>Mises à jour</h2>

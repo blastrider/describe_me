@@ -248,6 +248,8 @@ pub struct WebSecurityConfig {
     pub sse: SseLimitConfig,
     /// Limites applicables à la route "/api/history".
     pub history: RouteLimitConfig,
+    /// Limites applicables aux endpoints de logs (/api/logs, /logs).
+    pub logs: RouteLimitConfig,
     /// Multiplicateur des plafonds pour les IP explicitement autorisées.
     pub allowlist_multiplier: u32,
     /// Nombre maximal d'IP distinctes autorisées par token dans la fenêtre.
@@ -264,6 +266,7 @@ impl Default for WebSecurityConfig {
             html: RouteLimitConfig::html_default(),
             sse: SseLimitConfig::sse_default(),
             history: RouteLimitConfig::history_default(),
+            logs: RouteLimitConfig::logs_default(),
             allowlist_multiplier: 2,
             token_ip_affinity_limit: 2,
             brute_force: BruteForceConfig::default(),
@@ -317,6 +320,15 @@ impl Default for RouteLimitConfig {
 
 impl RouteLimitConfig {
     pub const fn history_default() -> Self {
+        Self {
+            window_seconds: 60,
+            per_ip: 6,
+            per_token: 4,
+            global: 40,
+        }
+    }
+
+    pub const fn logs_default() -> Self {
         Self {
             window_seconds: 60,
             per_ip: 6,

@@ -562,7 +562,7 @@ dependencies = [
 
 [[package]]
 name = "describe_me"
-version = "0.2.2"
+version = "0.2.6"
 dependencies = [
  "anyhow",
  "argon2",

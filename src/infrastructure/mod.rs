@@ -3,6 +3,9 @@ pub mod sysinfo;
 #[cfg(feature = "systemd")]
 pub mod systemd;
 
+#[cfg(feature = "journald")]
+pub mod logs;
+
 #[cfg(feature = "net")]
 pub mod net;
 
