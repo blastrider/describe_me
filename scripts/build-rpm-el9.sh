@@ -45,7 +45,8 @@ rpmbuild -ba "${SPEC_FILE}" \
   --define "_sourcedir ${TOPDIR}/SOURCES" \
   --define "_srcrpmdir ${TOPDIR}/SRPMS" \
   --define "_rpmdir ${TOPDIR}/RPMS" \
-  --define "cargo_features ${RPM_FEATURES}"
+  --define "cargo_features ${RPM_FEATURES}" \
+  --define "project_version ${VERSION}"
 
 if [ "$(id -u)" -eq 0 ]; then
   chown -R "${HOST_UID}:${HOST_GID}" "${TOPDIR}"

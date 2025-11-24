@@ -1,8 +1,9 @@
 %global debug_package %{nil}
 %{!?cargo_features:%global cargo_features cli web config systemd net journald}
+%{!?project_version:%{error:project_version not set; pass --define 'project_version <version>'}}
 
 Name:           describe-me
-Version:        0.2.2
+Version:        %{project_version}
 Release:        1%{?dist}
 Summary:        Server snapshot & health CLI/dashboard
 License:        Apache-2.0
