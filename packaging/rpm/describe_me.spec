@@ -36,6 +36,7 @@ cargo build --release --locked --manifest-path plugin-examples/certificates/Carg
 %install
 install -Dm755 target/release/describe-me %{buildroot}%{_bindir}/describe-me
 install -Dm755 target/release/describe-me-plugin-certificates %{buildroot}/usr/lib/describe_me/plugins/describe-me-plugin-certificates
+install -Dm755 target/release/describe-me-plugin-containers %{buildroot}/usr/lib/describe_me/plugins/describe-me-plugin-containers
 
 install -dm755 %{buildroot}%{_sysconfdir}/describe_me
 install -Dm644 packaging/config/config.toml %{buildroot}%{_sysconfdir}/describe_me/config.toml
@@ -57,6 +58,7 @@ install -Dm644 packaging/systemd/describe-me.service %{buildroot}%{_unitdir}/des
 %doc README.md CHANGELOG.md
 %{_bindir}/describe-me
 /usr/lib/describe_me/plugins/describe-me-plugin-certificates
+/usr/lib/describe_me/plugins/describe-me-plugin-containers
 %dir %{_sysconfdir}/describe_me
 %config(noreplace) %{_sysconfdir}/describe_me/config.toml
 %dir %{_localstatedir}/lib/describe-me

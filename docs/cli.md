@@ -123,6 +123,12 @@ path = "/usr/lib/describe_me/plugins/describe-me-plugin-certificates"
 sha256 = "<fingerprinted value>"
 args = ["--probe", "/etc/ssl/certs", "--probe", "/etc/describe_me/certs"]
 timeout_secs = 10
+
+[[extensions.plugins]]
+name = "containers"
+path = "/usr/lib/describe_me/plugins/describe-me-plugin-containers"
+sha256 = "<fingerprinted value>"
+timeout_secs = 4
 ```
 
 Tous les plugins doivent vivre sous `/usr/lib/describe_me/plugins/`, être épinglés via `sha256` (64 hexa) et ne produisent de sortie valide que lorsqu’ils détectent `DESCRIBE_ME_HOST=describe_me`, `DESCRIBE_ME_PLUGIN_PROTO=v1` et un jeton non vide. Toute divergence (chemin, hash, poignée de main) annule l’exécution et logue `LogEvent::PluginError`.

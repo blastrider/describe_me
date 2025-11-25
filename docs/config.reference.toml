@@ -65,6 +65,13 @@ args = ["--probe", "/etc/ssl/certs", "--probe", "/etc/describe_me/certs"]
 # Timeout en secondes (>=1). Par défaut 10s si omis.
 timeout_secs = 10
 
+[[extensions.plugins]]
+name = "containers"
+path = "/usr/lib/describe_me/plugins/describe-me-plugin-containers"
+sha256 = "<fingerprinted value>"
+args = []
+timeout_secs = 4
+
 [exposure]
 # Contrôle fin des champs sensibles dans la sortie CLI/JSON.
 expose_hostname = true
