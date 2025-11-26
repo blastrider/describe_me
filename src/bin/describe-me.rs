@@ -1096,6 +1096,52 @@ mod tests {
         assert_eq!(super::summary_line(&view), "updates=? reboot=unknown");
     }
 
+    #[cfg(feature = "serde")]
+    #[test]
+    fn summary_line_includes_containers_counts_when_present() {
+        let snapshot = describe_me::SystemSnapshot {
+            hostname: "host".into(),
+            os: None,
+            kernel: None,
+            uptime_seconds: 0,
+            cpu_count: 1,
+            load_average: (0.0, 0.0, 0.0),
+            total_memory_bytes: 0,
+            used_memory_bytes: 0,
+            total_swap_bytes: 0,
+            used_swap_bytes: 0,
+            disk_usage: None,
+            #[cfg(feature = "systemd")]
+            services_running: describe_me::SharedSlice::from_vec(Vec::new()),
+            #[cfg(feature = "net")]
+            listening_sockets: None,
+            #[cfg(feature = "net")]
+            network_traffic: None,
+            containers: Some(describe_me::ContainersSnapshot {
+                summary: Some(describe_me::ContainersSummary {
+                    total: 3,
+                    running: 2,
+                }),
+                containers: None,
+            }),
+            updates: Some(describe_me::UpdatesInfo {
+                pending: 0,
+                reboot_required: false,
+                packages: None,
+            }),
+            extensions: None,
+        };
+
+        let mut exposure = describe_me::Exposure::default();
+        exposure.set_updates(true);
+        exposure.set_containers_summary(true);
+        let view = describe_me::SnapshotView::new(&snapshot, exposure);
+        assert_eq!(
+            super::summary_line(&view),
+            "updates=0 reboot=no containers=2/3"
+        );
+    }
+
     #[test]
     fn validates_plugin_name_rules() {
         super::validate_plugin_name("certificates").unwrap();

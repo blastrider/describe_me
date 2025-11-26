@@ -80,6 +80,22 @@ impl AuthGuard {
     }
 }
 
+#[cfg(test)]
+pub(super) fn make_test_guard(route: WebRoute) -> AuthGuard {
+    use std::net::Ipv4Addr;
+
+    AuthGuard {
+        session: AuthSession {
+            route,
+            ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            token: TokenKey::Anonymous,
+            sse_permit: None,
+            session_cookie: None,
+            global_permit: None,
+        },
+    }
+}
+
 #[async_trait]
 impl FromRequestParts<AppState> for AuthGuard {
     type Rejection = Response;

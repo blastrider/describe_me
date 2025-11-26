@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::os::unix::fs::FileTypeExt;
 use std::process::{Command, Stdio};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use wait_timeout::ChildExt;
 
 const MAX_CONTAINERS: usize = 200;
@@ -74,6 +74,10 @@ fn main() {
 fn run() -> Result<(), CollectError> {
     let ctx = LaunchContext::from_env().map_err(|e| CollectError::Unexpected(e.to_string()))?;
     validate_launch(&ctx)?;
+    ensure_non_root().map_err(|err| {
+        eprintln!("describe-me-plugin-containers: {:?}", err);
+        err
+    })?;
 
     let output = collect_all_runtimes()?;
     let mut stdout = io::stdout().lock();
@@ -203,31 +207,7 @@ fn list_containers(rt: &RuntimeSpec) -> Result<Vec<ContainerLine>, CollectError>
         rt.env,
     )?;
 
-    let mut lines = Vec::new();
-    for raw in output.lines() {
-        let mut parts = raw.split('|');
-        let (id, name, state, image, status) = match (
-            parts.next(),
-            parts.next(),
-            parts.next(),
-            parts.next(),
-            parts.next(),
-        ) {
-            (Some(id), Some(name), Some(state), Some(image), Some(status)) => {
-                (id, name, state, image, status)
-            }
-            _ => continue,
-        };
-        let normalized_state = normalize_state(state, status);
-        lines.push(ContainerLine {
-            id: id.trim().to_string(),
-            name: name.trim().trim_start_matches('/').to_string(),
-            state: normalized_state,
-            image: image.trim().to_string(),
-            ip: None,
-        });
-    }
-    Ok(lines)
+    Ok(parse_ps_output(&output))
 }
 
 fn inspect_ips(
@@ -253,24 +233,21 @@ fn inspect_ips(
         }
 
         let output = run_command(rt.program, &batch, rt.env)?;
-        for line in output.lines() {
-            let mut parts = line.splitn(2, '|');
-            let (id, ips_raw) = match (parts.next(), parts.next()) {
-                (Some(id), Some(rest)) => (id.trim(), rest.trim()),
-                _ => continue,
-            };
-            if id.is_empty() {
-                continue;
-            }
-            if let Some(ip) = ips_raw.split_whitespace().find(|s| !s.is_empty()) {
-                map.entry(id.to_string()).or_insert_with(|| ip.to_string());
-            }
-        }
+        map.extend(parse_inspect_output(&output));
     }
     Ok(map)
 }
 
 fn run_command(program: &str, args: &[&str], env: &[(&str, &str)]) -> Result<String, CollectError> {
+    run_command_with_timeout(program, args, env, CONTAINERS_PLUGIN_TIMEOUT)
+}
+
+fn run_command_with_timeout(
+    program: &str,
+    args: &[&str],
+    env: &[(&str, &str)],
+    timeout: Duration,
+) -> Result<String, CollectError> {
     let mut cmd = Command::new(program);
     cmd.args(args)
         .stdin(Stdio::null())
@@ -283,7 +260,6 @@ fn run_command(program: &str, args: &[&str], env: &[(&str, &str)]) -> Result<Str
 
     let start = Instant::now();
     let mut child = cmd.spawn().map_err(|e| spawn_error(program, e))?;
-    let timeout = CONTAINERS_PLUGIN_TIMEOUT;
     let status = match child
         .wait_timeout(timeout)
         .map_err(|e| CollectError::Unavailable(format!("attente {program}: {e}")))?
@@ -324,29 +300,6 @@ fn run_command(program: &str, args: &[&str], env: &[(&str, &str)]) -> Result<Str
     }
 
     Ok(stdout)
-}
-
-fn normalize_state(raw_state: &str, status: &str) -> String {
-    let raw = raw_state.trim();
-    let lower = raw.to_ascii_lowercase();
-    for prefix in [
-        "running", "up", "exited", "stopped", "created", "paused", "dead",
-    ] {
-        if lower.starts_with(prefix) {
-            return prefix.to_string();
-        }
-    }
-    if let Some(first) = status.split_whitespace().next() {
-        let lowered = first.to_ascii_lowercase();
-        if !lowered.is_empty() {
-            return lowered;
-        }
-    }
-    lower
-        .split_whitespace()
-        .next()
-        .unwrap_or("unknown")
-        .to_string()
 }
 
 fn runtimes() -> Vec<RuntimeSpec> {
@@ -398,4 +351,130 @@ fn spawn_error(program: &str, err: io::Error) -> CollectError {
 
 fn is_permission_error(code: i32, stderr: &str) -> bool {
     code == 13 || stderr.to_ascii_lowercase().contains("permission denied")
+}
+
+fn normalize_state(raw_state: &str, status: &str) -> String {
+    let raw = raw_state.trim();
+    let lower = raw.to_ascii_lowercase();
+    for prefix in [
+        "running", "up", "exited", "stopped", "created", "paused", "dead",
+    ] {
+        if lower.starts_with(prefix) {
+            return prefix.to_string();
+        }
+    }
+    if let Some(first) = status.split_whitespace().next() {
+        let lowered = first.to_ascii_lowercase();
+        if !lowered.is_empty() {
+            return lowered;
+        }
+    }
+    lower
+        .split_whitespace()
+        .next()
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+fn parse_ps_output(output: &str) -> Vec<ContainerLine> {
+    let mut lines = Vec::new();
+    for raw in output.lines() {
+        let mut parts = raw.split('|');
+        let (id, name, state, image, status) = match (
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+        ) {
+            (Some(id), Some(name), Some(state), Some(image), Some(status)) => {
+                (id, name, state, image, status)
+            }
+            _ => continue,
+        };
+        let normalized_state = normalize_state(state, status);
+        lines.push(ContainerLine {
+            id: id.trim().to_string(),
+            name: name.trim().trim_start_matches('/').to_string(),
+            state: normalized_state,
+            image: image.trim().to_string(),
+            ip: None,
+        });
+    }
+    lines
+}
+
+fn parse_inspect_output(output: &str) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for line in output.lines() {
+        let mut parts = line.splitn(2, '|');
+        let (id, ips_raw) = match (parts.next(), parts.next()) {
+            (Some(id), Some(rest)) => (id.trim(), rest.trim()),
+            _ => continue,
+        };
+        if id.is_empty() {
+            continue;
+        }
+        if let Some(ip) = ips_raw.split_whitespace().find(|s| !s.is_empty()) {
+            map.entry(id.to_string()).or_insert_with(|| ip.to_string());
+        }
+    }
+    map
+}
+
+fn ensure_non_root() -> Result<(), CollectError> {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+            for line in status.lines() {
+                if let Some(rest) = line.strip_prefix("Uid:") {
+                    let mut parts = rest.split_whitespace();
+                    if let Some(euid) = parts.next() {
+                        if euid == "0" {
+                            return Err(CollectError::Permission(
+                                "exécution en root interdite".to_string(),
+                            ));
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_state_prefers_known_prefixes() {
+        assert_eq!(normalize_state("Running", "Up 3 seconds"), "running");
+        assert_eq!(normalize_state("up", ""), "up");
+        assert_eq!(normalize_state("Exited (0)", ""), "exited");
+        assert_eq!(normalize_state("weird", "Paused (with logs)"), "paused");
+        assert_eq!(normalize_state("unknown", "customstate"), "customstate");
+    }
+
+    #[test]
+    fn parse_ps_output_extracts_fields() {
+        let input = "123|/web|Running|nginx:latest|Up 2 minutes\n456|db|Exited (1)|postgres:15|Exited (1) 5s ago\n";
+        let parsed = parse_ps_output(input);
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].id, "123");
+        assert_eq!(parsed[0].name, "web");
+        assert_eq!(parsed[0].state, "running");
+        assert_eq!(parsed[0].image, "nginx:latest");
+        assert_eq!(parsed[1].name, "db");
+        assert_eq!(parsed[1].state, "exited");
+    }
+
+    #[test]
+    fn parse_inspect_output_maps_first_ip() {
+        let input = "abc|10.0.0.2 172.18.0.5 \nxyz| \nabc|10.0.0.3\n";
+        let map = parse_inspect_output(input);
+        assert_eq!(map.get("abc").map(|s| s.as_str()), Some("10.0.0.2"));
+        assert!(!map.contains_key("xyz"));
+    }
 }

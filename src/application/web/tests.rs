@@ -1,7 +1,10 @@
 use super::{handlers, *};
-use crate::domain::DescribeError;
 use axum::body::to_bytes;
 use axum::http::header::SET_COOKIE;
+use axum::http::StatusCode;
+use axum::Extension;
+use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 fn build_request_with_headers(origin: Option<&str>, host: &str) -> AxumRequest {
     let mut builder = axum::http::Request::builder()
@@ -178,6 +181,133 @@ fn normalize_description_enforces_limit() {
     let long = "x".repeat(super::DESCRIPTION_MAX_BYTES + 1);
     let err = handlers::normalize_description(&long).unwrap_err();
     assert!(err.contains("2048"), "unexpected message: {err}");
+}
+
+#[tokio::test]
+async fn containers_api_returns_cached_snapshot() {
+    use crate::application::exposure::SnapshotView;
+    use crate::domain::{ContainerInfo, ContainersSnapshot, ContainersSummary, SystemSnapshot};
+    use crate::shared::SharedSlice;
+
+    let mut exposure = Exposure::default();
+    exposure.set_containers_details(true);
+
+    let snapshot = SystemSnapshot {
+        hostname: "host".into(),
+        os: None,
+        kernel: None,
+        uptime_seconds: 0,
+        cpu_count: 1,
+        load_average: (0.0, 0.0, 0.0),
+        total_memory_bytes: 0,
+        used_memory_bytes: 0,
+        total_swap_bytes: 0,
+        used_swap_bytes: 0,
+        disk_usage: None,
+        #[cfg(feature = "systemd")]
+        services_running: SharedSlice::from_vec(Vec::new()),
+        #[cfg(feature = "net")]
+        listening_sockets: None,
+        #[cfg(feature = "net")]
+        network_traffic: None,
+        containers: Some(ContainersSnapshot {
+            summary: Some(ContainersSummary {
+                total: 2,
+                running: 1,
+            }),
+            containers: Some(SharedSlice::from_vec(vec![
+                ContainerInfo {
+                    name: "web".into(),
+                    runtime: "docker".into(),
+                    ip: Some("10.0.0.2".into()),
+                    state: "running".into(),
+                    image: Some("nginx:latest".into()),
+                },
+                ContainerInfo {
+                    name: "db".into(),
+                    runtime: "podman".into(),
+                    ip: None,
+                    state: "exited".into(),
+                    image: Some("postgres:15".into()),
+                },
+            ])),
+        }),
+        updates: None,
+        extensions: None,
+    };
+
+    let mut view = SnapshotView::new(&snapshot, exposure);
+    view.server_description = None;
+    let state = test_app_state(exposure);
+    state.cache_snapshot(view);
+
+    let guard = super::security::make_test_guard(super::security::WebRoute::Html);
+
+    let response = handlers::containers_api(State(state), guard)
+        .await
+        .into_response();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body bytes");
+    let value: serde_json::Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(
+        value
+            .pointer("/containers/summary/total")
+            .and_then(|v| v.as_u64()),
+        Some(2)
+    );
+    assert_eq!(
+        value
+            .pointer("/containers/containers/0/name")
+            .and_then(|v| v.as_str()),
+        Some("web")
+    );
+}
+
+#[tokio::test]
+async fn containers_page_renders_html() {
+    let exposure = Exposure::all();
+    let state = test_app_state(exposure);
+    let guard = super::security::make_test_guard(super::security::WebRoute::Html);
+    let response = handlers::containers_page(
+        State(state),
+        guard,
+        Extension(CspNonce::new("nonce".into())),
+    )
+    .await
+    .into_response();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body bytes");
+    let html = std::str::from_utf8(&body).expect("utf8");
+    assert!(
+        html.contains("Conteneurs"),
+        "expected containers page content"
+    );
+}
+
+fn test_app_state(exposure: Exposure) -> AppState {
+    let security = WebSecurity::build(
+        WebAccess::default(),
+        #[cfg(feature = "config")]
+        None,
+    )
+    .unwrap();
+    AppState {
+        interval: Duration::from_secs(1),
+        #[cfg(feature = "config")]
+        config: None,
+        web_debug: false,
+        security: Arc::new(security),
+        exposure,
+        shutdown: Arc::new(tokio::sync::Notify::new()),
+        updates_cache: UpdatesCache::new(Duration::from_secs(1), Duration::from_secs(1)),
+        snapshot_cache: Arc::new(RwLock::new(None)),
+        logo: LogoAsset::default(),
+        session_cookie_secure: true,
+    }
 }
 
 #[tokio::test]
