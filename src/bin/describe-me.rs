@@ -59,7 +59,13 @@ fn summary_line(view: &describe_me::SnapshotView) -> String {
         ),
         None => (String::from("?"), "unknown"),
     };
-    format!("updates={pending} reboot={reboot}")
+    let containers = view
+        .containers
+        .as_ref()
+        .and_then(|c| c.summary.as_ref())
+        .map(|s| format!(" containers={}/{}", s.running, s.total))
+        .unwrap_or_default();
+    format!("updates={pending} reboot={reboot}{containers}")
 }
 
 fn handle_command(cmd: CliCommand) -> Result<()> {
@@ -340,6 +346,45 @@ fn print_services_cli(view: &describe_me::SnapshotView, limit: Option<usize>, of
         }
     } else {
         println!("(services non exposés)");
+    }
+    println!();
+}
+
+fn print_containers_cli(view: &describe_me::SnapshotView) {
+    println!(
+        "{:<24} {:<10} {:<12} {:<18} IMAGE",
+        "CONTAINER", "RUNTIME", "STATE", "IP"
+    );
+
+    match view.containers.as_ref() {
+        None => {
+            println!("(conteneurs non capturés ou non exposés)");
+        }
+        Some(snapshot) => {
+            if let Some(summary) = snapshot.summary.as_ref() {
+                println!("Total: {} (running: {})", summary.total, summary.running);
+            }
+            match snapshot.containers.as_ref() {
+                Some(list) => {
+                    let containers = list.as_slice();
+                    if containers.is_empty() {
+                        println!("(aucun conteneur)");
+                    } else {
+                        for c in containers {
+                            let ip = c.ip.as_deref().unwrap_or("-");
+                            let image = c.image.as_deref().unwrap_or("-");
+                            println!(
+                                "{:<24} {:<10} {:<12} {:<18} {}",
+                                c.name, c.runtime, c.state, ip, image
+                            );
+                        }
+                    }
+                }
+                None => {
+                    println!("(détails conteneurs non exposés)");
+                }
+            }
+        }
     }
     println!();
 }
@@ -707,7 +752,8 @@ fn main() -> Result<()> {
     let web_expose_all_effective = web_exposure.is_all();
     #[cfg(not(feature = "web"))]
     let web_expose_all_effective = false;
-    let with_containers_effective = opts.with_containers || exposure.containers_summary();
+    let with_containers_effective =
+        opts.with_containers || opts.containers || exposure.containers_summary();
 
     let mode = if opts.web.is_some() {
         "web"
@@ -859,6 +905,10 @@ fn main() -> Result<()> {
     #[cfg(feature = "systemd")]
     if opts.with_services {
         print_services_cli(&snapshot_view, opts.services_limit, opts.services_offset);
+    }
+
+    if opts.containers {
+        print_containers_cli(&snapshot_view);
     }
 
     // --- Mode non-JSON (comportement existant + snapshot JSON à la fin) ---

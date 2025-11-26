@@ -106,6 +106,9 @@ fn apply_cli_flags(exposure: &mut describe_me::Exposure, opts: &Opts) {
     if opts.net_traffic {
         exposure.set_network_traffic(true);
     }
+    if opts.containers {
+        exposure.set_containers_details(true);
+    }
 }
 
 #[cfg(feature = "web")]

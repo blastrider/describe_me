@@ -22,7 +22,7 @@ use crate::{
             set_server_tags,
         },
     },
-    domain::DescribeError,
+    domain::{ContainersSnapshot, DescribeError},
 };
 
 use super::{
@@ -107,6 +107,12 @@ struct HistoryResponse {
     truncated: bool,
     aggregated: bool,
     points: Vec<HistoryPointResponse>,
+}
+
+#[derive(Serialize)]
+struct ContainersApiResponse {
+    age_ms: u64,
+    containers: ContainersSnapshot,
 }
 
 pub(super) async fn logo_asset(State(state): State<AppState>) -> Response {
@@ -343,6 +349,40 @@ pub(super) async fn history_series(
         set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
     }
     response
+}
+
+pub(super) async fn containers_api(
+    State(state): State<AppState>,
+    _guard: AuthGuard,
+) -> impl IntoResponse {
+    let cached = match state.latest_snapshot() {
+        Some(value) => value,
+        None => {
+            return json_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Aucun snapshot disponible pour le moment.",
+            )
+        }
+    };
+
+    let Some(containers) = cached.view.containers else {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "Les conteneurs ne sont pas exposés ou non capturés.",
+        );
+    };
+
+    let age_ms = cached
+        .captured_at
+        .elapsed()
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64;
+
+    (
+        StatusCode::OK,
+        Json(ContainersApiResponse { age_ms, containers }),
+    )
+        .into_response()
 }
 
 pub(super) async fn logs_page(

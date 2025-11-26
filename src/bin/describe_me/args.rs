@@ -50,6 +50,10 @@ pub struct Opts {
     #[arg(long = "net-traffic", action = ArgAction::SetTrue)]
     pub net_traffic: bool,
 
+    /// Affiche les conteneurs détectés (résumé + tableau)
+    #[arg(long = "containers", action = ArgAction::SetTrue)]
+    pub containers: bool,
+
     /// Affiche aussi le PID propriétaire (si résolu) — nécessite `--net-listen`
     #[arg(long = "process", requires = "net_listen", action = ArgAction::SetTrue)]
     pub show_process: bool,
