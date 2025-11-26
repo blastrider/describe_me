@@ -61,8 +61,8 @@ use crate::domain::DescribeError;
 use crate::domain::{DescribeConfig, WebSecurityConfig};
 
 use handlers::{
-    containers_api, history_series, host_logs, index, logo_asset, logs_page, update_description,
-    update_tags, updates_page,
+    containers_api, containers_page, history_series, host_logs, index, logo_asset, logs_page,
+    update_description, update_tags, updates_page,
 };
 use security::WebSecurity;
 use sse::sse_stream;
@@ -636,6 +636,7 @@ pub async fn serve_http<A: Into<SocketAddr>>(
         .route("/", get(index))
         .route("/assets/logo.svg", get(logo_asset))
         .route("/updates", get(updates_page))
+        .route("/container", get(containers_page))
         .route("/logs", get(logs_page))
         .route("/sse", get(sse_stream))
         .route("/api/containers", get(containers_api))

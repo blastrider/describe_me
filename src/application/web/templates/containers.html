@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>describe_me — Conteneurs</title>
+  <style nonce="__CSP_NONCE__">
+__INLINE_CSS__
+  </style>
+</head>
+<body>
+  <canvas id="backgroundGridCanvas" aria-hidden="true"></canvas>
+  <header>
+    <div>
+      <h1>Conteneurs</h1>
+      <p class="muted">Résumé issu du dernier snapshot (pas de relance du plugin).</p>
+    </div>
+    <div class="header-actions">
+      <button class="primary-button" type="button" data-role="containers-refresh">Rafraîchir</button>
+      <a class="link-button" href="/">← Retour au tableau de bord</a>
+    </div>
+  </header>
+  <main id="containersPage">
+    <section class="card">
+      <div class="stats-grid">
+        <div>
+          <div class="stat-label">Total</div>
+          <div class="stat-value" data-role="containers-total">—</div>
+        </div>
+        <div>
+          <div class="stat-label">En cours d'exécution</div>
+          <div class="stat-value" data-role="containers-running">—</div>
+        </div>
+        <div>
+          <div class="stat-label">Dernière capture</div>
+          <div class="stat-value" data-role="containers-age">—</div>
+        </div>
+      </div>
+      <p class="muted small" data-role="containers-hint">Lecture via le cache local; aucune exécution additionnelle.</p>
+    </section>
+    <section class="card">
+      <div class="card-header">
+        <h2>Liste</h2>
+        <span class="muted small" data-role="containers-summary-hint"></span>
+      </div>
+      <p class="containers-error" data-role="containers-error" hidden></p>
+      <div class="services-list" data-role="containers-list">
+        <div class="service-empty">Chargement…</div>
+      </div>
+    </section>
+  </main>
+  <div class="footer">describe_me • affichage ponctuel (pas d'auto-refresh)</div>
+  <script nonce="__CSP_NONCE__">
+__BACKGROUND_CANVAS_JS__
+  </script>
+  <script nonce="__CSP_NONCE__">
+__CONTAINERS_JS__
+  </script>
+</body>
+</html>

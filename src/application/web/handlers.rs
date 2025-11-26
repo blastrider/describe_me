@@ -29,7 +29,7 @@ use super::{
     mark_response_no_store,
     security::AuthGuard,
     set_session_cookie,
-    template::{render_index, render_logs_page, render_updates_page},
+    template::{render_containers_page, render_index, render_logs_page, render_updates_page},
     AppState, CspNonce,
 };
 
@@ -392,6 +392,20 @@ pub(super) async fn logs_page(
 ) -> impl IntoResponse {
     let session = guard.into_session();
     let mut response = Html(render_logs_page(csp_nonce.as_str())).into_response();
+    if let Some(token) = session.session_cookie() {
+        set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
+    }
+    mark_response_no_store(response.headers_mut());
+    response
+}
+
+pub(super) async fn containers_page(
+    State(state): State<AppState>,
+    guard: AuthGuard,
+    Extension(csp_nonce): Extension<CspNonce>,
+) -> impl IntoResponse {
+    let session = guard.into_session();
+    let mut response = Html(render_containers_page(csp_nonce.as_str())).into_response();
     if let Some(token) = session.session_cookie() {
         set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
     }

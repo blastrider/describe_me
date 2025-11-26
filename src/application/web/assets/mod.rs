@@ -29,3 +29,5 @@ pub const MAIN_JS: &str = concat!(
     "\n"
 );
 pub const LOGO_SVG: &[u8] = include_bytes!("gen.svg");
+
+pub const CONTAINERS_JS: &str = include_str!("js/containers.js");

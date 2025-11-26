@@ -814,9 +814,26 @@ function updateUI(data) {
         updatesToggle.setAttribute('aria-expanded', 'false');
         clearChildren(updatesList);
         updatesList.appendChild(createServiceEmpty());
-      }
     }
   }
+
+  const containersRow = el('containersRow');
+  const containersLink = el('containersLink');
+  if (containersRow && containersLink) {
+    const summary = data.containers && data.containers.summary;
+    if (summary && typeof summary.total === "number") {
+      const running = Number(summary.running ?? 0);
+      const total = Number(summary.total ?? 0);
+      containersLink.textContent = `${running}/${total} actifs`;
+      containersRow.style.display = "flex";
+    } else if (data.containers === null) {
+      containersLink.textContent = "—";
+      containersRow.style.display = "flex";
+    } else {
+      containersRow.style.display = "none";
+    }
+  }
+}
 
   el('memTotal').textContent = fmtBytes(data.total_memory_bytes || 0);
   el('memUsed').textContent = fmtBytes(data.used_memory_bytes || 0);

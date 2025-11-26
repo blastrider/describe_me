@@ -139,6 +139,24 @@
 .description-form .form-hint.success {
   color: var(--ok);
 }
+.link-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid #2a3147;
+  background: #111727;
+  color: inherit;
+  text-decoration: none;
+  min-width: 96px;
+  justify-content: center;
+}
+.link-pill:hover,
+.link-pill:focus-visible {
+  border-color: #3ad29f;
+  box-shadow: 0 0 0 1px rgba(58, 210, 159, 0.35);
+}
 .tags-block {
   margin-top: 14px;
   border-top: 1px solid #2a3147;
