@@ -83,6 +83,7 @@ pub enum LogEvent<'a> {
     Startup {
         mode: Cow<'a, str>,
         with_services: bool,
+        with_containers: bool,
         net_listen: bool,
         net_traffic: bool,
         expose_all: bool,
@@ -167,6 +168,7 @@ impl LogEvent<'_> {
             LogEvent::Startup {
                 mode,
                 with_services,
+                with_containers,
                 net_listen,
                 net_traffic,
                 expose_all,
@@ -176,14 +178,16 @@ impl LogEvent<'_> {
                 info!(
                     mode = mode.as_ref(),
                     with_services,
+                    with_containers,
                     net_listen,
                     net_traffic,
                     expose_all,
                     web_expose_all,
                     checks = ?checks,
-                    "startup mode={} with_services={} net_listen={} net_traffic={} expose_all={} web_expose_all={} checks={:?}",
+                    "startup mode={} with_services={} with_containers={} net_listen={} net_traffic={} expose_all={} web_expose_all={} checks={:?}",
                     mode,
                     with_services,
+                    with_containers,
                     net_listen,
                     net_traffic,
                     expose_all,

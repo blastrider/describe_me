@@ -81,6 +81,8 @@ pub struct CliDefaults {
     pub web: Option<String>,
     /// Active --with-services si true.
     pub with_services: Option<bool>,
+    /// Active --with-containers si true.
+    pub with_containers: Option<bool>,
     /// Active --web-expose-all si true.
     pub web_expose_all: Option<bool>,
     /// Valeurs par défaut pour --web-allow-ip.
@@ -159,6 +161,10 @@ pub struct ExposureConfig {
     pub expose_listening_sockets: bool,
     /// Autoriser l'exposition du trafic réseau par interface.
     pub expose_network_traffic: bool,
+    /// Autoriser le résumé des conteneurs (totaux).
+    pub expose_containers_summary: bool,
+    /// Autoriser le détail des conteneurs (nom, IP, image).
+    pub expose_containers_details: bool,
     /// Autoriser l'exposition des informations de mises à jour.
     pub expose_updates: bool,
     /// Autoriser l'exposition des extensions/plugins.
@@ -184,6 +190,8 @@ impl Default for ExposureConfig {
             expose_disk_partitions: false,
             expose_listening_sockets: false,
             expose_network_traffic: false,
+            expose_containers_summary: false,
+            expose_containers_details: false,
             expose_updates: false,
             expose_extensions: false,
             redacted: true,

@@ -90,6 +90,7 @@ pub struct CaptureOptions {
     pub resolve_socket_processes: bool,
     pub with_network_traffic: bool,
     pub with_updates: bool,
+    pub with_containers: bool,
 }
 
 impl Default for CaptureOptions {
@@ -101,6 +102,7 @@ impl Default for CaptureOptions {
             resolve_socket_processes: true,
             with_network_traffic: false,
             with_updates: true,
+            with_containers: false,
         }
     }
 }

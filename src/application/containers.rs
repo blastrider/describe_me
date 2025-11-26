@@ -3,10 +3,23 @@ use crate::SharedSlice;
 use describe_me_plugin_sdk::PluginOutput;
 use std::net::IpAddr;
 use std::time::Duration;
+#[cfg(feature = "serde")]
+use std::time::Instant;
 use thiserror::Error;
 
 #[cfg(feature = "serde")]
 use serde::Deserialize;
+#[cfg(feature = "serde")]
+use tracing::warn;
+
+#[cfg(feature = "serde")]
+use crate::application::extensions::{run_ad_hoc_plugin, PluginExecutionError};
+
+/// Chemin par défaut du binaire plugin conteneurs.
+pub const CONTAINERS_PLUGIN_BINARY: &str =
+    "/usr/lib/describe_me/plugins/describe-me-plugin-containers";
+/// Durée pendant laquelle on réutilise le dernier résultat pour éviter de relancer trop souvent.
+pub const CONTAINERS_CACHE_TTL: Duration = Duration::from_secs(30);
 
 /// Version du contrat JSON attendu depuis `describe-me-plugin-containers`.
 pub const CONTAINERS_CONTRACT_VERSION: u16 = 1;
@@ -74,6 +87,19 @@ impl ContainersPluginExitCode {
 }
 
 #[cfg(feature = "serde")]
+#[derive(Debug, Error)]
+pub enum ContainersCaptureError {
+    #[error("plugin conteneurs: {message}")]
+    Plugin {
+        message: String,
+        exit_code: Option<ContainersPluginExitCode>,
+        soft: bool,
+    },
+    #[error(transparent)]
+    Contract(#[from] ContainersContractError),
+}
+
+#[cfg(feature = "serde")]
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ContainersContractError {
     #[error("contrat conteneurs v{found} non supporté (attendu v{expected})")]
@@ -120,6 +146,126 @@ struct ContainerInfoWire {
 #[cfg(feature = "serde")]
 const fn default_contract_version() -> u16 {
     CONTAINERS_CONTRACT_VERSION
+}
+
+#[cfg(feature = "serde")]
+#[derive(Debug, Clone)]
+struct CachedContainers {
+    snapshot: ContainersSnapshot,
+    fetched_at: Instant,
+}
+
+#[cfg(feature = "serde")]
+#[derive(Default)]
+struct ContainersCache {
+    last_success: Option<CachedContainers>,
+}
+
+#[cfg(feature = "serde")]
+impl ContainersCache {
+    fn fresh_snapshot(&self, now: Instant) -> Option<ContainersSnapshot> {
+        let cached = self.last_success.as_ref()?;
+        if now.duration_since(cached.fetched_at) < CONTAINERS_CACHE_TTL {
+            Some(cached.snapshot.clone())
+        } else {
+            None
+        }
+    }
+
+    fn reuse_stale(&self) -> Option<ContainersSnapshot> {
+        self.last_success.as_ref().map(|c| c.snapshot.clone())
+    }
+
+    fn store(&mut self, snapshot: ContainersSnapshot, now: Instant) {
+        self.last_success = Some(CachedContainers {
+            snapshot,
+            fetched_at: now,
+        });
+    }
+}
+
+#[cfg(feature = "serde")]
+fn containers_cache() -> &'static std::sync::Mutex<ContainersCache> {
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<std::sync::Mutex<ContainersCache>> = OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(ContainersCache::default()))
+}
+
+/// Exécute le plugin conteneurs et renvoie un `ContainersSnapshot` en tirant parti du cache.
+///
+/// Si le plugin échoue mais qu'une valeur précédente existe encore, on réutilise ce cache
+/// (avec un warning) pour éviter de couper la capture complète.
+#[cfg(feature = "serde")]
+pub fn capture_containers_cached() -> Result<ContainersSnapshot, ContainersCaptureError> {
+    let now = Instant::now();
+    let cache = containers_cache();
+    {
+        let guard = cache.lock().expect("containers cache mutex poisoned");
+        if let Some(snapshot) = guard.fresh_snapshot(now) {
+            return Ok(snapshot);
+        }
+    }
+
+    match collect_from_plugin() {
+        Ok(snapshot) => {
+            let mut guard = cache.lock().expect("containers cache mutex poisoned");
+            guard.store(snapshot.clone(), now);
+            Ok(snapshot)
+        }
+        Err(err) => {
+            let cached = {
+                let guard = cache.lock().expect("containers cache mutex poisoned");
+                guard.reuse_stale()
+            };
+            if let Some(snapshot) = cached {
+                warn!(
+                    error = %err,
+                    "plugin conteneurs en erreur, réutilisation du cache précédent"
+                );
+                Ok(snapshot)
+            } else {
+                Err(err)
+            }
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+fn collect_from_plugin() -> Result<ContainersSnapshot, ContainersCaptureError> {
+    let output = run_ad_hoc_plugin(
+        CONTAINERS_PLUGIN_BINARY,
+        "containers",
+        &[],
+        CONTAINERS_PLUGIN_TIMEOUT,
+    )
+    .map_err(|err| ContainersCaptureError::Plugin {
+        message: err.to_string(),
+        exit_code: extract_exit_code(&err),
+        soft: is_soft_error(&err),
+    })?;
+
+    parse_plugin_output(&output).map_err(ContainersCaptureError::from)
+}
+
+#[cfg(feature = "serde")]
+fn extract_exit_code(err: &PluginExecutionError) -> Option<ContainersPluginExitCode> {
+    match err {
+        PluginExecutionError::Exit {
+            code: Some(raw), ..
+        } => Some(ContainersPluginExitCode::from_i32(*raw)),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "serde")]
+fn is_soft_error(err: &PluginExecutionError) -> bool {
+    match err {
+        PluginExecutionError::Exit {
+            code: Some(raw), ..
+        } => ContainersPluginExitCode::from_i32(*raw).is_soft_failure(),
+        PluginExecutionError::Validation { .. } | PluginExecutionError::BinaryIo { .. } => true,
+        _ => false,
+    }
 }
 
 /// Parse et normalise la sortie JSON du plugin conteneurs.

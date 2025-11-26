@@ -10,7 +10,7 @@ use crate::domain::{CaptureOptions, DescribeError, DiskUsage, SystemSnapshot};
 use crate::SharedSlice;
 use std::borrow::Cow;
 use std::time::Instant;
-use tracing::debug;
+use tracing::{debug, warn};
 
 impl SystemSnapshot {
     pub fn capture() -> Result<Self, DescribeError> {
@@ -92,6 +92,21 @@ impl SystemSnapshot {
             None
         };
 
+        #[cfg(feature = "serde")]
+        let containers = if opts.with_containers {
+            match crate::application::containers::capture_containers_cached() {
+                Ok(snapshot) => Some(snapshot),
+                Err(err) => {
+                    warn!(error = %err, "capture_containers_failed");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        #[cfg(not(feature = "serde"))]
+        let containers = None;
+
         let snapshot = SystemSnapshot {
             hostname: base.hostname,
             os: base.os,
@@ -110,7 +125,7 @@ impl SystemSnapshot {
             listening_sockets,
             #[cfg(feature = "net")]
             network_traffic,
-            containers: None,
+            containers,
             updates,
             extensions: None,
         };

@@ -333,6 +333,7 @@ pub(super) async fn sse_stream(
                         resolve_socket_processes: false,
                         with_network_traffic: exposure.network_traffic(),
                         with_updates: false,
+                        with_containers: exposure.containers_summary(),
                     },
                     exposure,
                     #[cfg(feature = "config")]

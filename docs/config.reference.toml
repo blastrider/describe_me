@@ -81,6 +81,8 @@ expose_services = true
 expose_disk_partitions = true
 expose_listening_sockets = true
 expose_network_traffic = true
+expose_containers_summary = true
+expose_containers_details = false
 expose_updates = true
 # Expose les extensions/plugins (désactivé par défaut si non défini).
 expose_extensions = true

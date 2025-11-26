@@ -535,6 +535,11 @@ fn main() -> Result<()> {
                         opts.with_services = true;
                     }
                 }
+                if !opts.with_containers {
+                    if let Some(true) = cli.with_containers {
+                        opts.with_containers = true;
+                    }
+                }
                 if !opts.web_expose_all {
                     if let Some(true) = cli.web_expose_all {
                         opts.web_expose_all = true;
@@ -702,6 +707,7 @@ fn main() -> Result<()> {
     let web_expose_all_effective = web_exposure.is_all();
     #[cfg(not(feature = "web"))]
     let web_expose_all_effective = false;
+    let with_containers_effective = opts.with_containers || exposure.containers_summary();
 
     let mode = if opts.web.is_some() {
         "web"
@@ -716,6 +722,7 @@ fn main() -> Result<()> {
     LogEvent::Startup {
         mode: mode.into(),
         with_services: opts.with_services,
+        with_containers: with_containers_effective,
         net_listen: opts.net_listen,
         net_traffic: opts.net_traffic,
         expose_all: exposure_all_effective,
@@ -794,6 +801,7 @@ fn main() -> Result<()> {
         resolve_socket_processes: opts.net_listen || exposure.listening_sockets(),
         with_network_traffic: opts.net_traffic || exposure.network_traffic(),
         with_updates: true,
+        with_containers: with_containers_effective,
     };
 
     let (snap, snapshot_view) = describe_me::capture_snapshot_with_view(
