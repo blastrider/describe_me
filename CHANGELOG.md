@@ -1,6 +1,10 @@
 ## Unreleased
 
+- Ajoutez vos changements ici.
 
+## v0.3.0 - 2025-11-26
+
+- Aucun changement documenté pour cette version.
 
 ## v0.2.6 - 2025-11-24
 
