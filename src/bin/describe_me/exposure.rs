@@ -82,6 +82,12 @@ fn apply_cli_flags(exposure: &mut describe_me::Exposure, opts: &Opts) {
         if opts.expose_network_traffic {
             exposure.set_network_traffic(true);
         }
+        if opts.expose_containers_summary {
+            exposure.set_containers_summary(true);
+        }
+        if opts.expose_containers_details {
+            exposure.set_containers_details(true);
+        }
         if opts.expose_updates {
             exposure.set_updates(true);
         }
@@ -99,6 +105,9 @@ fn apply_cli_flags(exposure: &mut describe_me::Exposure, opts: &Opts) {
     }
     if opts.net_traffic {
         exposure.set_network_traffic(true);
+    }
+    if opts.containers {
+        exposure.set_containers_details(true);
     }
 }
 
@@ -124,6 +133,12 @@ fn apply_web_flags(exposure: &mut describe_me::Exposure, opts: &Opts) {
         }
         if opts.web_expose_network_traffic {
             exposure.set_network_traffic(true);
+        }
+        if opts.web_expose_containers_summary {
+            exposure.set_containers_summary(true);
+        }
+        if opts.web_expose_containers_details {
+            exposure.set_containers_details(true);
         }
         if opts.web_expose_updates {
             exposure.set_updates(true);

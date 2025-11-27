@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 #[cfg(all(feature = "systemd", feature = "serde"))]
 use crate::domain::ServiceInfo;
 #[cfg(feature = "serde")]
-use crate::domain::{DiskPartition, SystemSnapshot, UpdatesInfo};
+use crate::domain::{ContainersSnapshot, DiskPartition, SystemSnapshot, UpdatesInfo};
 #[cfg(all(feature = "serde", feature = "net"))]
 use crate::domain::{ListeningSocket, NetworkInterfaceTraffic};
 #[cfg(feature = "serde")]
@@ -25,6 +25,8 @@ impl ExposureFlags {
     const UPDATES: Self = Self(1 << 6);
     const NETWORK: Self = Self(1 << 7);
     const EXTENSIONS: Self = Self(1 << 8);
+    const CONTAINERS_SUMMARY: Self = Self(1 << 9);
+    const CONTAINERS_DETAILS: Self = Self(1 << 10);
     const ALL: Self = Self(
         Self::HOSTNAME.0
             | Self::OS.0
@@ -34,7 +36,9 @@ impl ExposureFlags {
             | Self::SOCKETS.0
             | Self::UPDATES.0
             | Self::NETWORK.0
-            | Self::EXTENSIONS.0,
+            | Self::EXTENSIONS.0
+            | Self::CONTAINERS_SUMMARY.0
+            | Self::CONTAINERS_DETAILS.0,
     );
 
     const fn empty() -> Self {
@@ -179,6 +183,26 @@ impl Exposure {
         self.flags.set(ExposureFlags::NETWORK, value);
     }
 
+    pub fn containers_summary(&self) -> bool {
+        self.flags.contains(ExposureFlags::CONTAINERS_SUMMARY)
+            || self.flags.contains(ExposureFlags::CONTAINERS_DETAILS)
+    }
+
+    pub fn set_containers_summary(&mut self, value: bool) {
+        self.flags.set(ExposureFlags::CONTAINERS_SUMMARY, value);
+    }
+
+    pub fn containers_details(&self) -> bool {
+        self.flags.contains(ExposureFlags::CONTAINERS_DETAILS)
+    }
+
+    pub fn set_containers_details(&mut self, value: bool) {
+        self.flags.set(ExposureFlags::CONTAINERS_DETAILS, value);
+        if value {
+            self.set_containers_summary(true);
+        }
+    }
+
     pub fn extensions(&self) -> bool {
         self.flags.contains(ExposureFlags::EXTENSIONS)
     }
@@ -201,6 +225,8 @@ impl From<&crate::domain::ExposureConfig> for Exposure {
         exposure.set_updates(cfg.expose_updates);
         exposure.set_network_traffic(cfg.expose_network_traffic);
         exposure.set_extensions(cfg.expose_extensions);
+        exposure.set_containers_summary(cfg.expose_containers_summary);
+        exposure.set_containers_details(cfg.expose_containers_details);
         exposure.redacted = cfg.redacted;
         exposure
     }
@@ -247,6 +273,8 @@ pub struct SnapshotView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub services_summary: Option<ServiceSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub containers: Option<ContainersSnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub updates: Option<UpdatesInfo>,
     #[cfg(feature = "net")]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -279,6 +307,22 @@ impl SnapshotView {
 
         let redacted = os_redacted || kernel_redacted;
 
+        let containers = match snapshot.containers.as_ref() {
+            None => None,
+            Some(data) => {
+                if exposure.containers_details() {
+                    Some(data.clone())
+                } else if exposure.containers_summary() {
+                    Some(ContainersSnapshot {
+                        summary: data.summary.clone(),
+                        containers: None,
+                    })
+                } else {
+                    None
+                }
+            }
+        };
+
         Self {
             redacted,
             hostname: exposure.hostname().then(|| snapshot.hostname.clone()),
@@ -308,6 +352,7 @@ impl SnapshotView {
                 .then(|| snapshot.services_running.clone()),
             #[cfg(feature = "systemd")]
             services_summary,
+            containers,
             updates: if exposure.updates() {
                 snapshot.updates.clone()
             } else {
@@ -444,7 +489,11 @@ fn truncate_version(token: &str) -> Option<String> {
 mod tests {
     use super::*;
     #[cfg(feature = "serde")]
-    use crate::domain::{SystemSnapshot, UpdatesInfo};
+    use crate::domain::{
+        ContainerInfo, ContainersSnapshot, ContainersSummary, SystemSnapshot, UpdatesInfo,
+    };
+    #[cfg(feature = "serde")]
+    use crate::shared::SharedSlice;
 
     #[test]
     fn updates_hidden_when_not_exposed() {
@@ -470,6 +519,7 @@ mod tests {
                 listening_sockets: None,
                 #[cfg(feature = "net")]
                 network_traffic: None,
+                containers: None,
                 updates: Some(UpdatesInfo {
                     pending: 3,
                     reboot_required: true,
@@ -508,6 +558,7 @@ mod tests {
             listening_sockets: None,
             #[cfg(feature = "net")]
             network_traffic: None,
+            containers: None,
             updates: Some(UpdatesInfo {
                 pending: 2,
                 reboot_required: false,
@@ -522,6 +573,68 @@ mod tests {
         let info = view.updates.expect("updates should be present");
         assert_eq!(info.pending, 2);
         assert!(!info.reboot_required);
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn containers_follow_exposure_flags() {
+        let containers = SharedSlice::from_vec(vec![ContainerInfo {
+            name: "web".into(),
+            runtime: "docker".into(),
+            ip: Some("10.0.0.2".into()),
+            state: "running".into(),
+            image: Some("nginx:latest".into()),
+        }]);
+        let snapshot = SystemSnapshot {
+            hostname: "host".into(),
+            os: None,
+            kernel: None,
+            uptime_seconds: 0,
+            cpu_count: 1,
+            load_average: (0.0, 0.0, 0.0),
+            total_memory_bytes: 0,
+            used_memory_bytes: 0,
+            total_swap_bytes: 0,
+            used_swap_bytes: 0,
+            disk_usage: None,
+            #[cfg(feature = "systemd")]
+            services_running: crate::shared::SharedSlice::from_vec(Vec::new()),
+            #[cfg(feature = "net")]
+            listening_sockets: None,
+            #[cfg(feature = "net")]
+            network_traffic: None,
+            containers: Some(ContainersSnapshot {
+                summary: Some(ContainersSummary {
+                    total: 1,
+                    running: 1,
+                }),
+                containers: Some(containers.clone()),
+            }),
+            updates: None,
+            extensions: None,
+        };
+
+        let view_none = SnapshotView::new(&snapshot, Exposure::default());
+        assert!(view_none.containers.is_none());
+
+        let mut summary_only = Exposure::default();
+        summary_only.set_containers_summary(true);
+        let view_summary = SnapshotView::new(&snapshot, summary_only);
+        let containers_summary = view_summary
+            .containers
+            .expect("containers summary should be present");
+        assert!(containers_summary.containers.is_none());
+        assert_eq!(containers_summary.summary.as_ref().unwrap().running, 1);
+
+        let mut details = Exposure::default();
+        details.set_containers_details(true);
+        let view_details = SnapshotView::new(&snapshot, details);
+        let containers_details = view_details
+            .containers
+            .expect("containers should be present");
+        let list = containers_details.containers.expect("container list");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, "web");
     }
 }
 

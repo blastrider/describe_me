@@ -1,0 +1,480 @@
+use crate::domain::{ContainerInfo, ContainersSnapshot, ContainersSummary};
+use crate::SharedSlice;
+use describe_me_plugin_sdk::PluginOutput;
+use std::net::IpAddr;
+use std::time::Duration;
+#[cfg(feature = "serde")]
+use std::time::Instant;
+use thiserror::Error;
+
+#[cfg(feature = "serde")]
+use serde::Deserialize;
+#[cfg(feature = "serde")]
+use tracing::warn;
+
+#[cfg(feature = "serde")]
+use crate::application::extensions::{run_ad_hoc_plugin, PluginExecutionError};
+
+/// Chemin par défaut du binaire plugin conteneurs.
+pub const CONTAINERS_PLUGIN_BINARY: &str =
+    "/usr/lib/describe_me/plugins/describe-me-plugin-containers";
+/// Durée pendant laquelle on réutilise le dernier résultat pour éviter de relancer trop souvent.
+pub const CONTAINERS_CACHE_TTL: Duration = Duration::from_secs(30);
+
+/// Version du contrat JSON attendu depuis `describe-me-plugin-containers`.
+pub const CONTAINERS_CONTRACT_VERSION: u16 = 1;
+
+/// Timeout par défaut appliqué au binaire plugin (collecte rapide, sans blocage).
+pub const CONTAINERS_PLUGIN_TIMEOUT: Duration = Duration::from_secs(4);
+
+/// Codes de sortie normalisés pour le plugin conteneurs.
+///
+/// - `Success` (0) : collecte OK, JSON valide.
+/// - `NoRuntime` (10) : aucun runtime détecté (Docker/Podman/containerd absent), échec non fatal.
+/// - `PermissionDenied` (11) : socket ou CLI inaccessible sans privilèges supplémentaires.
+/// - `RuntimeUnavailable` (12) : runtime présent mais injoignable (daemon down, socket refusé).
+/// - `InvalidPayload` (20) : bug de sérialisation/validation côté plugin.
+/// - `Unexpected` (30) : toute autre erreur interne.
+///
+/// Les dépassements de temps sont gérés côté core via `CONTAINERS_PLUGIN_TIMEOUT` plutôt
+/// que par un code de sortie dédié.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i32)]
+pub enum ContainersPluginExitCode {
+    Success = 0,
+    NoRuntime = 10,
+    PermissionDenied = 11,
+    RuntimeUnavailable = 12,
+    InvalidPayload = 20,
+    Unexpected = 30,
+}
+
+impl ContainersPluginExitCode {
+    /// Conversion sécurisée d’un code brut (valeur inconnue → `Unexpected`).
+    pub fn from_i32(code: i32) -> Self {
+        match code {
+            0 => Self::Success,
+            10 => Self::NoRuntime,
+            11 => Self::PermissionDenied,
+            12 => Self::RuntimeUnavailable,
+            20 => Self::InvalidPayload,
+            _ => Self::Unexpected,
+        }
+    }
+
+    pub fn as_i32(self) -> i32 {
+        self as i32
+    }
+
+    /// Indique si l’échec ne doit pas être traité comme critique (ex: pas de runtime).
+    pub fn is_soft_failure(self) -> bool {
+        matches!(
+            self,
+            Self::NoRuntime | Self::PermissionDenied | Self::RuntimeUnavailable
+        )
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Success => "collecte réussie",
+            Self::NoRuntime => "aucun runtime conteneur détecté",
+            Self::PermissionDenied => "accès refusé au runtime conteneur",
+            Self::RuntimeUnavailable => "runtime conteneur injoignable",
+            Self::InvalidPayload => "payload JSON invalide",
+            Self::Unexpected => "erreur interne du plugin",
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+#[derive(Debug, Error)]
+pub enum ContainersCaptureError {
+    #[error("plugin conteneurs: {message}")]
+    Plugin {
+        message: String,
+        exit_code: Option<ContainersPluginExitCode>,
+        soft: bool,
+    },
+    #[error(transparent)]
+    Contract(#[from] ContainersContractError),
+}
+
+#[cfg(feature = "serde")]
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum ContainersContractError {
+    #[error("contrat conteneurs v{found} non supporté (attendu v{expected})")]
+    UnsupportedVersion { found: u16, expected: u16 },
+    #[error("payload JSON invalide: {0}")]
+    InvalidJson(String),
+    #[error("section summary manquante dans la sortie du plugin")]
+    MissingSummary,
+    #[error("summary invalide: {0}")]
+    InvalidSummary(String),
+    #[error("container #{index}: {reason}")]
+    InvalidContainer { index: usize, reason: String },
+}
+
+#[cfg(feature = "serde")]
+#[derive(Debug, Deserialize)]
+struct ContainersPayload {
+    #[serde(default = "default_contract_version")]
+    version: u16,
+    summary: Option<ContainersSummaryWire>,
+    #[serde(default)]
+    containers: Vec<ContainerInfoWire>,
+}
+
+#[cfg(feature = "serde")]
+#[derive(Debug, Deserialize)]
+struct ContainersSummaryWire {
+    total: usize,
+    running: usize,
+}
+
+#[cfg(feature = "serde")]
+#[derive(Debug, Deserialize)]
+struct ContainerInfoWire {
+    name: String,
+    runtime: String,
+    #[serde(default)]
+    ip: Option<String>,
+    state: String,
+    #[serde(default)]
+    image: Option<String>,
+}
+
+#[cfg(feature = "serde")]
+const fn default_contract_version() -> u16 {
+    CONTAINERS_CONTRACT_VERSION
+}
+
+#[cfg(feature = "serde")]
+#[derive(Debug, Clone)]
+struct CachedContainers {
+    snapshot: ContainersSnapshot,
+    fetched_at: Instant,
+}
+
+#[cfg(feature = "serde")]
+#[derive(Default)]
+struct ContainersCache {
+    last_success: Option<CachedContainers>,
+}
+
+#[cfg(feature = "serde")]
+impl ContainersCache {
+    fn fresh_snapshot(&self, now: Instant) -> Option<ContainersSnapshot> {
+        let cached = self.last_success.as_ref()?;
+        if now.duration_since(cached.fetched_at) < CONTAINERS_CACHE_TTL {
+            Some(cached.snapshot.clone())
+        } else {
+            None
+        }
+    }
+
+    fn reuse_stale(&self) -> Option<ContainersSnapshot> {
+        self.last_success.as_ref().map(|c| c.snapshot.clone())
+    }
+
+    fn store(&mut self, snapshot: ContainersSnapshot, now: Instant) {
+        self.last_success = Some(CachedContainers {
+            snapshot,
+            fetched_at: now,
+        });
+    }
+}
+
+#[cfg(feature = "serde")]
+fn containers_cache() -> &'static std::sync::Mutex<ContainersCache> {
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<std::sync::Mutex<ContainersCache>> = OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(ContainersCache::default()))
+}
+
+/// Exécute le plugin conteneurs et renvoie un `ContainersSnapshot` en tirant parti du cache.
+///
+/// Si le plugin échoue mais qu'une valeur précédente existe encore, on réutilise ce cache
+/// (avec un warning) pour éviter de couper la capture complète.
+#[cfg(feature = "serde")]
+pub fn capture_containers_cached() -> Result<ContainersSnapshot, ContainersCaptureError> {
+    let now = Instant::now();
+    let cache = containers_cache();
+    {
+        let guard = cache.lock().expect("containers cache mutex poisoned");
+        if let Some(snapshot) = guard.fresh_snapshot(now) {
+            return Ok(snapshot);
+        }
+    }
+
+    match collect_from_plugin() {
+        Ok(snapshot) => {
+            let mut guard = cache.lock().expect("containers cache mutex poisoned");
+            guard.store(snapshot.clone(), now);
+            Ok(snapshot)
+        }
+        Err(err) => {
+            let cached = {
+                let guard = cache.lock().expect("containers cache mutex poisoned");
+                guard.reuse_stale()
+            };
+            if let Some(snapshot) = cached {
+                warn!(
+                    error = %err,
+                    "plugin conteneurs en erreur, réutilisation du cache précédent"
+                );
+                Ok(snapshot)
+            } else {
+                Err(err)
+            }
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+fn collect_from_plugin() -> Result<ContainersSnapshot, ContainersCaptureError> {
+    let output = run_ad_hoc_plugin(
+        CONTAINERS_PLUGIN_BINARY,
+        "containers",
+        &[],
+        CONTAINERS_PLUGIN_TIMEOUT,
+    )
+    .map_err(|err| ContainersCaptureError::Plugin {
+        message: err.to_string(),
+        exit_code: extract_exit_code(&err),
+        soft: is_soft_error(&err),
+    })?;
+
+    parse_plugin_output(&output).map_err(ContainersCaptureError::from)
+}
+
+#[cfg(feature = "serde")]
+fn extract_exit_code(err: &PluginExecutionError) -> Option<ContainersPluginExitCode> {
+    match err {
+        PluginExecutionError::Exit {
+            code: Some(raw), ..
+        } => Some(ContainersPluginExitCode::from_i32(*raw)),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "serde")]
+fn is_soft_error(err: &PluginExecutionError) -> bool {
+    match err {
+        PluginExecutionError::Exit {
+            code: Some(raw), ..
+        } => ContainersPluginExitCode::from_i32(*raw).is_soft_failure(),
+        PluginExecutionError::Validation { .. } | PluginExecutionError::BinaryIo { .. } => true,
+        _ => false,
+    }
+}
+
+/// Parse et normalise la sortie JSON du plugin conteneurs.
+#[cfg(feature = "serde")]
+pub fn parse_plugin_output(
+    output: &PluginOutput,
+) -> Result<ContainersSnapshot, ContainersContractError> {
+    let payload: ContainersPayload = serde_json::from_value(
+        serde_json::to_value(output.as_map())
+            .map_err(|err| ContainersContractError::InvalidJson(err.to_string()))?,
+    )
+    .map_err(|err| ContainersContractError::InvalidJson(err.to_string()))?;
+
+    if payload.version != CONTAINERS_CONTRACT_VERSION {
+        return Err(ContainersContractError::UnsupportedVersion {
+            found: payload.version,
+            expected: CONTAINERS_CONTRACT_VERSION,
+        });
+    }
+
+    let summary_wire = payload
+        .summary
+        .ok_or(ContainersContractError::MissingSummary)?;
+    let summary = validate_summary(&summary_wire)?;
+
+    let mut containers = Vec::with_capacity(payload.containers.len());
+    for (idx, raw) in payload.containers.into_iter().enumerate() {
+        let normalized = normalize_container(raw)
+            .map_err(|reason| ContainersContractError::InvalidContainer { index: idx, reason })?;
+        containers.push(normalized);
+    }
+
+    if summary.total < containers.len() {
+        return Err(ContainersContractError::InvalidSummary(format!(
+            "summary.total={} < containers.len()={}",
+            summary.total,
+            containers.len()
+        )));
+    }
+
+    Ok(ContainersSnapshot {
+        summary: Some(summary),
+        containers: (!containers.is_empty()).then(|| SharedSlice::from_vec(containers)),
+    })
+}
+
+#[cfg(feature = "serde")]
+fn validate_summary(
+    wire: &ContainersSummaryWire,
+) -> Result<ContainersSummary, ContainersContractError> {
+    if wire.running > wire.total {
+        return Err(ContainersContractError::InvalidSummary(format!(
+            "running ({}) > total ({})",
+            wire.running, wire.total
+        )));
+    }
+    Ok(ContainersSummary {
+        total: wire.total,
+        running: wire.running,
+    })
+}
+
+#[cfg(feature = "serde")]
+fn normalize_container(raw: ContainerInfoWire) -> Result<ContainerInfo, String> {
+    const NAME_MAX: usize = 128;
+    const RUNTIME_MAX: usize = 32;
+    const STATE_MAX: usize = 32;
+    const IMAGE_MAX: usize = 256;
+
+    let name = normalize_token(&raw.name, "name", NAME_MAX)?;
+    let runtime = normalize_token(&raw.runtime, "runtime", RUNTIME_MAX)?.to_ascii_lowercase();
+    let state = normalize_token(&raw.state, "state", STATE_MAX)?.to_ascii_lowercase();
+    let ip = normalize_ip(raw.ip)?;
+    let image = normalize_optional_token(raw.image, "image", IMAGE_MAX)?;
+
+    Ok(ContainerInfo {
+        name,
+        runtime,
+        ip,
+        state,
+        image,
+    })
+}
+
+#[cfg(feature = "serde")]
+fn normalize_ip(raw: Option<String>) -> Result<Option<String>, String> {
+    let Some(value) = raw else {
+        return Ok(None);
+    };
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let parsed: IpAddr = trimmed
+        .parse()
+        .map_err(|_| format!("ip invalide '{trimmed}'"))?;
+    Ok(Some(parsed.to_string()))
+}
+
+#[cfg(feature = "serde")]
+fn normalize_optional_token(
+    raw: Option<String>,
+    field: &'static str,
+    max_len: usize,
+) -> Result<Option<String>, String> {
+    match raw {
+        None => Ok(None),
+        Some(value) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                return Ok(None);
+            }
+            normalize_token(trimmed, field, max_len).map(Some)
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+fn normalize_token(raw: &str, field: &'static str, max_len: usize) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(format!("{field} manquant"));
+    }
+    if trimmed.len() > max_len {
+        return Err(format!("{field} trop long (>{max_len} caractères)"));
+    }
+    if !trimmed.is_ascii() {
+        return Err(format!("{field} doit être ASCII"));
+    }
+    if trimmed.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return Err(format!(
+            "{field} contient des espaces ou caractères de contrôle"
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn parses_and_normalizes_valid_payload() {
+        let mut output = PluginOutput::new();
+        output.insert("version", CONTAINERS_CONTRACT_VERSION);
+        output.insert("summary", serde_json::json!({"total": 2, "running": 1}));
+        output.insert(
+            "containers",
+            serde_json::json!([
+                {
+                    "name": "web",
+                    "runtime": "Docker",
+                    "ip": "10.0.0.2",
+                    "state": "RUNNING",
+                    "image": "nginx:latest"
+                },
+                {
+                    "name": "db",
+                    "runtime": "podman",
+                    "ip": null,
+                    "state": "exited",
+                    "image": null
+                }
+            ]),
+        );
+
+        let snapshot = parse_plugin_output(&output).expect("valid payload");
+        let summary = snapshot.summary.expect("summary");
+        assert_eq!(summary.total, 2);
+        assert_eq!(summary.running, 1);
+
+        let containers = snapshot.containers.expect("containers");
+        assert_eq!(containers.len(), 2);
+        assert_eq!(containers[0].runtime, "docker");
+        assert_eq!(containers[0].state, "running");
+        assert_eq!(containers[0].ip.as_deref(), Some("10.0.0.2"));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn rejects_invalid_ip() {
+        let mut output = PluginOutput::new();
+        output.insert("version", CONTAINERS_CONTRACT_VERSION);
+        output.insert("summary", serde_json::json!({"total": 1, "running": 0}));
+        output.insert(
+            "containers",
+            serde_json::json!([{"name":"bad","runtime":"docker","ip":"abc","state":"exited"}]),
+        );
+
+        let err = parse_plugin_output(&output).unwrap_err();
+        assert!(matches!(
+            err,
+            ContainersContractError::InvalidContainer { .. }
+        ));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn rejects_version_mismatch() {
+        let mut output = PluginOutput::new();
+        output.insert("version", CONTAINERS_CONTRACT_VERSION + 1);
+        output.insert("summary", serde_json::json!({"total": 0, "running": 0}));
+        output.insert("containers", serde_json::json!([]));
+
+        let err = parse_plugin_output(&output).unwrap_err();
+        assert!(matches!(
+            err,
+            ContainersContractError::UnsupportedVersion { .. }
+        ));
+    }
+}

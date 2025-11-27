@@ -33,6 +33,12 @@ sha256 = "<fingerprinted value>"
 args = ["--probe", "/etc/ssl/certs", "--probe", "/etc/describe_me/certs"]
 timeout_secs = 10
 
+[[extensions.plugins]]
+name = "containers"
+path = "/usr/lib/describe_me/plugins/describe-me-plugin-containers"
+sha256 = "<fingerprinted value>"
+timeout_secs = 4
+
 [exposure]
 expose_hostname = true
 expose_os = true

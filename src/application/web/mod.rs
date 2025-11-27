@@ -27,7 +27,13 @@ mod sse;
 mod template;
 mod updates_cache;
 
-use std::{borrow::Cow, collections::HashSet, net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    borrow::Cow,
+    collections::HashSet,
+    net::SocketAddr,
+    sync::{Arc, RwLock},
+    time::{Duration, Instant},
+};
 
 use axum::{
     body::{Body, Bytes},
@@ -47,7 +53,7 @@ use axum_server::tls_rustls::RustlsConfig;
 use tokio::sync::Notify;
 use tracing::warn;
 
-use crate::application::exposure::Exposure;
+use crate::application::exposure::{Exposure, SnapshotView};
 use crate::application::logging::LogEvent;
 use crate::application::metadata::override_state_directory;
 use crate::domain::DescribeError;
@@ -55,8 +61,8 @@ use crate::domain::DescribeError;
 use crate::domain::{DescribeConfig, WebSecurityConfig};
 
 use handlers::{
-    history_series, host_logs, index, logo_asset, logs_page, update_description, update_tags,
-    updates_page,
+    containers_api, containers_page, history_series, host_logs, index, logo_asset, logs_page,
+    update_description, update_tags, updates_page,
 };
 use security::WebSecurity;
 use sse::sse_stream;
@@ -154,8 +160,33 @@ struct AppState {
     exposure: Exposure,
     shutdown: Arc<Notify>,
     updates_cache: UpdatesCache,
+    snapshot_cache: Arc<RwLock<Option<CachedSnapshot>>>,
     logo: LogoAsset,
     session_cookie_secure: bool,
+}
+
+#[derive(Clone)]
+struct CachedSnapshot {
+    view: SnapshotView,
+    captured_at: Instant,
+}
+
+impl AppState {
+    fn cache_snapshot(&self, view: SnapshotView) {
+        let mut guard = self
+            .snapshot_cache
+            .write()
+            .expect("snapshot cache poisoned");
+        *guard = Some(CachedSnapshot {
+            view,
+            captured_at: Instant::now(),
+        });
+    }
+
+    fn latest_snapshot(&self) -> Option<CachedSnapshot> {
+        let guard = self.snapshot_cache.read().expect("snapshot cache poisoned");
+        guard.clone()
+    }
 }
 
 /// Ressource statique (ou personnalisée) représentant le logo exposé par l'UI.
@@ -566,6 +597,7 @@ pub async fn serve_http<A: Into<SocketAddr>>(
     #[cfg(not(feature = "config"))]
     let updates_refresh_ttl = UPDATES_CACHE_SUCCESS_TTL;
     let updates_cache = UpdatesCache::new(updates_refresh_ttl, UPDATES_CACHE_FAILURE_RETRY);
+    let snapshot_cache = Arc::new(RwLock::new(None));
 
     #[cfg(feature = "config")]
     if let Some(cfg) = config.as_ref() {
@@ -595,6 +627,7 @@ pub async fn serve_http<A: Into<SocketAddr>>(
         exposure,
         shutdown: shutdown_for_state,
         updates_cache,
+        snapshot_cache: snapshot_cache.clone(),
         logo,
         session_cookie_secure,
     };
@@ -603,8 +636,10 @@ pub async fn serve_http<A: Into<SocketAddr>>(
         .route("/", get(index))
         .route("/assets/logo.svg", get(logo_asset))
         .route("/updates", get(updates_page))
+        .route("/container", get(containers_page))
         .route("/logs", get(logs_page))
         .route("/sse", get(sse_stream))
+        .route("/api/containers", get(containers_api))
         .route("/api/history", get(history_series))
         .route("/api/logs", get(host_logs))
         .route("/api/description", post(update_description))

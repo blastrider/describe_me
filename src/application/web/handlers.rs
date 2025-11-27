@@ -22,14 +22,14 @@ use crate::{
             set_server_tags,
         },
     },
-    domain::DescribeError,
+    domain::{ContainersSnapshot, DescribeError},
 };
 
 use super::{
     mark_response_no_store,
     security::AuthGuard,
     set_session_cookie,
-    template::{render_index, render_logs_page, render_updates_page},
+    template::{render_containers_page, render_index, render_logs_page, render_updates_page},
     AppState, CspNonce,
 };
 
@@ -107,6 +107,12 @@ struct HistoryResponse {
     truncated: bool,
     aggregated: bool,
     points: Vec<HistoryPointResponse>,
+}
+
+#[derive(Serialize)]
+struct ContainersApiResponse {
+    age_ms: u64,
+    containers: ContainersSnapshot,
 }
 
 pub(super) async fn logo_asset(State(state): State<AppState>) -> Response {
@@ -345,6 +351,40 @@ pub(super) async fn history_series(
     response
 }
 
+pub(super) async fn containers_api(
+    State(state): State<AppState>,
+    _guard: AuthGuard,
+) -> impl IntoResponse {
+    let cached = match state.latest_snapshot() {
+        Some(value) => value,
+        None => {
+            return json_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Aucun snapshot disponible pour le moment.",
+            )
+        }
+    };
+
+    let Some(containers) = cached.view.containers else {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "Les conteneurs ne sont pas exposés ou non capturés.",
+        );
+    };
+
+    let age_ms = cached
+        .captured_at
+        .elapsed()
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64;
+
+    (
+        StatusCode::OK,
+        Json(ContainersApiResponse { age_ms, containers }),
+    )
+        .into_response()
+}
+
 pub(super) async fn logs_page(
     State(state): State<AppState>,
     guard: AuthGuard,
@@ -352,6 +392,20 @@ pub(super) async fn logs_page(
 ) -> impl IntoResponse {
     let session = guard.into_session();
     let mut response = Html(render_logs_page(csp_nonce.as_str())).into_response();
+    if let Some(token) = session.session_cookie() {
+        set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
+    }
+    mark_response_no_store(response.headers_mut());
+    response
+}
+
+pub(super) async fn containers_page(
+    State(state): State<AppState>,
+    guard: AuthGuard,
+    Extension(csp_nonce): Extension<CspNonce>,
+) -> impl IntoResponse {
+    let session = guard.into_session();
+    let mut response = Html(render_containers_page(csp_nonce.as_str())).into_response();
     if let Some(token) = session.session_cookie() {
         set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
     }

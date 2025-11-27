@@ -13,6 +13,10 @@ pub struct Opts {
     #[arg(long)]
     pub with_services: bool,
 
+    /// Collecter aussi les informations sur les conteneurs (plugin externe)
+    #[arg(long)]
+    pub with_containers: bool,
+
     /// Limite d'affichage pour les services (mode CLI human-readable).
     #[arg(long = "services-limit", value_name = "N")]
     pub services_limit: Option<usize>,
@@ -45,6 +49,10 @@ pub struct Opts {
     /// Affiche le trafic réseau agrégé par interface — nécessite la feature `net`
     #[arg(long = "net-traffic", action = ArgAction::SetTrue)]
     pub net_traffic: bool,
+
+    /// Affiche les conteneurs détectés (résumé + tableau)
+    #[arg(long = "containers", action = ArgAction::SetTrue)]
+    pub containers: bool,
 
     /// Affiche aussi le PID propriétaire (si résolu) — nécessite `--net-listen`
     #[arg(long = "process", requires = "net_listen", action = ArgAction::SetTrue)]
@@ -168,6 +176,14 @@ pub struct Opts {
     #[arg(long = "expose-network-traffic", action = ArgAction::SetTrue)]
     pub expose_network_traffic: bool,
 
+    /// Expose uniquement le résumé conteneurs (total/running)
+    #[arg(long = "expose-containers-summary", action = ArgAction::SetTrue)]
+    pub expose_containers_summary: bool,
+
+    /// Expose le détail des conteneurs (nom, runtime, IP, image)
+    #[arg(long = "expose-containers-details", action = ArgAction::SetTrue)]
+    pub expose_containers_details: bool,
+
     /// Expose le statut des mises à jour (nombre, reboot requis)
     #[arg(long = "expose-updates", action = ArgAction::SetTrue)]
     pub expose_updates: bool,
@@ -207,6 +223,14 @@ pub struct Opts {
     /// Expose le trafic réseau par interface côté --web
     #[arg(long = "web-expose-network-traffic", action = ArgAction::SetTrue)]
     pub web_expose_network_traffic: bool,
+
+    /// Expose uniquement le résumé conteneurs côté --web
+    #[arg(long = "web-expose-containers-summary", action = ArgAction::SetTrue)]
+    pub web_expose_containers_summary: bool,
+
+    /// Expose le détail des conteneurs côté --web
+    #[arg(long = "web-expose-containers-details", action = ArgAction::SetTrue)]
+    pub web_expose_containers_details: bool,
 
     /// Expose le statut des mises à jour côté --web
     #[arg(long = "web-expose-updates", action = ArgAction::SetTrue)]

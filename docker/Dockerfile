@@ -11,6 +11,7 @@ ARG TARGET_TRIPLE
 ARG APP_FEATURES="cli web config systemd net journald"
 ARG APP_BIN=describe-me
 ARG PLUGIN_BIN=describe-me-plugin-certificates
+ARG CONTAINERS_PLUGIN_BIN=describe-me-plugin-containers
 ARG PLUGIN_MANIFEST=plugin-examples/certificates/Cargo.toml
 
 ENV CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse \
@@ -39,8 +40,10 @@ RUN --mount=type=cache,target=/app/target \
     set -eux; \
     strip target/${TARGET_TRIPLE}/release/${APP_BIN}; \
     strip target/${TARGET_TRIPLE}/release/${PLUGIN_BIN}; \
+    strip target/${TARGET_TRIPLE}/release/${CONTAINERS_PLUGIN_BIN}; \
     install -Dm755 target/${TARGET_TRIPLE}/release/${APP_BIN} /dist/usr/bin/${APP_BIN}; \
     install -Dm755 target/${TARGET_TRIPLE}/release/${PLUGIN_BIN} /dist/usr/lib/describe_me/plugins/${PLUGIN_BIN}; \
+    install -Dm755 target/${TARGET_TRIPLE}/release/${CONTAINERS_PLUGIN_BIN} /dist/usr/lib/describe_me/plugins/${CONTAINERS_PLUGIN_BIN}; \
     install -Dm644 packaging/config/config.toml /dist/etc/describe_me/config.toml; \
     mkdir -p /dist/var/lib/describe-me /dist/var/tmp; \
     chown -R 1000:1000 /dist/var/lib/describe-me /dist/etc/describe_me /dist/usr/lib/describe_me

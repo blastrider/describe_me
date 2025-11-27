@@ -10,6 +10,7 @@ services:
     command:
       - "--config"
       - "/etc/describe_me/config.toml"
+      - "--with-containers"
       - "--web"
       - "0.0.0.0:8080"
       - "--web-dev"
@@ -30,6 +31,8 @@ services:
       - ./config.dev.toml:/etc/describe_me/config.toml:ro
       # Journald : monte le socket pour expédier les logs host
       - /run/systemd/journal/socket:/run/systemd/journal/socket:ro
+      # Conteneurs : monte le socket Docker pour autoriser la détection par le plugin containers
+      - /var/run/docker.sock:/var/run/docker.sock:ro
       # Laisser voir l'hôte : proc/sys/machine-id en lecture seule
       - /proc:/proc:ro
       - /sys:/sys:ro

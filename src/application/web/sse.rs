@@ -310,6 +310,7 @@ pub(super) async fn sse_stream(
     let config = state.config.clone();
     let exposure = state.exposure;
     let updates_cache = state.updates_cache.clone();
+    let state_for_cache = state.clone();
 
     let stream = IntervalStream::new(ticker).then(move |_| {
         #[cfg(feature = "config")]
@@ -318,6 +319,7 @@ pub(super) async fn sse_stream(
         let max_payload = max_payload;
         let metrics = metrics_for_stream.clone();
         let updates_cache = updates_cache.clone();
+        let state_for_cache = state_for_cache.clone();
 
         async move {
             if exposure.updates() {
@@ -333,6 +335,7 @@ pub(super) async fn sse_stream(
                         resolve_socket_processes: false,
                         with_network_traffic: exposure.network_traffic(),
                         with_updates: false,
+                        with_containers: exposure.containers_summary(),
                     },
                     exposure,
                     #[cfg(feature = "config")]
@@ -344,6 +347,7 @@ pub(super) async fn sse_stream(
                                 view.updates = Some(info);
                             }
                         }
+                        state_for_cache.cache_snapshot(view.clone());
                         #[cfg(feature = "systemd")]
                         let services_count = view
                             .services_running

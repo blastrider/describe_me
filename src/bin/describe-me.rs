@@ -59,7 +59,13 @@ fn summary_line(view: &describe_me::SnapshotView) -> String {
         ),
         None => (String::from("?"), "unknown"),
     };
-    format!("updates={pending} reboot={reboot}")
+    let containers = view
+        .containers
+        .as_ref()
+        .and_then(|c| c.summary.as_ref())
+        .map(|s| format!(" containers={}/{}", s.running, s.total))
+        .unwrap_or_default();
+    format!("updates={pending} reboot={reboot}{containers}")
 }
 
 fn handle_command(cmd: CliCommand) -> Result<()> {
@@ -344,6 +350,45 @@ fn print_services_cli(view: &describe_me::SnapshotView, limit: Option<usize>, of
     println!();
 }
 
+fn print_containers_cli(view: &describe_me::SnapshotView) {
+    println!(
+        "{:<24} {:<10} {:<12} {:<18} IMAGE",
+        "CONTAINER", "RUNTIME", "STATE", "IP"
+    );
+
+    match view.containers.as_ref() {
+        None => {
+            println!("(conteneurs non capturés ou non exposés)");
+        }
+        Some(snapshot) => {
+            if let Some(summary) = snapshot.summary.as_ref() {
+                println!("Total: {} (running: {})", summary.total, summary.running);
+            }
+            match snapshot.containers.as_ref() {
+                Some(list) => {
+                    let containers = list.as_slice();
+                    if containers.is_empty() {
+                        println!("(aucun conteneur)");
+                    } else {
+                        for c in containers {
+                            let ip = c.ip.as_deref().unwrap_or("-");
+                            let image = c.image.as_deref().unwrap_or("-");
+                            println!(
+                                "{:<24} {:<10} {:<12} {:<18} {}",
+                                c.name, c.runtime, c.state, ip, image
+                            );
+                        }
+                    }
+                }
+                None => {
+                    println!("(détails conteneurs non exposés)");
+                }
+            }
+        }
+    }
+    println!();
+}
+
 #[cfg(feature = "net")]
 fn print_sockets_cli(
     sockets: &[ListeningSocket],
@@ -535,6 +580,11 @@ fn main() -> Result<()> {
                         opts.with_services = true;
                     }
                 }
+                if !opts.with_containers {
+                    if let Some(true) = cli.with_containers {
+                        opts.with_containers = true;
+                    }
+                }
                 if !opts.web_expose_all {
                     if let Some(true) = cli.web_expose_all {
                         opts.web_expose_all = true;
@@ -702,6 +752,8 @@ fn main() -> Result<()> {
     let web_expose_all_effective = web_exposure.is_all();
     #[cfg(not(feature = "web"))]
     let web_expose_all_effective = false;
+    let with_containers_effective =
+        opts.with_containers || opts.containers || exposure.containers_summary();
 
     let mode = if opts.web.is_some() {
         "web"
@@ -716,6 +768,7 @@ fn main() -> Result<()> {
     LogEvent::Startup {
         mode: mode.into(),
         with_services: opts.with_services,
+        with_containers: with_containers_effective,
         net_listen: opts.net_listen,
         net_traffic: opts.net_traffic,
         expose_all: exposure_all_effective,
@@ -794,6 +847,7 @@ fn main() -> Result<()> {
         resolve_socket_processes: opts.net_listen || exposure.listening_sockets(),
         with_network_traffic: opts.net_traffic || exposure.network_traffic(),
         with_updates: true,
+        with_containers: with_containers_effective,
     };
 
     let (snap, snapshot_view) = describe_me::capture_snapshot_with_view(
@@ -851,6 +905,10 @@ fn main() -> Result<()> {
     #[cfg(feature = "systemd")]
     if opts.with_services {
         print_services_cli(&snapshot_view, opts.services_limit, opts.services_offset);
+    }
+
+    if opts.containers {
+        print_containers_cli(&snapshot_view);
     }
 
     // --- Mode non-JSON (comportement existant + snapshot JSON à la fin) ---
@@ -993,6 +1051,7 @@ mod tests {
             listening_sockets: None,
             #[cfg(feature = "net")]
             network_traffic: None,
+            containers: None,
             updates: Some(describe_me::UpdatesInfo {
                 pending: 5,
                 reboot_required: true,
@@ -1027,6 +1086,7 @@ mod tests {
             listening_sockets: None,
             #[cfg(feature = "net")]
             network_traffic: None,
+            containers: None,
             updates: None,
             extensions: None,
         };
@@ -1034,6 +1094,52 @@ mod tests {
         exposure.set_updates(true);
         let view = describe_me::SnapshotView::new(&snapshot, exposure);
         assert_eq!(super::summary_line(&view), "updates=? reboot=unknown");
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn summary_line_includes_containers_counts_when_present() {
+        let snapshot = describe_me::SystemSnapshot {
+            hostname: "host".into(),
+            os: None,
+            kernel: None,
+            uptime_seconds: 0,
+            cpu_count: 1,
+            load_average: (0.0, 0.0, 0.0),
+            total_memory_bytes: 0,
+            used_memory_bytes: 0,
+            total_swap_bytes: 0,
+            used_swap_bytes: 0,
+            disk_usage: None,
+            #[cfg(feature = "systemd")]
+            services_running: describe_me::SharedSlice::from_vec(Vec::new()),
+            #[cfg(feature = "net")]
+            listening_sockets: None,
+            #[cfg(feature = "net")]
+            network_traffic: None,
+            containers: Some(describe_me::ContainersSnapshot {
+                summary: Some(describe_me::ContainersSummary {
+                    total: 3,
+                    running: 2,
+                }),
+                containers: None,
+            }),
+            updates: Some(describe_me::UpdatesInfo {
+                pending: 0,
+                reboot_required: false,
+                packages: None,
+            }),
+            extensions: None,
+        };
+
+        let mut exposure = describe_me::Exposure::default();
+        exposure.set_updates(true);
+        exposure.set_containers_summary(true);
+        let view = describe_me::SnapshotView::new(&snapshot, exposure);
+        assert_eq!(
+            super::summary_line(&view),
+            "updates=0 reboot=no containers=2/3"
+        );
     }
 
     #[test]

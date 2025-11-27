@@ -1,4 +1,4 @@
-use super::assets::{BACKGROUND_CANVAS_JS, LOGS_JS, MAIN_JS};
+use super::assets::{BACKGROUND_CANVAS_JS, CONTAINERS_JS, LOGS_JS, MAIN_JS};
 use crate::domain::{UpdatePackage, UpdatesInfo};
 
 const INDEX_HTML_TEMPLATE: &str = include_str!("templates/index.html");
@@ -52,6 +52,8 @@ const UPDATES_HTML_TEMPLATE: &str = include_str!("templates/updates.html");
 const UPDATES_CSS: &str = include_str!("templates/updates.css");
 const LOGS_HTML_TEMPLATE: &str = include_str!("templates/logs.html");
 const LOGS_CSS: &str = include_str!("templates/logs.css");
+const CONTAINERS_HTML_TEMPLATE: &str = include_str!("templates/containers.html");
+const CONTAINERS_CSS: &str = include_str!("templates/containers.css");
 
 fn fill_template<'a, F>(template: &str, extra_capacity: usize, mut resolver: F) -> String
 where
@@ -172,6 +174,19 @@ pub(super) fn render_logs_page(csp_nonce: &str) -> String {
         "INLINE_CSS" => Some(LOGS_CSS),
         "BACKGROUND_CANVAS_JS" => Some(BACKGROUND_CANVAS_JS),
         "LOGS_JS" => Some(LOGS_JS),
+        "CSP_NONCE" => Some(csp_nonce),
+        _ => None,
+    })
+}
+
+pub(super) fn render_containers_page(csp_nonce: &str) -> String {
+    let extra_capacity =
+        CONTAINERS_CSS.len() + BACKGROUND_CANVAS_JS.len() + CONTAINERS_JS.len() + csp_nonce.len();
+
+    fill_template(CONTAINERS_HTML_TEMPLATE, extra_capacity, |key| match key {
+        "INLINE_CSS" => Some(CONTAINERS_CSS),
+        "BACKGROUND_CANVAS_JS" => Some(BACKGROUND_CANVAS_JS),
+        "CONTAINERS_JS" => Some(CONTAINERS_JS),
         "CSP_NONCE" => Some(csp_nonce),
         _ => None,
     })

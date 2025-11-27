@@ -9,11 +9,12 @@ inventaire réseau et serveur web SSE.
 | Option                      | Effet                                                       |
 |-----------------------------|-------------------------------------------------------------|
 | `--with-services`           | Inclut les services systemd (feature `systemd`)             |
+| `--with-containers` / `--containers` | Capture les conteneurs via le plugin dédié et affiche un tableau NAME/RUNTIME/STATE/IP (si exposé) |
 | `--disks`                   | Force le calcul des partitions dans la sortie CLI           |
 | `--net-listen`              | Affiche les sockets TCP/UDP (feature `net`) et les ajoute à `SnapshotView` |
 | `--process`                 | Affiche le PID propriétaire (requiert `--net-listen`)       |
 | `--json` / `--pretty`       | Sortie JSON brute/indentée                                  |
-| `--summary`                 | Ajoute une ligne de résumé (`updates=<N> reboot=<yes|no|unknown>`) |
+| `--summary`                 | Ajoute une ligne de résumé (`updates=<N> reboot=<yes|no|unknown> containers=<running>/<total>?`) |
 | `--check <expr>`            | Health checks (`mem`, `disk`, `service`)                    |
 | `--web[=ADDR:PORT]`         | Lance le serveur SSE intégré (feature `web`)                |
 | `--web-token`, `--web-allow-ip` | Sécurisation du mode web (hash Argon2id/bcrypt + allowlist IP, voir `docs/web-security.md`) |
@@ -53,6 +54,7 @@ Le mode CLI assemble :
 
 - `SnapshotView` (exposition/redaction configurables).
 - Optionnellement, les sockets (`net_listen`).
+- Les conteneurs si exposés (`--with-containers`/`--containers`), y compris dans la sortie JSON.
 - Des messages de health check (stderr) avec code de sortie 0/1/2.
 - Si `--summary` est présent, une ligne courte est affichée avant toute autre
   sortie. Elle inclut notamment `updates=<N>` et `reboot=<yes|no|unknown>`, puis
@@ -63,6 +65,8 @@ Le mode CLI assemble :
 
 Le serveur web réutilise ces mêmes structures, cadencées par `tokio` et
 l’intervalle `--web-interval`.
+Il expose aussi `/api/containers` (protégé par AuthGuard/rate-limit) qui renvoie
+le dernier résumé/détail conteneurs en cache, sans relancer le plugin.
 
 ## Logs journald
 
@@ -123,6 +127,12 @@ path = "/usr/lib/describe_me/plugins/describe-me-plugin-certificates"
 sha256 = "<fingerprinted value>"
 args = ["--probe", "/etc/ssl/certs", "--probe", "/etc/describe_me/certs"]
 timeout_secs = 10
+
+[[extensions.plugins]]
+name = "containers"
+path = "/usr/lib/describe_me/plugins/describe-me-plugin-containers"
+sha256 = "<fingerprinted value>"
+timeout_secs = 4
 ```
 
 Tous les plugins doivent vivre sous `/usr/lib/describe_me/plugins/`, être épinglés via `sha256` (64 hexa) et ne produisent de sortie valide que lorsqu’ils détectent `DESCRIBE_ME_HOST=describe_me`, `DESCRIBE_ME_PLUGIN_PROTO=v1` et un jeton non vide. Toute divergence (chemin, hash, poignée de main) annule l’exécution et logue `LogEvent::PluginError`.

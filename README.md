@@ -15,6 +15,7 @@ Outil Rust minimaliste pour capturer l’état d’un serveur (CPU, RAM, disques
 - **Snapshot complet** : hostname, OS, uptime, charge, disques, services, sockets, trafic réseau, mises à jour.
 - **CLI & Healthchecks** : sortie JSON lisible, `--check` (Nagios/Icinga), filtres config TOML, pagination CLI pour services/sockets.
 - **Mode Web** : UI SSE auto-hébergée, rate limiting, jetons Argon2/bcrypt, HTTPS natif via `[web.tls]`, filtres temps réel et pagination pour services/sockets/tags.
+- **Conteneurs (plugin optionnel)** : collecte best-effort Docker/Podman/containerd via `describe-me-plugin-containers` (pas de root), exposable en CLI/JSON/SSE (`--with-containers`, `--containers`, `/api/containers`, page `/container`).
 - **Logs hôte (journald)** : `describe-me logs`, aperçu sur `/` et page dédiée `/logs` (journald requis, socket monté côté conteneur).
 - **Extensions/plugins** : SDK `describe_me_plugin_sdk`, commande `describe-me plugin run`, exécution automatique configurable.
 - **Bibliothèque** : API stable (`SystemSnapshot`, `disk_usage`, `serve_http`) pour intégrer la collecte dans vos outils.
