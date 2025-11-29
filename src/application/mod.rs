@@ -1,3 +1,6 @@
+mod collectors;
+
+use crate::application::collectors::{default_collectors, CoreCollector};
 #[cfg(feature = "serde")]
 use crate::application::exposure::{Exposure, SnapshotView};
 use crate::application::logging::LogEvent;
@@ -6,11 +9,9 @@ use crate::domain::DescribeConfig;
 #[cfg(any(feature = "systemd", feature = "config"))]
 use crate::domain::ServiceInfo;
 use crate::domain::{CaptureOptions, DescribeError, DiskUsage, SystemSnapshot};
-#[cfg(any(feature = "systemd", feature = "net"))]
-use crate::SharedSlice;
 use std::borrow::Cow;
 use std::time::Instant;
-use tracing::{debug, warn};
+use tracing::debug;
 
 impl SystemSnapshot {
     pub fn capture() -> Result<Self, DescribeError> {
@@ -19,116 +20,11 @@ impl SystemSnapshot {
 
     pub fn capture_with(opts: CaptureOptions) -> Result<Self, DescribeError> {
         let started_at = Instant::now();
-        let base = crate::infrastructure::sysinfo::gather().inspect_err(|err| {
-            LogEvent::SystemError {
-                location: Cow::Borrowed("gather"),
-                error: Cow::Owned(err.to_string()),
-            }
-            .emit();
-        })?;
-        let disk_usage = if opts.with_disk_usage {
-            Some(
-                crate::infrastructure::sysinfo::gather_disks().inspect_err(|err| {
-                    LogEvent::SystemError {
-                        location: Cow::Borrowed("gather_disks"),
-                        error: Cow::Owned(err.to_string()),
-                    }
-                    .emit();
-                })?,
-            )
-        } else {
-            None
-        };
+        let mut snapshot = CoreCollector.capture_base(&opts)?;
 
-        #[cfg(feature = "systemd")]
-        let services_running = if opts.with_services {
-            let list =
-                crate::infrastructure::systemd::list_systemd_services().inspect_err(|err| {
-                    LogEvent::SystemError {
-                        location: Cow::Borrowed("systemctl"),
-                        error: Cow::Owned(err.to_string()),
-                    }
-                    .emit();
-                })?;
-            SharedSlice::from_vec(list)
-        } else {
-            SharedSlice::from_vec(Vec::new())
-        };
-
-        #[cfg(feature = "net")]
-        let listening_sockets = if opts.with_listening_sockets {
-            Some(SharedSlice::from_vec(
-                crate::application::net::net_listen_with_processes(opts.resolve_socket_processes)
-                    .inspect_err(|err| {
-                    LogEvent::SystemError {
-                        location: Cow::Borrowed("net_listen"),
-                        error: Cow::Owned(err.to_string()),
-                    }
-                    .emit();
-                })?,
-            ))
-        } else {
-            None
-        };
-
-        #[cfg(feature = "net")]
-        let network_traffic = if opts.with_network_traffic {
-            Some(SharedSlice::from_vec(
-                crate::application::net::network_traffic().inspect_err(|err| {
-                    LogEvent::SystemError {
-                        location: Cow::Borrowed("net_traffic"),
-                        error: Cow::Owned(err.to_string()),
-                    }
-                    .emit();
-                })?,
-            ))
-        } else {
-            None
-        };
-
-        let updates = if opts.with_updates {
-            crate::infrastructure::updates::gather_updates()
-        } else {
-            None
-        };
-
-        #[cfg(feature = "serde")]
-        let containers = if opts.with_containers {
-            match crate::application::containers::capture_containers_cached() {
-                Ok(snapshot) => Some(snapshot),
-                Err(err) => {
-                    warn!(error = %err, "capture_containers_failed");
-                    None
-                }
-            }
-        } else {
-            None
-        };
-        #[cfg(not(feature = "serde"))]
-        let containers = None;
-
-        let snapshot = SystemSnapshot {
-            hostname: base.hostname,
-            os: base.os,
-            kernel: base.kernel,
-            uptime_seconds: base.uptime_seconds,
-            cpu_count: base.cpu_count,
-            load_average: base.load_average,
-            total_memory_bytes: base.total_memory_bytes,
-            used_memory_bytes: base.used_memory_bytes,
-            total_swap_bytes: base.total_swap_bytes,
-            used_swap_bytes: base.used_swap_bytes,
-            disk_usage,
-            #[cfg(feature = "systemd")]
-            services_running,
-            #[cfg(feature = "net")]
-            listening_sockets,
-            #[cfg(feature = "net")]
-            network_traffic,
-            containers,
-            updates,
-            extensions: None,
-        };
+        for collector in default_collectors() {
+            collector.collect(&mut snapshot, &opts)?;
+        }
 
         let duration = started_at.elapsed();
         let disk = snapshot.disk_usage.as_ref();
