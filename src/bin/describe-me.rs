@@ -27,9 +27,9 @@ const SOCKETS_PAGE_MAX: usize = 500;
 #[cfg(feature = "web")]
 use allowlists::{resolve_web_list, CliListOrigin};
 use args::{
-    hash_web_token, parse as parse_opts, read_token_from_stdin, CliCommand, DescriptionCommand,
-    HistoryCommand, HistoryProfileArg, LogsCommand, MetadataCommand, PluginCommand,
-    PluginRunCommand, TagsCommand,
+    hash_web_token, parse, read_token_from_stdin, CliCommand, CliConfig, DescriptionCommand,
+    HistoryCommand, HistoryProfileArg, HistorySelection, LogsCommand, MetadataCommand,
+    OutputFormat, PluginCommand, PluginRunCommand, TagsCommand, WebTokenSource,
 };
 use exposure_cfg::apply_cli_exposure_flags;
 #[cfg(feature = "web")]
@@ -501,34 +501,33 @@ fn ensure_not_root() -> Result<()> {
 }
 
 fn main() -> Result<()> {
-    let mut opts = parse_opts();
+    let mut cli: CliConfig = parse();
 
-    if opts.hash_web_token.is_some() || opts.hash_web_token_stdin {
-        let token = if let Some(value) = opts.hash_web_token.take() {
-            value
-        } else {
-            read_token_from_stdin()?
+    if let Some(hash_req) = cli.web.hash_request() {
+        let token = match hash_req.source {
+            WebTokenSource::Literal(value) => value,
+            WebTokenSource::Stdin => read_token_from_stdin()?,
         };
 
         if token.is_empty() {
             bail!("Le token ne peut pas être vide.");
         }
 
-        let hash = hash_web_token(&token, opts.hash_web_token_alg)?;
+        let hash = hash_web_token(&token, hash_req.algorithm)?;
         println!("{hash}");
         return Ok(());
     }
 
     // Charge optionnellement la config (pour filtrages, web, ...)
     #[cfg(feature = "config")]
-    let cfg = if let Some(p) = &opts.config {
+    let cfg = if let Some(p) = &cli.config_path {
         Some(describe_me::load_config_from_path(p)?)
     } else {
         None
     };
 
     #[cfg(not(feature = "config"))]
-    if opts.config.is_some() {
+    if cli.config_path.is_some() {
         bail!(
             "--config nécessite la feature `config` (cargo run --features \"cli systemd config\")."
         );
@@ -543,11 +542,11 @@ fn main() -> Result<()> {
         }
     }
 
-    if let Some(cmd) = opts.command.take() {
+    if let Some(cmd) = cli.command.take() {
         return handle_command(cmd);
     }
 
-    let mut allow_config_exposure = opts.allow_config_exposure;
+    let mut allow_config_exposure = cli.allow_config_exposure;
     if !allow_config_exposure {
         if let Ok(value) = std::env::var("DESCRIBE_ME_ALLOW_CONFIG_EXPOSURE") {
             if env_flag_enabled(&value) {
@@ -557,11 +556,11 @@ fn main() -> Result<()> {
     }
 
     #[cfg(feature = "web")]
-    let mut web_allow_ip_source = CliListOrigin::from_values(&opts.web_allow_ip);
+    let mut web_allow_ip_source = CliListOrigin::from_values(&cli.web.allow_ip);
     #[cfg(feature = "web")]
-    let mut web_allow_origin_source = CliListOrigin::from_values(&opts.web_allow_origin);
+    let mut web_allow_origin_source = CliListOrigin::from_values(&cli.web.allow_origin);
     #[cfg(feature = "web")]
-    let mut web_trusted_proxy_source = CliListOrigin::from_values(&opts.web_trusted_proxy);
+    let mut web_trusted_proxy_source = CliListOrigin::from_values(&cli.web.trusted_proxy);
 
     #[cfg(feature = "config")]
     if let Some(cfg) = &cfg {
@@ -571,41 +570,41 @@ fn main() -> Result<()> {
                     std::env::set_var("RUST_LOG", value);
                 }
             }
-            if let Some(cli) = runtime.cli.as_ref() {
-                if opts.web.is_none() {
-                    opts.web = cli.web.clone();
+            if let Some(cli_defaults) = runtime.cli.as_ref() {
+                if cli.web.bind.is_none() {
+                    cli.web.bind = cli_defaults.web.clone();
                 }
-                if !opts.with_services {
-                    if let Some(true) = cli.with_services {
-                        opts.with_services = true;
+                if !cli.capture.with_services {
+                    if let Some(true) = cli_defaults.with_services {
+                        cli.capture.with_services = true;
                     }
                 }
-                if !opts.with_containers {
-                    if let Some(true) = cli.with_containers {
-                        opts.with_containers = true;
+                if !cli.capture.with_containers {
+                    if let Some(true) = cli_defaults.with_containers {
+                        cli.capture.with_containers = true;
                     }
                 }
-                if !opts.web_expose_all {
-                    if let Some(true) = cli.web_expose_all {
-                        opts.web_expose_all = true;
+                if !cli.web_exposure.expose_all {
+                    if let Some(true) = cli_defaults.web_expose_all {
+                        cli.web_exposure.expose_all = true;
                     }
                 }
-                if opts.web_allow_ip.is_empty() && !cli.web_allow_ip.is_empty() {
-                    opts.web_allow_ip = cli.web_allow_ip.clone();
+                if cli.web.allow_ip.is_empty() && !cli_defaults.web_allow_ip.is_empty() {
+                    cli.web.allow_ip = cli_defaults.web_allow_ip.clone();
                     #[cfg(feature = "web")]
                     {
                         web_allow_ip_source = CliListOrigin::RuntimeDefault;
                     }
                 }
-                if opts.web_allow_origin.is_empty() && !cli.web_allow_origin.is_empty() {
-                    opts.web_allow_origin = cli.web_allow_origin.clone();
+                if cli.web.allow_origin.is_empty() && !cli_defaults.web_allow_origin.is_empty() {
+                    cli.web.allow_origin = cli_defaults.web_allow_origin.clone();
                     #[cfg(feature = "web")]
                     {
                         web_allow_origin_source = CliListOrigin::RuntimeDefault;
                     }
                 }
-                if opts.web_trusted_proxy.is_empty() && !cli.web_trusted_proxy.is_empty() {
-                    opts.web_trusted_proxy = cli.web_trusted_proxy.clone();
+                if cli.web.trusted_proxy.is_empty() && !cli_defaults.web_trusted_proxy.is_empty() {
+                    cli.web.trusted_proxy = cli_defaults.web_trusted_proxy.clone();
                     #[cfg(feature = "web")]
                     {
                         web_trusted_proxy_source = CliListOrigin::RuntimeDefault;
@@ -620,7 +619,7 @@ fn main() -> Result<()> {
     ensure_not_root()?;
 
     #[cfg(feature = "web")]
-    let web_debug = opts.web_debug;
+    let web_debug = cli.web.debug;
 
     #[cfg(feature = "web")]
     let mut web_access = describe_me::WebAccess::default();
@@ -654,20 +653,20 @@ fn main() -> Result<()> {
         }
     }
 
-    if opts.history_disabled {
-        history_settings.disable();
+    match cli.history.selection() {
+        HistorySelection::Disabled => history_settings.disable(),
+        HistorySelection::Profile(profile) => {
+            let resolved = match profile {
+                HistoryProfileArg::Default => HistoryProfile::Default,
+                HistoryProfileArg::Ops => HistoryProfile::Ops,
+                HistoryProfileArg::Paranoid => HistoryProfile::Paranoid,
+            };
+            history_settings = HistorySettings::for_profile(resolved);
+        }
+        HistorySelection::ConfigOrDefault => {}
     }
 
-    if let Some(profile) = opts.history_profile {
-        let resolved = match profile {
-            HistoryProfileArg::Default => HistoryProfile::Default,
-            HistoryProfileArg::Ops => HistoryProfile::Ops,
-            HistoryProfileArg::Paranoid => HistoryProfile::Paranoid,
-        };
-        history_settings = HistorySettings::for_profile(resolved);
-    }
-
-    if let Some(retention) = opts.history_retention {
+    if let Some(retention) = cli.history.retention {
         history_settings.set_retention_points(retention);
     }
 
@@ -696,7 +695,7 @@ fn main() -> Result<()> {
 
     #[cfg(feature = "web")]
     {
-        if let Some(token) = &opts.web_token {
+        if let Some(token) = &cli.web.token {
             web_access.token = Some(token.clone());
         }
         #[cfg(feature = "config")]
@@ -715,36 +714,36 @@ fn main() -> Result<()> {
         let config_trusted_proxies: Option<&[String]> = None;
 
         web_access.allow_ips = resolve_web_list(
-            web_allow_ip_source.cli_slice(&opts.web_allow_ip),
+            web_allow_ip_source.cli_slice(&cli.web.allow_ip),
             config_allow_ips,
-            web_allow_ip_source.runtime_slice(&opts.web_allow_ip),
+            web_allow_ip_source.runtime_slice(&cli.web.allow_ip),
         );
         web_access.allow_origins = resolve_web_list(
-            web_allow_origin_source.cli_slice(&opts.web_allow_origin),
+            web_allow_origin_source.cli_slice(&cli.web.allow_origin),
             config_allow_origins,
-            web_allow_origin_source.runtime_slice(&opts.web_allow_origin),
+            web_allow_origin_source.runtime_slice(&cli.web.allow_origin),
         );
         web_access.trusted_proxies = resolve_web_list(
-            web_trusted_proxy_source.cli_slice(&opts.web_trusted_proxy),
+            web_trusted_proxy_source.cli_slice(&cli.web.trusted_proxy),
             config_trusted_proxies,
-            web_trusted_proxy_source.runtime_slice(&opts.web_trusted_proxy),
+            web_trusted_proxy_source.runtime_slice(&cli.web.trusted_proxy),
         );
 
-        if opts.web_dev {
+        if cli.web.dev_mode {
             web_access.session_cookie_secure = false;
         }
     }
 
     #[cfg(feature = "config")]
-    apply_cli_exposure_flags(&mut exposure, &opts, cfg.as_ref(), allow_config_exposure);
+    apply_cli_exposure_flags(&mut exposure, &cli, cfg.as_ref(), allow_config_exposure);
     #[cfg(not(feature = "config"))]
-    apply_cli_exposure_flags(&mut exposure, &opts, allow_config_exposure);
+    apply_cli_exposure_flags(&mut exposure, &cli, allow_config_exposure);
 
     #[cfg(all(feature = "web", feature = "config"))]
     let web_exposure =
-        apply_web_exposure_flags(exposure, &opts, cfg.as_ref(), allow_config_exposure);
+        apply_web_exposure_flags(exposure, &cli, cfg.as_ref(), allow_config_exposure);
     #[cfg(all(feature = "web", not(feature = "config")))]
-    let web_exposure = apply_web_exposure_flags(exposure, &opts, allow_config_exposure);
+    let web_exposure = apply_web_exposure_flags(exposure, &cli, allow_config_exposure);
 
     let exposure_all_effective = exposure.is_all();
 
@@ -753,44 +752,44 @@ fn main() -> Result<()> {
     #[cfg(not(feature = "web"))]
     let web_expose_all_effective = false;
     let with_containers_effective =
-        opts.with_containers || opts.containers || exposure.containers_summary();
+        cli.capture.with_containers || cli.capture.containers || exposure.containers_summary();
 
-    let mode = if opts.web.is_some() {
+    let mode = if cli.web.bind.is_some() {
         "web"
-    } else if opts.pretty {
-        "json_pretty"
-    } else if opts.json {
-        "json"
     } else {
-        "cli"
+        match cli.output.format() {
+            OutputFormat::JsonPretty => "json_pretty",
+            OutputFormat::Json => "json",
+            OutputFormat::Cli => "cli",
+        }
     };
 
     LogEvent::Startup {
         mode: mode.into(),
-        with_services: opts.with_services,
+        with_services: cli.capture.with_services,
         with_containers: with_containers_effective,
-        net_listen: opts.net_listen,
-        net_traffic: opts.net_traffic,
+        net_listen: cli.capture.net_listen,
+        net_traffic: cli.capture.net_traffic,
         expose_all: exposure_all_effective,
         web_expose_all: web_expose_all_effective,
-        checks: &opts.checks,
+        checks: &cli.checks,
     }
     .emit();
 
     // --- Mode serveur web (SSE) --------------------------------------------
     #[cfg(not(feature = "web"))]
-    if opts.web.is_some() {
+    if cli.web.bind.is_some() {
         bail!("--web nécessite la feature `web` (cargo run --features \"cli web\").");
     }
 
     #[cfg(feature = "web")]
-    if let Some(bind) = &opts.web {
+    if let Some(bind) = &cli.web.bind {
         use std::{net::SocketAddr, time::Duration};
 
         let addr: SocketAddr = bind
             .parse()
             .map_err(|e| anyhow::anyhow!("Adresse invalide pour --web: {bind} ({e})"))?;
-        let tick = Duration::from_secs(opts.web_interval_secs);
+        let tick = Duration::from_secs(cli.web.interval_secs);
 
         if web_access.token.is_none() && web_access.allow_ips.is_empty() {
             bail!(
@@ -825,27 +824,27 @@ fn main() -> Result<()> {
     // -----------------------------------------------------------------------
 
     #[cfg(not(feature = "systemd"))]
-    if opts.with_services {
+    if cli.capture.with_services {
         bail!("--with-services nécessite la feature `systemd` (cargo run --features \"cli systemd\").");
     }
 
     #[cfg(not(feature = "net"))]
-    if opts.net_listen {
+    if cli.capture.net_listen {
         bail!("--net-listen nécessite la feature `net` (cargo run --features \"cli net\").");
     }
 
     #[cfg(not(feature = "net"))]
-    if opts.net_traffic {
+    if cli.capture.net_traffic {
         bail!("--net-traffic nécessite la feature `net` (cargo run --features \"cli net\").");
     }
 
     // Capture le snapshot complet
     let capture_opts = describe_me::CaptureOptions {
-        with_services: opts.with_services,
+        with_services: cli.capture.with_services,
         with_disk_usage: true, // on garde true pour un JSON complet
-        with_listening_sockets: opts.net_listen || exposure.listening_sockets(),
-        resolve_socket_processes: opts.net_listen || exposure.listening_sockets(),
-        with_network_traffic: opts.net_traffic || exposure.network_traffic(),
+        with_listening_sockets: cli.capture.net_listen || exposure.listening_sockets(),
+        resolve_socket_processes: cli.capture.net_listen || exposure.listening_sockets(),
+        with_network_traffic: cli.capture.net_traffic || exposure.network_traffic(),
         with_updates: true,
         with_containers: with_containers_effective,
     };
@@ -857,11 +856,13 @@ fn main() -> Result<()> {
         cfg.as_ref(),
     )?;
 
+    let output_format = cli.output.format();
+
     // Si JSON demandé: on ne sort qu'un seul document JSON combiné
-    if opts.json || opts.pretty {
+    if matches!(output_format, OutputFormat::Json | OutputFormat::JsonPretty) {
         #[cfg(feature = "cli")]
         {
-            if opts.summary {
+            if cli.output.summary {
                 print_summary_line(&snapshot_view);
             }
             let combined = CombinedOutput {
@@ -875,10 +876,14 @@ fn main() -> Result<()> {
                     .map(|s| s.as_slice()),
             };
 
-            if opts.pretty {
-                println!("{}", serde_json::to_string_pretty(&combined)?);
-            } else {
-                println!("{}", serde_json::to_string(&combined)?);
+            match output_format {
+                OutputFormat::JsonPretty => {
+                    println!("{}", serde_json::to_string_pretty(&combined)?);
+                }
+                OutputFormat::Json => {
+                    println!("{}", serde_json::to_string(&combined)?);
+                }
+                OutputFormat::Cli => unreachable!(),
             }
             return Ok(());
         }
@@ -889,7 +894,7 @@ fn main() -> Result<()> {
         }
     }
 
-    if opts.summary {
+    if cli.output.summary {
         print_summary_line(&snapshot_view);
     }
 
@@ -903,11 +908,15 @@ fn main() -> Result<()> {
     }
 
     #[cfg(feature = "systemd")]
-    if opts.with_services {
-        print_services_cli(&snapshot_view, opts.services_limit, opts.services_offset);
+    if cli.capture.with_services {
+        print_services_cli(
+            &snapshot_view,
+            cli.capture.services_limit,
+            cli.capture.services_offset,
+        );
     }
 
-    if opts.containers {
+    if cli.capture.containers {
         print_containers_cli(&snapshot_view);
     }
 
@@ -915,13 +924,13 @@ fn main() -> Result<()> {
 
     // 1) NET — tableau lisible
     #[cfg(feature = "net")]
-    if opts.net_listen {
+    if cli.capture.net_listen {
         if let Some(list) = snapshot_view.listening_sockets.as_ref() {
             print_sockets_cli(
                 list.as_slice(),
-                opts.show_process,
-                opts.sockets_limit,
-                opts.sockets_offset,
+                cli.capture.show_process,
+                cli.capture.sockets_limit,
+                cli.capture.sockets_offset,
             );
         } else {
             println!("(listening sockets non exposées)");
@@ -930,7 +939,7 @@ fn main() -> Result<()> {
     }
 
     #[cfg(feature = "net")]
-    if opts.net_traffic {
+    if cli.capture.net_traffic {
         println!(
             "{:<10} {:>14} {:>14} {:>12} {:>12} {:>13} {:>13}",
             "IFACE",
@@ -965,7 +974,7 @@ fn main() -> Result<()> {
     }
 
     // 3) DISKS — affichage humain (optionnel)
-    if opts.disks {
+    if cli.capture.disks {
         if let Some(du) = &snap.disk_usage {
             println!("Disque total: {} Gio", du.total_bytes as f64 / 1e9);
             for p in du.partitions.as_slice() {
@@ -987,10 +996,10 @@ fn main() -> Result<()> {
     println!("{}", serde_json::to_string_pretty(&snapshot_view)?);
 
     // --- HEALTHCHECK --------------------------------------------------------
-    if !opts.checks.is_empty() {
+    if !cli.checks.is_empty() {
         // On parse TOUTES les expressions d'abord (fail-fast si invalide)
-        let mut parsed = Vec::with_capacity(opts.checks.len());
-        for e in &opts.checks {
+        let mut parsed = Vec::with_capacity(cli.checks.len());
+        for e in &cli.checks {
             match describe_me::parse_check(e) {
                 Ok(c) => parsed.push(c),
                 Err(err) => {

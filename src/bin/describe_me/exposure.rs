@@ -1,9 +1,9 @@
-use crate::args::Opts;
+use crate::args::{CaptureOpts, CliConfig, ExposureOpts, WebExposureOpts};
 
 #[cfg(feature = "config")]
 pub fn apply_cli_exposure_flags(
     exposure: &mut describe_me::Exposure,
-    opts: &Opts,
+    cli: &CliConfig,
     cfg: Option<&describe_me::DescribeConfig>,
     allow_config_exposure: bool,
 ) {
@@ -14,22 +14,22 @@ pub fn apply_cli_exposure_flags(
             }
         }
     }
-    apply_cli_flags(exposure, opts);
+    apply_cli_flags(exposure, &cli.exposure, &cli.capture);
 }
 
 #[cfg(not(feature = "config"))]
 pub fn apply_cli_exposure_flags(
     exposure: &mut describe_me::Exposure,
-    opts: &Opts,
+    cli: &CliConfig,
     _allow_config_exposure: bool,
 ) {
-    apply_cli_flags(exposure, opts);
+    apply_cli_flags(exposure, &cli.exposure, &cli.capture);
 }
 
 #[cfg(all(feature = "web", feature = "config"))]
 pub fn apply_web_exposure_flags(
     exposure: describe_me::Exposure,
-    opts: &Opts,
+    cli: &CliConfig,
     cfg: Option<&describe_me::DescribeConfig>,
     allow_config_exposure: bool,
 ) -> describe_me::Exposure {
@@ -45,22 +45,34 @@ pub fn apply_web_exposure_flags(
         }
     }
 
-    apply_web_flags(&mut web_exposure, opts);
+    apply_web_flags(
+        &mut web_exposure,
+        &cli.web_exposure,
+        cli.exposure.no_redacted,
+    );
     web_exposure
 }
 
 #[cfg(all(feature = "web", not(feature = "config")))]
 pub fn apply_web_exposure_flags(
     exposure: describe_me::Exposure,
-    opts: &Opts,
+    cli: &CliConfig,
     _allow_config_exposure: bool,
 ) -> describe_me::Exposure {
     let mut web_exposure = exposure;
-    apply_web_flags(&mut web_exposure, opts);
+    apply_web_flags(
+        &mut web_exposure,
+        &cli.web_exposure,
+        cli.exposure.no_redacted,
+    );
     web_exposure
 }
 
-fn apply_cli_flags(exposure: &mut describe_me::Exposure, opts: &Opts) {
+fn apply_cli_flags(
+    exposure: &mut describe_me::Exposure,
+    opts: &ExposureOpts,
+    capture: &CaptureOpts,
+) {
     if opts.expose_all {
         *exposure = describe_me::Exposure::all();
     } else {
@@ -100,55 +112,59 @@ fn apply_cli_flags(exposure: &mut describe_me::Exposure, opts: &Opts) {
         exposure.redacted = false;
     }
 
-    if opts.net_listen {
+    if capture.net_listen {
         exposure.set_listening_sockets(true);
     }
-    if opts.net_traffic {
+    if capture.net_traffic {
         exposure.set_network_traffic(true);
     }
-    if opts.containers {
+    if capture.containers {
         exposure.set_containers_details(true);
     }
 }
 
 #[cfg(feature = "web")]
-fn apply_web_flags(exposure: &mut describe_me::Exposure, opts: &Opts) {
-    if opts.web_expose_all {
+fn apply_web_flags(
+    exposure: &mut describe_me::Exposure,
+    opts: &WebExposureOpts,
+    no_redacted: bool,
+) {
+    if opts.expose_all {
         *exposure = describe_me::Exposure::all();
     } else {
-        if opts.web_expose_hostname {
+        if opts.expose_hostname {
             exposure.set_hostname(true);
         }
-        if opts.web_expose_os {
+        if opts.expose_os {
             exposure.set_os(true);
         }
-        if opts.web_expose_kernel {
+        if opts.expose_kernel {
             exposure.set_kernel(true);
         }
-        if opts.web_expose_services {
+        if opts.expose_services {
             exposure.set_services(true);
         }
-        if opts.web_expose_disk_partitions {
+        if opts.expose_disk_partitions {
             exposure.set_disk_partitions(true);
         }
-        if opts.web_expose_network_traffic {
+        if opts.expose_network_traffic {
             exposure.set_network_traffic(true);
         }
-        if opts.web_expose_containers_summary {
+        if opts.expose_containers_summary {
             exposure.set_containers_summary(true);
         }
-        if opts.web_expose_containers_details {
+        if opts.expose_containers_details {
             exposure.set_containers_details(true);
         }
-        if opts.web_expose_updates {
+        if opts.expose_updates {
             exposure.set_updates(true);
         }
-        if opts.web_expose_extensions {
+        if opts.expose_extensions {
             exposure.set_extensions(true);
         }
     }
 
-    if opts.no_redacted {
+    if no_redacted {
         exposure.redacted = false;
     }
 }
