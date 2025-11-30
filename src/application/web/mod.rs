@@ -26,6 +26,7 @@ mod security;
 mod sse;
 mod template;
 mod updates_cache;
+mod views;
 
 use std::{
     borrow::Cow,
