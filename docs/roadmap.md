@@ -50,3 +50,5 @@
 
 - [ ] Permettre au serveur web de pousser une config recommandée (services, exposure) vers les clients CLI.
 - [ ] Ajouter une commande `describe-me sync` qui récupère les préférences serveur et met à jour le fichier local.
+
+j'en suis à scinder la sec( voir dans snapshot )
