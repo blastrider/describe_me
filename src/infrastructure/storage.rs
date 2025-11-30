@@ -34,13 +34,22 @@ pub(crate) struct MetadataStore {
     backend: Arc<dyn MetadataBackend>,
 }
 
+#[allow(dead_code)]
 impl MetadataStore {
     fn new(backend: Arc<dyn MetadataBackend>) -> Self {
         Self { backend }
     }
 
+    pub(crate) fn new_with_backend(backend: Arc<dyn MetadataBackend>) -> Self {
+        Self { backend }
+    }
+
     pub(crate) fn open_default() -> Result<Self, DescribeError> {
         Ok(Self::new(acquire_backend()?))
+    }
+
+    pub(crate) fn backend(&self) -> Arc<dyn MetadataBackend> {
+        Arc::clone(&self.backend)
     }
 
     pub(crate) fn set_description(&self, text: &str) -> Result<(), DescribeError> {
@@ -107,6 +116,10 @@ fn acquire_backend() -> Result<Arc<dyn MetadataBackend>, DescribeError> {
         .lock()
         .expect("metadata backend registry mutex poisoned");
     guard.acquire_backend()
+}
+
+pub(crate) fn acquire_backend_arc() -> Result<Arc<dyn MetadataBackend>, DescribeError> {
+    acquire_backend()
 }
 
 fn default_backend_factory() -> Box<dyn MetadataBackendFactory> {

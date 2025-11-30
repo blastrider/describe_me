@@ -9,6 +9,41 @@ use rand_core::OsRng;
 #[derive(Parser, Debug)]
 #[command(name = "describe-me", version, about = "Décrit rapidement le serveur")]
 pub struct Opts {
+    /// Fichier de config TOML (feature `config`)
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+
+    /// Autorise l'application des drapeaux d'exposition sensibles depuis le fichier de configuration.
+    #[arg(long = "allow-config-exposure", action = ArgAction::SetTrue)]
+    pub allow_config_exposure: bool,
+
+    #[command(flatten)]
+    pub capture: CaptureOpts,
+
+    #[command(flatten)]
+    pub output: OutputOpts,
+
+    #[command(flatten)]
+    pub history: HistoryOpts,
+
+    #[command(flatten)]
+    pub web: WebOpts,
+
+    #[command(flatten)]
+    pub exposure: ExposureOpts,
+
+    #[command(flatten)]
+    pub web_exposure: WebExposureOpts,
+
+    #[command(flatten)]
+    pub checks: CheckOpts,
+
+    #[command(subcommand)]
+    pub command: Option<CliCommand>,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct CaptureOpts {
     /// Énumérer aussi les services (Linux/systemd)
     #[arg(long)]
     pub with_services: bool,
@@ -29,10 +64,6 @@ pub struct Opts {
     /// (Note: l'usage disque est de toute façon présent dans le snapshot JSON)
     #[arg(long)]
     pub disks: bool,
-
-    /// Fichier de config TOML (feature `config`)
-    #[arg(long)]
-    pub config: Option<PathBuf>,
 
     /// Affiche les sockets d’écoute (TCP/UDP) — nécessite la feature `net`
     #[arg(long = "net-listen", action = ArgAction::SetTrue)]
@@ -57,7 +88,10 @@ pub struct Opts {
     /// Affiche aussi le PID propriétaire (si résolu) — nécessite `--net-listen`
     #[arg(long = "process", requires = "net_listen", action = ArgAction::SetTrue)]
     pub show_process: bool,
+}
 
+#[derive(Debug, Args, Clone)]
+pub struct OutputOpts {
     /// Force la sortie 100% JSON (un seul document)
     #[arg(long, action = ArgAction::SetTrue)]
     pub json: bool,
@@ -69,19 +103,63 @@ pub struct Opts {
     /// Affiche un résumé concis sur une ligne (ex: updates=3 reboot=no)
     #[arg(long, action = ArgAction::SetTrue)]
     pub summary: bool,
+}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputFormat {
+    Cli,
+    Json,
+    JsonPretty,
+}
+
+impl OutputOpts {
+    pub fn format(&self) -> OutputFormat {
+        if self.pretty {
+            OutputFormat::JsonPretty
+        } else if self.json {
+            OutputFormat::Json
+        } else {
+            OutputFormat::Cli
+        }
+    }
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct HistoryOpts {
     /// Profil d'historique à activer (default, ops, paranoid).
     #[arg(long = "history-profile", value_enum)]
-    pub history_profile: Option<HistoryProfileArg>,
+    pub profile: Option<HistoryProfileArg>,
 
     /// Désactive explicitement l'historique (prioritaire).
     #[arg(long = "history-disabled", action = ArgAction::SetTrue)]
-    pub history_disabled: bool,
+    pub disabled: bool,
 
     /// Nombre de points conservés (ring buffer) pour l'historique local.
     #[arg(long = "history-retention", value_name = "POINTS")]
-    pub history_retention: Option<u32>,
+    pub retention: Option<u32>,
+}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HistorySelection {
+    ConfigOrDefault,
+    Disabled,
+    Profile(HistoryProfileArg),
+}
+
+impl HistoryOpts {
+    pub fn selection(&self) -> HistorySelection {
+        if self.disabled {
+            HistorySelection::Disabled
+        } else if let Some(profile) = self.profile {
+            HistorySelection::Profile(profile)
+        } else {
+            HistorySelection::ConfigOrDefault
+        }
+    }
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct WebOpts {
     /// Lance un serveur web SSE (HTML/CSS/JS) — nécessite la feature `web`.
     /// Optionnellement préciser l'adresse:port (ex: 127.0.0.1:9000). Par défaut: 127.0.0.1:8080.
     #[arg(
@@ -90,27 +168,27 @@ pub struct Opts {
         default_missing_value = "127.0.0.1:8080",
         num_args = 0..=1
     )]
-    pub web: Option<String>,
+    pub bind: Option<String>,
 
     /// Intervalle d'actualisation (secondes) pour le mode --web (défaut: 2)
     #[arg(long = "web-interval", value_name = "SECS", default_value_t = 2)]
-    pub web_interval_secs: u64,
+    pub interval_secs: u64,
 
     /// Affiche également le JSON brut dans l'interface --web
     #[arg(long = "web-debug", action = ArgAction::SetTrue)]
-    pub web_debug: bool,
+    pub debug: bool,
 
     /// Mode dev HTTP (désactive Secure sur le cookie de session describe_me_session).
     #[arg(long = "web-dev", action = ArgAction::SetTrue)]
-    pub web_dev: bool,
+    pub dev_mode: bool,
 
     /// Hash du jeton requis pour --web (Authorization: Bearer ou en-tête x-describe-me-token)
     #[arg(long = "web-token", value_name = "TOKEN")]
-    pub web_token: Option<String>,
+    pub token: Option<String>,
 
     /// IP ou réseaux autorisés pour --web (peut être répété, ex: 127.0.0.1, 10.0.0.0/16)
     #[arg(long = "web-allow-ip", value_name = "IP[/PREFIX]", action = ArgAction::Append)]
-    pub web_allow_ip: Vec<String>,
+    pub allow_ip: Vec<String>,
 
     /// Origin autorisé pour l'interface web (peut être répété, ex: https://admin.example.com)
     #[arg(
@@ -118,7 +196,7 @@ pub struct Opts {
         value_name = "ORIGIN",
         action = ArgAction::Append
     )]
-    pub web_allow_origin: Vec<String>,
+    pub allow_origin: Vec<String>,
 
     /// Proxy de confiance fournissant X-Forwarded-For (--web uniquement)
     #[arg(
@@ -126,7 +204,7 @@ pub struct Opts {
         value_name = "IP[/PREFIX]",
         action = ArgAction::Append
     )]
-    pub web_trusted_proxy: Vec<String>,
+    pub trusted_proxy: Vec<String>,
 
     /// Génère un hash (Argon2id/bcrypt) pour configurer --web-token (helper)
     #[arg(
@@ -151,112 +229,223 @@ pub struct Opts {
         default_value_t = TokenHashAlgorithm::Argon2id
     )]
     pub hash_web_token_alg: TokenHashAlgorithm,
+}
 
+#[derive(Debug, Clone)]
+pub enum WebTokenSource {
+    Literal(String),
+    Stdin,
+}
+
+#[derive(Debug, Clone)]
+pub struct WebTokenHashRequest {
+    pub source: WebTokenSource,
+    pub algorithm: TokenHashAlgorithm,
+}
+
+impl WebOpts {
+    pub fn hash_request(&self) -> Option<WebTokenHashRequest> {
+        if let Some(token) = &self.hash_web_token {
+            Some(WebTokenHashRequest {
+                source: WebTokenSource::Literal(token.clone()),
+                algorithm: self.hash_web_token_alg,
+            })
+        } else if self.hash_web_token_stdin {
+            Some(WebTokenHashRequest {
+                source: WebTokenSource::Stdin,
+                algorithm: self.hash_web_token_alg,
+            })
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct ExposureOpts {
     /// Expose le hostname exact dans le JSON (opt-in, sinon masqué)
-    #[arg(long = "expose-hostname", action = ArgAction::SetTrue)]
+    #[arg(id = "cli-expose-hostname", long = "expose-hostname", action = ArgAction::SetTrue)]
     pub expose_hostname: bool,
 
     /// Expose la version complète de l'OS dans le JSON
-    #[arg(long = "expose-os", action = ArgAction::SetTrue)]
+    #[arg(id = "cli-expose-os", long = "expose-os", action = ArgAction::SetTrue)]
     pub expose_os: bool,
 
     /// Expose la version complète du noyau dans le JSON
-    #[arg(long = "expose-kernel", action = ArgAction::SetTrue)]
+    #[arg(id = "cli-expose-kernel", long = "expose-kernel", action = ArgAction::SetTrue)]
     pub expose_kernel: bool,
 
     /// Expose la liste détaillée des services dans le JSON
-    #[arg(long = "expose-services", action = ArgAction::SetTrue)]
+    #[arg(id = "cli-expose-services", long = "expose-services", action = ArgAction::SetTrue)]
     pub expose_services: bool,
 
     /// Expose le détail des partitions disque (points de montage, etc.)
-    #[arg(long = "expose-disk-partitions", action = ArgAction::SetTrue)]
+    #[arg(
+        id = "cli-expose-disk-partitions",
+        long = "expose-disk-partitions",
+        action = ArgAction::SetTrue
+    )]
     pub expose_disk_partitions: bool,
 
     /// Expose le trafic réseau par interface dans le JSON
-    #[arg(long = "expose-network-traffic", action = ArgAction::SetTrue)]
+    #[arg(
+        id = "cli-expose-network-traffic",
+        long = "expose-network-traffic",
+        action = ArgAction::SetTrue
+    )]
     pub expose_network_traffic: bool,
 
     /// Expose uniquement le résumé conteneurs (total/running)
-    #[arg(long = "expose-containers-summary", action = ArgAction::SetTrue)]
+    #[arg(
+        id = "cli-expose-containers-summary",
+        long = "expose-containers-summary",
+        action = ArgAction::SetTrue
+    )]
     pub expose_containers_summary: bool,
 
     /// Expose le détail des conteneurs (nom, runtime, IP, image)
-    #[arg(long = "expose-containers-details", action = ArgAction::SetTrue)]
+    #[arg(
+        id = "cli-expose-containers-details",
+        long = "expose-containers-details",
+        action = ArgAction::SetTrue
+    )]
     pub expose_containers_details: bool,
 
     /// Expose le statut des mises à jour (nombre, reboot requis)
-    #[arg(long = "expose-updates", action = ArgAction::SetTrue)]
+    #[arg(id = "cli-expose-updates", long = "expose-updates", action = ArgAction::SetTrue)]
     pub expose_updates: bool,
 
     /// Expose les résultats des extensions/plugins
-    #[arg(long = "expose-extensions", action = ArgAction::SetTrue)]
+    #[arg(id = "cli-expose-extensions", long = "expose-extensions", action = ArgAction::SetTrue)]
     pub expose_extensions: bool,
 
     /// Désactive le mode redacted (versions OS/noyau tronquées par défaut).
-    #[arg(long = "no-redacted", action = ArgAction::SetTrue)]
+    #[arg(id = "cli-no-redacted", long = "no-redacted", action = ArgAction::SetTrue)]
     pub no_redacted: bool,
 
     /// Active tous les champs sensibles d'un coup (hostname, kernel, services...)
-    #[arg(long = "expose-all", action = ArgAction::SetTrue)]
+    #[arg(id = "cli-expose-all", long = "expose-all", action = ArgAction::SetTrue)]
     pub expose_all: bool,
+}
 
+#[derive(Debug, Args, Clone)]
+pub struct WebExposureOpts {
     /// Expose le hostname côté --web (sinon masqué par défaut)
-    #[arg(long = "web-expose-hostname", action = ArgAction::SetTrue)]
-    pub web_expose_hostname: bool,
+    #[arg(
+        id = "web-expose-hostname",
+        long = "web-expose-hostname",
+        action = ArgAction::SetTrue
+    )]
+    pub expose_hostname: bool,
 
     /// Expose la version complète de l'OS côté --web
-    #[arg(long = "web-expose-os", action = ArgAction::SetTrue)]
-    pub web_expose_os: bool,
+    #[arg(id = "web-expose-os", long = "web-expose-os", action = ArgAction::SetTrue)]
+    pub expose_os: bool,
 
     /// Expose la version complète du noyau côté --web
-    #[arg(long = "web-expose-kernel", action = ArgAction::SetTrue)]
-    pub web_expose_kernel: bool,
+    #[arg(id = "web-expose-kernel", long = "web-expose-kernel", action = ArgAction::SetTrue)]
+    pub expose_kernel: bool,
 
     /// Expose la liste détaillée des services côté --web
-    #[arg(long = "web-expose-services", action = ArgAction::SetTrue)]
-    pub web_expose_services: bool,
+    #[arg(
+        id = "web-expose-services",
+        long = "web-expose-services",
+        action = ArgAction::SetTrue
+    )]
+    pub expose_services: bool,
 
     /// Expose les partitions disque détaillées côté --web
-    #[arg(long = "web-expose-disk-partitions", action = ArgAction::SetTrue)]
-    pub web_expose_disk_partitions: bool,
+    #[arg(
+        id = "web-expose-disk-partitions",
+        long = "web-expose-disk-partitions",
+        action = ArgAction::SetTrue
+    )]
+    pub expose_disk_partitions: bool,
 
     /// Expose le trafic réseau par interface côté --web
-    #[arg(long = "web-expose-network-traffic", action = ArgAction::SetTrue)]
-    pub web_expose_network_traffic: bool,
+    #[arg(
+        id = "web-expose-network-traffic",
+        long = "web-expose-network-traffic",
+        action = ArgAction::SetTrue
+    )]
+    pub expose_network_traffic: bool,
 
     /// Expose uniquement le résumé conteneurs côté --web
-    #[arg(long = "web-expose-containers-summary", action = ArgAction::SetTrue)]
-    pub web_expose_containers_summary: bool,
+    #[arg(
+        id = "web-expose-containers-summary",
+        long = "web-expose-containers-summary",
+        action = ArgAction::SetTrue
+    )]
+    pub expose_containers_summary: bool,
 
     /// Expose le détail des conteneurs côté --web
-    #[arg(long = "web-expose-containers-details", action = ArgAction::SetTrue)]
-    pub web_expose_containers_details: bool,
+    #[arg(
+        id = "web-expose-containers-details",
+        long = "web-expose-containers-details",
+        action = ArgAction::SetTrue
+    )]
+    pub expose_containers_details: bool,
 
     /// Expose le statut des mises à jour côté --web
-    #[arg(long = "web-expose-updates", action = ArgAction::SetTrue)]
-    pub web_expose_updates: bool,
+    #[arg(id = "web-expose-updates", long = "web-expose-updates", action = ArgAction::SetTrue)]
+    pub expose_updates: bool,
 
     /// Expose les extensions/plugins côté --web
-    #[arg(long = "web-expose-extensions", action = ArgAction::SetTrue)]
-    pub web_expose_extensions: bool,
+    #[arg(
+        id = "web-expose-extensions",
+        long = "web-expose-extensions",
+        action = ArgAction::SetTrue
+    )]
+    pub expose_extensions: bool,
 
     /// Active tous les détails sensibles pour --web
-    #[arg(long = "web-expose-all", action = ArgAction::SetTrue)]
-    pub web_expose_all: bool,
+    #[arg(id = "web-expose-all", long = "web-expose-all", action = ArgAction::SetTrue)]
+    pub expose_all: bool,
+}
 
-    /// Autorise l'application des drapeaux d'exposition sensibles depuis le fichier de configuration.
-    #[arg(long = "allow-config-exposure", action = ArgAction::SetTrue)]
-    pub allow_config_exposure: bool,
-
+#[derive(Debug, Args, Clone, Default)]
+pub struct CheckOpts {
     /// Vérifications healthcheck (peut être répété). Ex:
     /// --check mem>90%[:warn|:crit]
     /// --check disk(/var)>80%[:warn|:crit]
     /// --check service=nginx.service:running[:warn|:crit]
     #[arg(long = "check", value_name = "EXPR", action = ArgAction::Append)]
     pub checks: Vec<String>,
+}
 
-    #[command(subcommand)]
+#[derive(Debug, Clone)]
+pub struct CliConfig {
+    pub config_path: Option<PathBuf>,
+    pub allow_config_exposure: bool,
+    pub capture: CaptureOpts,
+    pub output: OutputOpts,
+    pub history: HistoryOpts,
+    pub web: WebOpts,
+    pub exposure: ExposureOpts,
+    pub web_exposure: WebExposureOpts,
+    pub checks: Vec<String>,
     pub command: Option<CliCommand>,
+}
+
+impl From<Opts> for CliConfig {
+    fn from(opts: Opts) -> Self {
+        Self {
+            config_path: opts.config,
+            allow_config_exposure: opts.allow_config_exposure,
+            capture: opts.capture,
+            output: opts.output,
+            history: opts.history,
+            web: opts.web,
+            exposure: opts.exposure,
+            web_exposure: opts.web_exposure,
+            checks: opts.checks.checks,
+            command: opts.command,
+        }
+    }
+}
+
+pub fn parse() -> CliConfig {
+    Opts::parse().into()
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -266,14 +455,14 @@ pub enum TokenHashAlgorithm {
     Bcrypt,
 }
 
-#[derive(Copy, Clone, Debug, ValueEnum)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 pub enum HistoryProfileArg {
     Default,
     Ops,
     Paranoid,
 }
 
-#[derive(Debug, Subcommand)]
+#[derive(Debug, Subcommand, Clone)]
 pub enum CliCommand {
     /// Gère les métadonnées persistées (redb).
     #[command(subcommand)]
@@ -287,7 +476,7 @@ pub enum CliCommand {
     Logs(LogsCommand),
 }
 
-#[derive(Debug, Subcommand)]
+#[derive(Debug, Subcommand, Clone)]
 pub enum MetadataCommand {
     /// Manipule la description du serveur stockée en base.
     #[command(subcommand)]
@@ -297,7 +486,7 @@ pub enum MetadataCommand {
     Tags(TagsCommand),
 }
 
-#[derive(Debug, Subcommand)]
+#[derive(Debug, Subcommand, Clone)]
 pub enum DescriptionCommand {
     /// Affiche la description actuelle.
     Show,
@@ -310,7 +499,7 @@ pub enum DescriptionCommand {
     Clear,
 }
 
-#[derive(Debug, Subcommand)]
+#[derive(Debug, Subcommand, Clone)]
 pub enum TagsCommand {
     /// Affiche les tags actuels.
     Show,
@@ -333,13 +522,13 @@ pub enum TagsCommand {
     Clear,
 }
 
-#[derive(Debug, Subcommand)]
+#[derive(Debug, Subcommand, Clone)]
 pub enum PluginCommand {
     /// Lance un plugin externe et affiche sa sortie JSON.
     Run(PluginRunCommand),
 }
 
-#[derive(Debug, Args)]
+#[derive(Debug, Args, Clone)]
 pub struct HistoryCommand {
     /// Identifiant de serveur (hash stable).
     #[arg(long = "server", value_name = "ID")]
@@ -352,7 +541,7 @@ pub struct HistoryCommand {
     pub limit: Option<usize>,
 }
 
-#[derive(Debug, Args)]
+#[derive(Debug, Args, Clone)]
 pub struct PluginRunCommand {
     /// Nom logique du plugin (ex: certificates, inventory).
     #[arg(long = "name", value_name = "NAME")]
@@ -365,15 +554,11 @@ pub struct PluginRunCommand {
     pub timeout_secs: u64,
 }
 
-#[derive(Debug, Args)]
+#[derive(Debug, Args, Clone)]
 pub struct LogsCommand {
     /// Nombre de lignes à lire (borné côté programme).
     #[arg(long = "lines", value_name = "N", default_value_t = 200)]
     pub lines: usize,
-}
-
-pub fn parse() -> Opts {
-    Opts::parse()
 }
 
 pub fn hash_web_token(token: &str, algorithm: TokenHashAlgorithm) -> Result<String> {
@@ -412,34 +597,34 @@ mod tests {
     #[test]
     fn parses_expose_updates_flags() {
         let opts = Opts::try_parse_from(["describe-me", "--expose-updates"]).unwrap();
-        assert!(opts.expose_updates);
-        assert!(!opts.web_expose_updates);
+        assert!(opts.exposure.expose_updates);
+        assert!(!opts.web_exposure.expose_updates);
 
         let opts = Opts::try_parse_from(["describe-me", "--web-expose-updates"]).unwrap();
-        assert!(!opts.expose_updates);
-        assert!(opts.web_expose_updates);
+        assert!(!opts.exposure.expose_updates);
+        assert!(opts.web_exposure.expose_updates);
     }
 
     #[test]
     fn parses_expose_network_traffic_flags() {
         let opts = Opts::try_parse_from(["describe-me", "--expose-network-traffic"]).unwrap();
-        assert!(opts.expose_network_traffic);
-        assert!(!opts.web_expose_network_traffic);
+        assert!(opts.exposure.expose_network_traffic);
+        assert!(!opts.web_exposure.expose_network_traffic);
 
         let opts = Opts::try_parse_from(["describe-me", "--web-expose-network-traffic"]).unwrap();
-        assert!(!opts.expose_network_traffic);
-        assert!(opts.web_expose_network_traffic);
+        assert!(!opts.exposure.expose_network_traffic);
+        assert!(opts.web_exposure.expose_network_traffic);
     }
 
     #[test]
     fn parses_expose_extensions_flags() {
         let opts = Opts::try_parse_from(["describe-me", "--expose-extensions"]).unwrap();
-        assert!(opts.expose_extensions);
-        assert!(!opts.web_expose_extensions);
+        assert!(opts.exposure.expose_extensions);
+        assert!(!opts.web_exposure.expose_extensions);
 
         let opts = Opts::try_parse_from(["describe-me", "--web-expose-extensions"]).unwrap();
-        assert!(!opts.expose_extensions);
-        assert!(opts.web_expose_extensions);
+        assert!(!opts.exposure.expose_extensions);
+        assert!(opts.web_exposure.expose_extensions);
     }
 
     #[test]

@@ -156,7 +156,7 @@ struct CachedContainers {
 }
 
 #[cfg(feature = "serde")]
-#[derive(Default)]
+#[derive(Default, Debug, Clone)]
 struct ContainersCache {
     last_success: Option<CachedContainers>,
 }
@@ -185,49 +185,94 @@ impl ContainersCache {
 }
 
 #[cfg(feature = "serde")]
-fn containers_cache() -> &'static std::sync::Mutex<ContainersCache> {
-    use std::sync::OnceLock;
-    static CACHE: OnceLock<std::sync::Mutex<ContainersCache>> = OnceLock::new();
-    CACHE.get_or_init(|| std::sync::Mutex::new(ContainersCache::default()))
+#[derive(Debug)]
+pub struct ContainersCacheService {
+    cache: std::sync::Mutex<ContainersCache>,
 }
 
-/// Exécute le plugin conteneurs et renvoie un `ContainersSnapshot` en tirant parti du cache.
-///
-/// Si le plugin échoue mais qu'une valeur précédente existe encore, on réutilise ce cache
-/// (avec un warning) pour éviter de couper la capture complète.
 #[cfg(feature = "serde")]
-pub fn capture_containers_cached() -> Result<ContainersSnapshot, ContainersCaptureError> {
-    let now = Instant::now();
-    let cache = containers_cache();
-    {
-        let guard = cache.lock().expect("containers cache mutex poisoned");
-        if let Some(snapshot) = guard.fresh_snapshot(now) {
-            return Ok(snapshot);
+impl Clone for ContainersCacheService {
+    fn clone(&self) -> Self {
+        let snapshot = self
+            .cache
+            .lock()
+            .expect("containers cache mutex poisoned")
+            .clone();
+        Self {
+            cache: std::sync::Mutex::new(snapshot),
         }
     }
+}
 
-    match collect_from_plugin() {
-        Ok(snapshot) => {
-            let mut guard = cache.lock().expect("containers cache mutex poisoned");
-            guard.store(snapshot.clone(), now);
-            Ok(snapshot)
+#[cfg(feature = "serde")]
+impl Default for ContainersCacheService {
+    fn default() -> Self {
+        Self {
+            cache: std::sync::Mutex::new(ContainersCache::default()),
         }
-        Err(err) => {
-            let cached = {
-                let guard = cache.lock().expect("containers cache mutex poisoned");
-                guard.reuse_stale()
-            };
-            if let Some(snapshot) = cached {
-                warn!(
-                    error = %err,
-                    "plugin conteneurs en erreur, réutilisation du cache précédent"
-                );
+    }
+}
+
+#[cfg(feature = "serde")]
+impl ContainersCacheService {
+    pub fn capture(&self) -> Result<ContainersSnapshot, ContainersCaptureError> {
+        let now = Instant::now();
+        {
+            let guard = self.cache.lock().expect("containers cache mutex poisoned");
+            if let Some(snapshot) = guard.fresh_snapshot(now) {
+                return Ok(snapshot);
+            }
+        }
+
+        match collect_from_plugin() {
+            Ok(snapshot) => {
+                let mut guard = self.cache.lock().expect("containers cache mutex poisoned");
+                guard.store(snapshot.clone(), now);
                 Ok(snapshot)
-            } else {
-                Err(err)
+            }
+            Err(err) => {
+                let cached = {
+                    let guard = self.cache.lock().expect("containers cache mutex poisoned");
+                    guard.reuse_stale()
+                };
+                if let Some(snapshot) = cached {
+                    warn!(
+                        error = %err,
+                        "plugin conteneurs en erreur, réutilisation du cache précédent"
+                    );
+                    Ok(snapshot)
+                } else {
+                    Err(err)
+                }
             }
         }
     }
+
+    #[cfg(test)]
+    pub fn inject(&self, snapshot: ContainersSnapshot) {
+        let mut guard = self.cache.lock().expect("containers cache mutex poisoned");
+        guard.store(snapshot, Instant::now());
+    }
+}
+
+#[cfg(feature = "serde")]
+#[allow(dead_code)]
+pub fn capture_containers_with_cache(
+    service: &ContainersCacheService,
+) -> Result<ContainersSnapshot, ContainersCaptureError> {
+    service.capture()
+}
+
+#[cfg(feature = "serde")]
+#[allow(dead_code)]
+#[deprecated(note = "Use AppContext::containers_cache().capture()")]
+pub fn capture_containers_cached() -> Result<ContainersSnapshot, ContainersCaptureError> {
+    Err(ContainersCaptureError::Plugin {
+        message: "capture_containers_cached removed; use AppContext::containers_cache().capture()"
+            .into(),
+        exit_code: None,
+        soft: false,
+    })
 }
 
 #[cfg(feature = "serde")]

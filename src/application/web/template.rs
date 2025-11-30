@@ -1,4 +1,5 @@
 use super::assets::{BACKGROUND_CANVAS_JS, CONTAINERS_JS, LOGS_JS, MAIN_JS};
+use super::views::{ContainersViewModel, IndexViewModel, LogsViewModel, UpdatesViewModel};
 use crate::domain::{UpdatePackage, UpdatesInfo};
 
 const INDEX_HTML_TEMPLATE: &str = include_str!("templates/index.html");
@@ -99,8 +100,8 @@ pub(super) fn render_auth_required(message: &str, csp_nonce: &str) -> String {
     })
 }
 
-pub(super) fn render_index(web_debug: bool, csp_nonce: &str) -> String {
-    let debug_flag = if web_debug { "true" } else { "false" };
+pub(super) fn render_index(vm: &IndexViewModel) -> String {
+    let debug_flag = if vm.web_debug { "true" } else { "false" };
     let main_js = MAIN_JS.replace("__WEB_DEBUG__", debug_flag);
     let main_content = fill_template(
         MAIN_LAYOUT_TEMPLATE,
@@ -121,14 +122,14 @@ pub(super) fn render_index(web_debug: bool, csp_nonce: &str) -> String {
         + TOKEN_OVERLAY.len()
         + FOOTER_SECTION.len()
         + BACKGROUND_CANVAS_JS.len()
-        + csp_nonce.len() * 2;
+        + vm.csp_nonce.len() * 2;
 
     fill_template(INDEX_HTML_TEMPLATE, extra_capacity, |key| match key {
         "INLINE_CSS" => Some(INDEX_CSS),
         "BACKGROUND_CANVAS_JS" => Some(BACKGROUND_CANVAS_JS),
         "MAIN_JS" => Some(main_js.as_str()),
         "WEB_DEBUG" => Some(debug_flag),
-        "CSP_NONCE" => Some(csp_nonce),
+        "CSP_NONCE" => Some(vm.csp_nonce),
         "HEADER" => Some(HEADER_SECTION),
         "MAIN_CONTENT" => Some(main_content.as_str()),
         "TOKEN_OVERLAY" => Some(TOKEN_OVERLAY),
@@ -137,14 +138,11 @@ pub(super) fn render_index(web_debug: bool, csp_nonce: &str) -> String {
     })
 }
 
-pub(super) fn render_updates_page(
-    updates: Option<&UpdatesInfo>,
-    message: Option<&str>,
-    csp_nonce: &str,
-) -> String {
-    let summary_html = render_updates_summary(updates);
-    let details_html = render_updates_details(updates);
-    let message_html = message
+pub(super) fn render_updates_page(vm: &UpdatesViewModel) -> String {
+    let summary_html = render_updates_summary(vm.updates);
+    let details_html = render_updates_details(vm.updates);
+    let message_html = vm
+        .message
         .map(|msg| format!("<div class=\"notice\">{}</div>", escape_html(msg)))
         .unwrap_or_default();
 
@@ -153,11 +151,11 @@ pub(super) fn render_updates_page(
         + details_html.len()
         + message_html.len()
         + BACKGROUND_CANVAS_JS.len()
-        + csp_nonce.len();
+        + vm.csp_nonce.len();
 
     fill_template(UPDATES_HTML_TEMPLATE, extra_capacity, |key| match key {
         "INLINE_CSS" => Some(UPDATES_CSS),
-        "CSP_NONCE" => Some(csp_nonce),
+        "CSP_NONCE" => Some(vm.csp_nonce),
         "SUMMARY" => Some(summary_html.as_str()),
         "DETAILS" => Some(details_html.as_str()),
         "MESSAGE" => Some(message_html.as_str()),
@@ -166,28 +164,30 @@ pub(super) fn render_updates_page(
     })
 }
 
-pub(super) fn render_logs_page(csp_nonce: &str) -> String {
+pub(super) fn render_logs_page(vm: &LogsViewModel) -> String {
     let extra_capacity =
-        LOGS_CSS.len() + BACKGROUND_CANVAS_JS.len() + LOGS_JS.len() + csp_nonce.len();
+        LOGS_CSS.len() + BACKGROUND_CANVAS_JS.len() + LOGS_JS.len() + vm.csp_nonce.len();
 
     fill_template(LOGS_HTML_TEMPLATE, extra_capacity, |key| match key {
         "INLINE_CSS" => Some(LOGS_CSS),
         "BACKGROUND_CANVAS_JS" => Some(BACKGROUND_CANVAS_JS),
         "LOGS_JS" => Some(LOGS_JS),
-        "CSP_NONCE" => Some(csp_nonce),
+        "CSP_NONCE" => Some(vm.csp_nonce),
         _ => None,
     })
 }
 
-pub(super) fn render_containers_page(csp_nonce: &str) -> String {
-    let extra_capacity =
-        CONTAINERS_CSS.len() + BACKGROUND_CANVAS_JS.len() + CONTAINERS_JS.len() + csp_nonce.len();
+pub(super) fn render_containers_page(vm: &ContainersViewModel) -> String {
+    let extra_capacity = CONTAINERS_CSS.len()
+        + BACKGROUND_CANVAS_JS.len()
+        + CONTAINERS_JS.len()
+        + vm.csp_nonce.len();
 
     fill_template(CONTAINERS_HTML_TEMPLATE, extra_capacity, |key| match key {
         "INLINE_CSS" => Some(CONTAINERS_CSS),
         "BACKGROUND_CANVAS_JS" => Some(BACKGROUND_CANVAS_JS),
         "CONTAINERS_JS" => Some(CONTAINERS_JS),
-        "CSP_NONCE" => Some(csp_nonce),
+        "CSP_NONCE" => Some(vm.csp_nonce),
         _ => None,
     })
 }
@@ -364,7 +364,11 @@ mod tests {
 
     #[test]
     fn render_index_injects_dynamic_values() {
-        let html = render_index(true, "nonce-value");
+        let vm = IndexViewModel {
+            web_debug: true,
+            csp_nonce: "nonce-value",
+        };
+        let html = render_index(&vm);
         assert!(html.contains("nonce=\"nonce-value\""));
         assert!(html.contains("const WEB_DEBUG = true;") || html.contains(">true<"));
         assert!(!html.contains("__CSP_NONCE__"));
@@ -380,11 +384,38 @@ mod tests {
             reboot_required: false,
             packages: None,
         };
-        let html = render_updates_page(Some(&info), Some("Attention"), "nonce");
+        let vm = UpdatesViewModel {
+            updates: Some(&info),
+            message: Some("Attention"),
+            csp_nonce: "nonce",
+        };
+        let html = render_updates_page(&vm);
         assert!(html.contains("stat-value\">2</div>"));
         assert!(html.contains("Attention"));
         assert!(!html.contains("__SUMMARY__"));
         assert!(!html.contains("__INLINE_CSS__"));
+    }
+
+    #[test]
+    fn render_updates_page_with_notice_only() {
+        let vm = UpdatesViewModel {
+            updates: None,
+            message: Some("Indisponible"),
+            csp_nonce: "nonce",
+        };
+        let html = render_updates_page(&vm);
+        assert!(html.contains("Indisponible"));
+        assert!(html.contains("notice"));
+    }
+
+    #[test]
+    fn render_index_disables_web_debug() {
+        let vm = IndexViewModel {
+            web_debug: false,
+            csp_nonce: "nonce-0",
+        };
+        let html = render_index(&vm);
+        assert!(html.contains("const WEB_DEBUG = false;") || html.contains(">false<"));
     }
 
     #[test]

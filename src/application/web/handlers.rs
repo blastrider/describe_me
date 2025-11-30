@@ -18,8 +18,8 @@ use crate::{
         logging::LogEvent,
         logs::{self, HOST_LOGS_DEFAULT_LINES, HOST_LOGS_MAX_LINES},
         metadata::{
-            add_server_tags, clear_server_tags, remove_server_tags, set_server_description,
-            set_server_tags,
+            add_server_tags_with, clear_server_tags_with, remove_server_tags_with,
+            set_server_description_with, set_server_tags_with,
         },
     },
     domain::{ContainersSnapshot, DescribeError},
@@ -30,6 +30,7 @@ use super::{
     security::AuthGuard,
     set_session_cookie,
     template::{render_containers_page, render_index, render_logs_page, render_updates_page},
+    views::{ContainersViewModel, IndexViewModel, LogsViewModel, UpdatesViewModel},
     AppState, CspNonce,
 };
 
@@ -125,7 +126,11 @@ pub(super) async fn index(
     Extension(csp_nonce): Extension<CspNonce>,
 ) -> impl IntoResponse {
     let session = guard.into_session();
-    let mut response = Html(render_index(state.web_debug, csp_nonce.as_str())).into_response();
+    let vm = IndexViewModel {
+        web_debug: state.web_debug,
+        csp_nonce: csp_nonce.as_str(),
+    };
+    let mut response = Html(render_index(&vm)).into_response();
     if let Some(token) = session.session_cookie() {
         set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
     }
@@ -143,7 +148,12 @@ pub(super) async fn updates_page(
 
     if !state.exposure.updates() {
         let message = "L'exposition des mises à jour est désactivée pour cette instance.";
-        let html = render_updates_page(None, Some(message), csp_nonce.as_str());
+        let vm = UpdatesViewModel {
+            updates: None,
+            message: Some(message),
+            csp_nonce: csp_nonce.as_str(),
+        };
+        let html = render_updates_page(&vm);
         let mut response = Html(html).into_response();
         if let Some(token) = cookie_token.as_deref() {
             set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
@@ -157,7 +167,12 @@ pub(super) async fn updates_page(
         None => state.updates_cache.refresh_blocking().await,
     };
 
-    let html = render_updates_page(updates.as_ref(), None, csp_nonce.as_str());
+    let vm = UpdatesViewModel {
+        updates: updates.as_ref(),
+        message: None,
+        csp_nonce: csp_nonce.as_str(),
+    };
+    let html = render_updates_page(&vm);
     let mut response = Html(html).into_response();
     if let Some(token) = cookie_token.as_deref() {
         set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
@@ -167,6 +182,7 @@ pub(super) async fn updates_page(
 
 pub(super) async fn update_description(
     _guard: AuthGuard,
+    State(state): State<AppState>,
     Json(payload): Json<DescriptionPayload>,
 ) -> impl IntoResponse {
     let text = match normalize_description(&payload.text) {
@@ -174,7 +190,7 @@ pub(super) async fn update_description(
         Err(msg) => return json_error(StatusCode::BAD_REQUEST, msg),
     };
 
-    if let Err(err) = set_server_description(&text) {
+    if let Err(err) = set_server_description_with(&state.ctx, &text) {
         LogEvent::SystemError {
             location: Cow::Borrowed("web_description_update"),
             error: Cow::Owned(err.to_string()),
@@ -195,6 +211,7 @@ pub(super) async fn update_description(
 
 pub(super) async fn update_tags(
     _guard: AuthGuard,
+    State(state): State<AppState>,
     Json(payload): Json<TagsPayload>,
 ) -> impl IntoResponse {
     if let Some(error) = validate_tags_payload(&payload) {
@@ -211,10 +228,12 @@ pub(super) async fn update_tags(
 
     let op = payload.op;
     let result = match op {
-        TagOperation::Set => set_server_tags(tags.iter().map(|s| s.as_str())),
-        TagOperation::Add => add_server_tags(tags.iter().map(|s| s.as_str())),
-        TagOperation::Remove => remove_server_tags(tags.iter().map(|s| s.as_str())),
-        TagOperation::Clear => clear_server_tags().map(|_| Vec::new()),
+        TagOperation::Set => set_server_tags_with(&state.ctx, tags.iter().map(|s| s.as_str())),
+        TagOperation::Add => add_server_tags_with(&state.ctx, tags.iter().map(|s| s.as_str())),
+        TagOperation::Remove => {
+            remove_server_tags_with(&state.ctx, tags.iter().map(|s| s.as_str()))
+        }
+        TagOperation::Clear => clear_server_tags_with(&state.ctx).map(|_| Vec::new()),
     };
 
     match result {
@@ -236,7 +255,7 @@ pub(super) async fn history_series(
         );
     }
 
-    let settings = history::settings_snapshot();
+    let settings = state.ctx.history().settings_snapshot();
     if !settings.is_active() {
         return json_error(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -253,7 +272,7 @@ pub(super) async fn history_series(
 
     let requested_server = if let Some(id) = query.server.clone() {
         id
-    } else if let Some(default_id) = history::default_server_id() {
+    } else if let Some(default_id) = state.ctx.history().default_server_id() {
         default_id
     } else {
         return json_error(
@@ -277,7 +296,7 @@ pub(super) async fn history_series(
         .min(retention_cap);
 
     let rounding = settings.rounding_seconds.max(1);
-    let series = match history::query_series(
+    let series = match state.ctx.history().query_series(
         &requested_server,
         Duration::from_secs(window_secs),
         limit,
@@ -391,7 +410,10 @@ pub(super) async fn logs_page(
     Extension(csp_nonce): Extension<CspNonce>,
 ) -> impl IntoResponse {
     let session = guard.into_session();
-    let mut response = Html(render_logs_page(csp_nonce.as_str())).into_response();
+    let vm = LogsViewModel {
+        csp_nonce: csp_nonce.as_str(),
+    };
+    let mut response = Html(render_logs_page(&vm)).into_response();
     if let Some(token) = session.session_cookie() {
         set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
     }
@@ -405,7 +427,10 @@ pub(super) async fn containers_page(
     Extension(csp_nonce): Extension<CspNonce>,
 ) -> impl IntoResponse {
     let session = guard.into_session();
-    let mut response = Html(render_containers_page(csp_nonce.as_str())).into_response();
+    let vm = ContainersViewModel {
+        csp_nonce: csp_nonce.as_str(),
+    };
+    let mut response = Html(render_containers_page(&vm)).into_response();
     if let Some(token) = session.session_cookie() {
         set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
     }
