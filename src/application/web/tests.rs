@@ -296,6 +296,7 @@ fn test_app_state(exposure: Exposure) -> AppState {
     )
     .unwrap();
     AppState {
+        ctx: Arc::new(crate::application::context::AppContext::in_memory()),
         interval: Duration::from_secs(1),
         #[cfg(feature = "config")]
         config: None,

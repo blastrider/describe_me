@@ -3,7 +3,8 @@
 //! # Examples
 //! ```rust
 //! use describe_me::SystemSnapshot;
-//! let snap = SystemSnapshot::capture().expect("snapshot");
+//! let ctx = describe_me::AppContext::in_memory();
+//! let snap = describe_me::SystemSnapshot::capture_with(describe_me::CaptureOptions::default(), &ctx).expect("snapshot");
 //! assert!(snap.cpu_count >= 1);
 //! ```
 
@@ -25,14 +26,14 @@ pub use domain::HistoryProfile;
 #[cfg(feature = "config")]
 pub use domain::{DescribeConfig, ServiceSelection};
 
-// API fonctionnelle
+// API fonctionnelle (capture via contexte explicite)
 pub use application::disk_usage;
 pub use application::history::{
-    configure_history, default_server_id as history_default_server_id,
-    query_series as history_query_series, settings_snapshot as history_settings_snapshot,
-    HistoryMode, HistoryPoint, HistoryQueryError, HistorySeries, HistorySettings, MetricAggregate,
+    HistoryMode, HistoryPoint, HistoryQueryError, HistorySeries, HistoryService, HistorySettings,
+    MetricAggregate,
 };
 pub use application::pagination::{paginate_slice, Page, PageRequest};
+pub use application::AppContext;
 
 #[cfg(feature = "config")]
 pub use application::{filter_services, load_config_from_path};
@@ -73,9 +74,9 @@ pub use application::logs::{tail_host_logs, HOST_LOGS_DEFAULT_LINES, HOST_LOGS_M
 pub use application::logging::{init_logging, LogEvent};
 
 pub use application::metadata::{
-    add_server_tags, clear_server_description, clear_server_tags, load_server_description,
-    load_server_tags, override_state_directory, remove_server_tags, set_server_description,
-    set_server_tags,
+    add_server_tags_with, clear_server_description_with, clear_server_tags_with,
+    load_server_description_with, load_server_tags_with, override_state_directory,
+    remove_server_tags_with, set_server_description_with, set_server_tags_with,
 };
 
 #[cfg(feature = "serde")]

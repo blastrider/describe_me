@@ -1,4 +1,7 @@
-use crate::domain::{CaptureOptions, DescribeError, SystemSnapshot};
+use crate::{
+    application::context::AppContext,
+    domain::{CaptureOptions, DescribeError, SystemSnapshot},
+};
 
 #[cfg(any(feature = "systemd", feature = "net"))]
 use crate::application::logging::LogEvent;
@@ -10,6 +13,7 @@ pub trait SnapshotCollector {
         &self,
         snapshot: &mut SystemSnapshot,
         opts: &CaptureOptions,
+        ctx: &AppContext,
     ) -> Result<(), DescribeError>;
 }
 

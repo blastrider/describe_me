@@ -1,73 +1,74 @@
+use crate::application::context::AppContext;
 use crate::domain::DescribeError;
-use crate::infrastructure::storage::{self, MetadataStore};
+use crate::infrastructure::storage;
 use std::collections::BTreeSet;
 use std::path::Path;
 
-/// Persist the free-form server description (role, context, owners).
-pub fn set_server_description(text: &str) -> Result<(), DescribeError> {
-    MetadataStore::open_default()?.set_description(text)
+pub fn set_server_description_with(ctx: &AppContext, text: &str) -> Result<(), DescribeError> {
+    ctx.metadata_store().set_description(text)
 }
 
-/// Returns the stored description, if any.
-pub fn load_server_description() -> Result<Option<String>, DescribeError> {
-    MetadataStore::open_default()?.get_description()
+pub fn load_server_description_with(ctx: &AppContext) -> Result<Option<String>, DescribeError> {
+    ctx.metadata_store().get_description()
 }
 
-/// Removes any stored description.
-pub fn clear_server_description() -> Result<(), DescribeError> {
-    MetadataStore::open_default()?.clear_description()
+pub fn clear_server_description_with(ctx: &AppContext) -> Result<(), DescribeError> {
+    ctx.metadata_store().clear_description()
 }
 
 /// Sets the normalized tag list (replacing any existing value).
-pub fn set_server_tags<I, S>(tags: I) -> Result<Vec<String>, DescribeError>
+pub fn set_server_tags_with<I, S>(ctx: &AppContext, tags: I) -> Result<Vec<String>, DescribeError>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
     let normalized = normalize_tags(tags);
-    persist_tags(&normalized)?;
+    persist_tags_with(ctx, &normalized)?;
     Ok(normalized)
 }
 
 /// Adds tags to the existing list, returning the normalized result.
-pub fn add_server_tags<I, S>(tags: I) -> Result<Vec<String>, DescribeError>
+pub fn add_server_tags_with<I, S>(ctx: &AppContext, tags: I) -> Result<Vec<String>, DescribeError>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
-    let mut current = load_server_tags()?;
+    let mut current = load_server_tags_with(ctx)?;
     let mut additions = normalize_tags(tags);
     if additions.is_empty() {
         return Ok(current);
     }
     current.append(&mut additions);
     current = unique_sorted(current);
-    persist_tags(&current)?;
+    persist_tags_with(ctx, &current)?;
     Ok(current)
 }
 
 /// Removes the provided tags.
-pub fn remove_server_tags<I, S>(tags: I) -> Result<Vec<String>, DescribeError>
+pub fn remove_server_tags_with<I, S>(
+    ctx: &AppContext,
+    tags: I,
+) -> Result<Vec<String>, DescribeError>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
     let to_remove = normalize_tags(tags);
     if to_remove.is_empty() {
-        return load_server_tags();
+        return load_server_tags_with(ctx);
     }
     let remove_set: BTreeSet<String> = to_remove.into_iter().collect();
-    let retained: Vec<String> = load_server_tags()?
+    let retained: Vec<String> = load_server_tags_with(ctx)?
         .into_iter()
         .filter(|tag| !remove_set.contains(tag))
         .collect();
-    persist_tags(&retained)?;
+    persist_tags_with(ctx, &retained)?;
     Ok(retained)
 }
 
 /// Loads the normalized tag list (empty if unset).
-pub fn load_server_tags() -> Result<Vec<String>, DescribeError> {
-    let store = MetadataStore::open_default()?;
+pub fn load_server_tags_with(ctx: &AppContext) -> Result<Vec<String>, DescribeError> {
+    let store = ctx.metadata_store();
     let raw = store.get_tags_raw()?;
     if let Some(data) = raw {
         if data.is_empty() {
@@ -85,8 +86,8 @@ pub fn load_server_tags() -> Result<Vec<String>, DescribeError> {
 }
 
 /// Clears all tags.
-pub fn clear_server_tags() -> Result<(), DescribeError> {
-    MetadataStore::open_default()?.clear_tags()
+pub fn clear_server_tags_with(ctx: &AppContext) -> Result<(), DescribeError> {
+    ctx.metadata_store().clear_tags()
 }
 
 /// Override the directory where the metadata database is stored.
@@ -94,11 +95,11 @@ pub fn override_state_directory<P: AsRef<Path>>(path: P) {
     storage::set_state_dir_override(path.as_ref())
 }
 
-fn persist_tags(tags: &[String]) -> Result<(), DescribeError> {
+fn persist_tags_with(ctx: &AppContext, tags: &[String]) -> Result<(), DescribeError> {
     if tags.is_empty() {
-        MetadataStore::open_default()?.set_tags_raw("")
+        ctx.metadata_store().set_tags_raw("")
     } else {
-        MetadataStore::open_default()?.set_tags_raw(&tags.join("\n"))
+        ctx.metadata_store().set_tags_raw(&tags.join("\n"))
     }
 }
 
@@ -179,8 +180,9 @@ mod tests {
     #[test]
     fn roundtrip_description() {
         with_temp_state_dir(|| {
-            set_server_description("Serveur FTP de tests").expect("set");
-            let stored = load_server_description().expect("load");
+            let ctx = AppContext::new_default().expect("ctx");
+            set_server_description_with(&ctx, "Serveur FTP de tests").expect("set");
+            let stored = load_server_description_with(&ctx).expect("load");
             assert_eq!(stored.as_deref(), Some("Serveur FTP de tests"));
         });
     }
@@ -188,9 +190,10 @@ mod tests {
     #[test]
     fn clearing_description_removes_data() {
         with_temp_state_dir(|| {
-            set_server_description("temp value").expect("set");
-            clear_server_description().expect("clear");
-            let stored = load_server_description().expect("load");
+            let ctx = AppContext::new_default().expect("ctx");
+            set_server_description_with(&ctx, "temp value").expect("set");
+            clear_server_description_with(&ctx).expect("clear");
+            let stored = load_server_description_with(&ctx).expect("load");
             assert!(stored.is_none());
         });
     }
@@ -198,9 +201,10 @@ mod tests {
     #[test]
     fn normalized_tags_are_persisted_once() {
         with_temp_state_dir(|| {
-            let tags = set_server_tags([" Ubuntu  ", "FTP", "ubuntu"]).expect("set");
+            let ctx = AppContext::new_default().expect("ctx");
+            let tags = set_server_tags_with(&ctx, [" Ubuntu  ", "FTP", "ubuntu"]).expect("set");
             assert_eq!(tags, vec!["ftp", "ubuntu"]);
-            let stored = load_server_tags().expect("load");
+            let stored = load_server_tags_with(&ctx).expect("load");
             assert_eq!(stored, vec!["ftp", "ubuntu"]);
         });
     }
@@ -208,13 +212,14 @@ mod tests {
     #[test]
     fn add_and_remove_tags_work() {
         with_temp_state_dir(|| {
-            set_server_tags(["debian"]).expect("set");
-            let after_add = add_server_tags(["ftp", "prod"]).expect("add");
+            let ctx = AppContext::new_default().expect("ctx");
+            set_server_tags_with(&ctx, ["debian"]).expect("set");
+            let after_add = add_server_tags_with(&ctx, ["ftp", "prod"]).expect("add");
             assert_eq!(after_add, vec!["debian", "ftp", "prod"]);
-            let after_remove = remove_server_tags(["ftp"]).expect("remove");
+            let after_remove = remove_server_tags_with(&ctx, ["ftp"]).expect("remove");
             assert_eq!(after_remove, vec!["debian", "prod"]);
-            clear_server_tags().expect("clear tags");
-            assert!(load_server_tags().expect("load").is_empty());
+            clear_server_tags_with(&ctx).expect("clear tags");
+            assert!(load_server_tags_with(&ctx).expect("load").is_empty());
         });
     }
 }

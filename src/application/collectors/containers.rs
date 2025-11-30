@@ -1,4 +1,5 @@
 use crate::application::collectors::SnapshotCollector;
+use crate::application::context::AppContext;
 use crate::domain::{CaptureOptions, DescribeError, SystemSnapshot};
 use tracing::warn;
 
@@ -9,13 +10,14 @@ impl SnapshotCollector for ContainersCollector {
         &self,
         snapshot: &mut SystemSnapshot,
         opts: &CaptureOptions,
+        ctx: &AppContext,
     ) -> Result<(), DescribeError> {
         if !opts.with_containers {
             snapshot.containers = None;
             return Ok(());
         }
 
-        match crate::application::containers::capture_containers_cached() {
+        match ctx.containers_cache().capture() {
             Ok(data) => {
                 snapshot.containers = Some(data);
             }

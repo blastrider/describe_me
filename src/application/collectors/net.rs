@@ -1,4 +1,5 @@
 use crate::application::collectors::{log_system_error, SnapshotCollector};
+use crate::application::context::AppContext;
 use crate::domain::{CaptureOptions, DescribeError, SystemSnapshot};
 use crate::SharedSlice;
 
@@ -9,6 +10,7 @@ impl SnapshotCollector for NetCollector {
         &self,
         snapshot: &mut SystemSnapshot,
         opts: &CaptureOptions,
+        _ctx: &AppContext,
     ) -> Result<(), DescribeError> {
         if opts.with_listening_sockets {
             let sockets =

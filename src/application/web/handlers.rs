@@ -18,8 +18,8 @@ use crate::{
         logging::LogEvent,
         logs::{self, HOST_LOGS_DEFAULT_LINES, HOST_LOGS_MAX_LINES},
         metadata::{
-            add_server_tags, clear_server_tags, remove_server_tags, set_server_description,
-            set_server_tags,
+            add_server_tags_with, clear_server_tags_with, remove_server_tags_with,
+            set_server_description_with, set_server_tags_with,
         },
     },
     domain::{ContainersSnapshot, DescribeError},
@@ -167,6 +167,7 @@ pub(super) async fn updates_page(
 
 pub(super) async fn update_description(
     _guard: AuthGuard,
+    State(state): State<AppState>,
     Json(payload): Json<DescriptionPayload>,
 ) -> impl IntoResponse {
     let text = match normalize_description(&payload.text) {
@@ -174,7 +175,7 @@ pub(super) async fn update_description(
         Err(msg) => return json_error(StatusCode::BAD_REQUEST, msg),
     };
 
-    if let Err(err) = set_server_description(&text) {
+    if let Err(err) = set_server_description_with(&state.ctx, &text) {
         LogEvent::SystemError {
             location: Cow::Borrowed("web_description_update"),
             error: Cow::Owned(err.to_string()),
@@ -195,6 +196,7 @@ pub(super) async fn update_description(
 
 pub(super) async fn update_tags(
     _guard: AuthGuard,
+    State(state): State<AppState>,
     Json(payload): Json<TagsPayload>,
 ) -> impl IntoResponse {
     if let Some(error) = validate_tags_payload(&payload) {
@@ -211,10 +213,12 @@ pub(super) async fn update_tags(
 
     let op = payload.op;
     let result = match op {
-        TagOperation::Set => set_server_tags(tags.iter().map(|s| s.as_str())),
-        TagOperation::Add => add_server_tags(tags.iter().map(|s| s.as_str())),
-        TagOperation::Remove => remove_server_tags(tags.iter().map(|s| s.as_str())),
-        TagOperation::Clear => clear_server_tags().map(|_| Vec::new()),
+        TagOperation::Set => set_server_tags_with(&state.ctx, tags.iter().map(|s| s.as_str())),
+        TagOperation::Add => add_server_tags_with(&state.ctx, tags.iter().map(|s| s.as_str())),
+        TagOperation::Remove => {
+            remove_server_tags_with(&state.ctx, tags.iter().map(|s| s.as_str()))
+        }
+        TagOperation::Clear => clear_server_tags_with(&state.ctx).map(|_| Vec::new()),
     };
 
     match result {
@@ -236,7 +240,7 @@ pub(super) async fn history_series(
         );
     }
 
-    let settings = history::settings_snapshot();
+    let settings = state.ctx.history().settings_snapshot();
     if !settings.is_active() {
         return json_error(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -253,7 +257,7 @@ pub(super) async fn history_series(
 
     let requested_server = if let Some(id) = query.server.clone() {
         id
-    } else if let Some(default_id) = history::default_server_id() {
+    } else if let Some(default_id) = state.ctx.history().default_server_id() {
         default_id
     } else {
         return json_error(
@@ -277,7 +281,7 @@ pub(super) async fn history_series(
         .min(retention_cap);
 
     let rounding = settings.rounding_seconds.max(1);
-    let series = match history::query_series(
+    let series = match state.ctx.history().query_series(
         &requested_server,
         Duration::from_secs(window_secs),
         limit,

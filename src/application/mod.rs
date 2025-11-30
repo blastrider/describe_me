@@ -1,4 +1,5 @@
 mod collectors;
+mod context;
 
 use crate::application::collectors::{default_collectors, CoreCollector};
 #[cfg(feature = "serde")]
@@ -9,21 +10,27 @@ use crate::domain::DescribeConfig;
 #[cfg(any(feature = "systemd", feature = "config"))]
 use crate::domain::ServiceInfo;
 use crate::domain::{CaptureOptions, DescribeError, DiskUsage, SystemSnapshot};
+pub use context::AppContext;
 use std::borrow::Cow;
 use std::time::Instant;
 use tracing::debug;
 
 impl SystemSnapshot {
     pub fn capture() -> Result<Self, DescribeError> {
-        Self::capture_with(CaptureOptions::default())
+        let ctx = AppContext::new_default()?;
+        Self::capture_with(CaptureOptions::default(), &ctx)
     }
 
-    pub fn capture_with(opts: CaptureOptions) -> Result<Self, DescribeError> {
+    pub fn capture_with(opts: CaptureOptions, ctx: &AppContext) -> Result<Self, DescribeError> {
+        Self::capture_with_ctx(opts, ctx)
+    }
+
+    pub fn capture_with_ctx(opts: CaptureOptions, ctx: &AppContext) -> Result<Self, DescribeError> {
         let started_at = Instant::now();
         let mut snapshot = CoreCollector.capture_base(&opts)?;
 
         for collector in default_collectors() {
-            collector.collect(&mut snapshot, &opts)?;
+            collector.collect(&mut snapshot, &opts, ctx)?;
         }
 
         let duration = started_at.elapsed();
@@ -58,7 +65,7 @@ impl SystemSnapshot {
             "snapshot_captured"
         );
 
-        crate::application::history::record_snapshot(&snapshot);
+        ctx.history().record_snapshot(&snapshot);
         Ok(snapshot)
     }
 }
@@ -73,9 +80,10 @@ pub fn capture_snapshot_with_view(
     opts: CaptureOptions,
     exposure: Exposure,
     #[cfg(feature = "config")] _cfg: Option<&DescribeConfig>,
+    ctx: &AppContext,
 ) -> Result<(SystemSnapshot, SnapshotView), DescribeError> {
     #[cfg_attr(not(all(feature = "systemd", feature = "config")), allow(unused_mut))]
-    let mut snapshot = SystemSnapshot::capture_with(opts)?;
+    let mut snapshot = SystemSnapshot::capture_with_ctx(opts, ctx)?;
 
     #[cfg(all(feature = "systemd", feature = "config"))]
     if let Some(cfg) = _cfg {
@@ -94,7 +102,7 @@ pub fn capture_snapshot_with_view(
     }
 
     let mut view = SnapshotView::new(&snapshot, exposure);
-    match crate::application::metadata::load_server_description() {
+    match crate::application::metadata::load_server_description_with(ctx) {
         Ok(desc) => {
             view.server_description = desc;
         }
@@ -106,7 +114,7 @@ pub fn capture_snapshot_with_view(
             .emit();
         }
     }
-    match crate::application::metadata::load_server_tags() {
+    match crate::application::metadata::load_server_tags_with(ctx) {
         Ok(tags) => {
             view.server_tags = tags;
         }

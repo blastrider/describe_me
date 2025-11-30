@@ -53,6 +53,7 @@ use axum_server::tls_rustls::RustlsConfig;
 use tokio::sync::Notify;
 use tracing::warn;
 
+use crate::application::context::AppContext;
 use crate::application::exposure::{Exposure, SnapshotView};
 use crate::application::logging::LogEvent;
 use crate::application::metadata::override_state_directory;
@@ -152,6 +153,7 @@ pub struct WebTlsConfig {
 
 #[derive(Clone)]
 struct AppState {
+    ctx: Arc<AppContext>,
     interval: Duration,
     #[cfg(feature = "config")]
     config: Option<DescribeConfig>,
@@ -569,6 +571,29 @@ pub async fn serve_http<A: Into<SocketAddr>>(
     access: WebAccess,
     exposure: Exposure,
 ) -> Result<(), DescribeError> {
+    let ctx = AppContext::new_default()?;
+    serve_http_with_context(
+        addr,
+        interval,
+        #[cfg(feature = "config")]
+        config,
+        web_debug,
+        access,
+        exposure,
+        ctx,
+    )
+    .await
+}
+
+pub async fn serve_http_with_context<A: Into<SocketAddr>>(
+    addr: A,
+    interval: Duration,
+    #[cfg(feature = "config")] config: Option<DescribeConfig>,
+    web_debug: bool,
+    access: WebAccess,
+    exposure: Exposure,
+    ctx: AppContext,
+) -> Result<(), DescribeError> {
     let origin_policy = OriginPolicy::from_allowlist(access.allow_origins.clone())?;
     let tls_settings = access.tls.clone();
     let session_cookie_secure = access.session_cookie_secure;
@@ -619,6 +644,7 @@ pub async fn serve_http<A: Into<SocketAddr>>(
     let logo = LogoAsset::default();
 
     let app_state = AppState {
+        ctx: Arc::new(ctx),
         interval,
         #[cfg(feature = "config")]
         config,

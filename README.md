@@ -107,6 +107,41 @@ Le paquet embarque l’unité systemd durcie fournie dans `packaging/systemd/des
 - Packaging & service : `packaging/systemd/describe-me.service`
 - Environnement Vagrant multi‑distros (VMs + HTTPS + systemd) : `infras/README.md`
 
+### Utilisation de la crate (API contextuelle)
+
+```rust
+use describe_me::{AppContext, CaptureOptions};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Contexte applicatif (disk + metadata + history + cache conteneurs)
+    let ctx = AppContext::new_default()?;
+
+    // Capture orientée contexte
+    let snap = describe_me::SystemSnapshot::capture_with_ctx(CaptureOptions::default(), &ctx)?;
+
+    // Métadonnées via le contexte
+    describe_me::set_server_description_with(&ctx, "Serveur demo")?;
+    let tags = describe_me::set_server_tags_with(&ctx, ["prod", "web"])?;
+
+    // Historique via le service dédié
+    let settings = describe_me::HistorySettings::for_profile(describe_me::HistoryProfile::Default);
+    ctx.history().configure(settings)?;
+    ctx.history().record_snapshot(&snap);
+
+    println!("tags: {tags:?}");
+    Ok(())
+}
+```
+
+Pour les tests, utilisez `AppContext::in_memory()` afin d’éviter l’IO disque ou les variables d’environnement.
+
+### Vue d’ensemble AppContext
+- `AppContext` regroupe les services runtime : métadonnées (store), historique (`HistoryService`), cache conteneurs.
+- Capture : passez toujours un `&AppContext` aux fonctions de capture (`SystemSnapshot::capture_with`, `capture_snapshot_with_view`).
+- Métadonnées : utilisez les variantes `*_with(&AppContext)` pour lire/écrire description et tags.
+- Historique : configurez et alimentez via `ctx.history()`.
+- Tests/outillage : `AppContext::in_memory()` fournit un backend 100% mémoire (pas d’IO disque/env).
+
 ## Compatibilité
 
 - Détection des mises à jour: validée sur Ubuntu, Debian et Fedora.

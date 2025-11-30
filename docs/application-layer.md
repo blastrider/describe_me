@@ -81,3 +81,32 @@ La couche `application` compose les services de `domain` et
    persistée).
 4. Optionnellement, application des health checks et exposition via CLI,
    JSON (`--json` / `--pretty`) ou SSE.
+## AppContext (mode lib)
+
+L’utilisation de la crate côté bibliothèque repose désormais sur un contexte explicite :
+
+- `AppContext` agrège le backend métadonnées, le service d’historique (`HistoryService`) et le cache conteneurs.
+- Toutes les captures passent par un `&AppContext` :
+  - `SystemSnapshot::capture_with(CaptureOptions, &AppContext)`
+  - `capture_snapshot_with_view(CaptureOptions, Exposure, &AppContext, …)`
+- Métadonnées : utilisez `*_with(&AppContext)` (description, tags).
+- Historique : `ctx.history().configure(...)`, `ctx.history().record_snapshot(...)`, `ctx.history().query_series(...)`.
+- Tests/outillage : `AppContext::in_memory()` évite toute dépendance à l’IO disque/env.
+
+Exemple minimal :
+```rust
+use describe_me::{AppContext, CaptureOptions, HistorySettings, HistoryProfile};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = AppContext::new_default()?;
+    let snap = describe_me::SystemSnapshot::capture_with(CaptureOptions::default(), &ctx)?;
+
+    describe_me::set_server_description_with(&ctx, "hello")?;
+    describe_me::set_server_tags_with(&ctx, ["prod", "web"])?;
+
+    let settings = HistorySettings::for_profile(HistoryProfile::Default);
+    ctx.history().configure(settings)?;
+    ctx.history().record_snapshot(&snap);
+    Ok(())
+}
+```

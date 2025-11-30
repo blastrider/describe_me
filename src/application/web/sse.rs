@@ -311,6 +311,7 @@ pub(super) async fn sse_stream(
     let exposure = state.exposure;
     let updates_cache = state.updates_cache.clone();
     let state_for_cache = state.clone();
+    let ctx = state.ctx.clone();
 
     let stream = IntervalStream::new(ticker).then(move |_| {
         #[cfg(feature = "config")]
@@ -320,6 +321,7 @@ pub(super) async fn sse_stream(
         let metrics = metrics_for_stream.clone();
         let updates_cache = updates_cache.clone();
         let state_for_cache = state_for_cache.clone();
+        let ctx = ctx.clone();
 
         async move {
             if exposure.updates() {
@@ -340,6 +342,7 @@ pub(super) async fn sse_stream(
                     exposure,
                     #[cfg(feature = "config")]
                     config.as_ref(),
+                    &ctx,
                 ) {
                     Ok((_snapshot, mut view)) => {
                         if exposure.updates() {

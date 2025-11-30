@@ -11,7 +11,7 @@ use anyhow::{bail, Result};
 #[cfg(feature = "net")]
 use describe_me::domain::{ListeningSocket, NetworkInterfaceTraffic};
 use describe_me::{
-    paginate_slice, HistoryMode, HistoryProfile, HistorySettings, LogEvent, PageRequest,
+    paginate_slice, AppContext, HistoryMode, HistoryProfile, HistorySettings, LogEvent, PageRequest,
 };
 #[cfg(all(unix, feature = "cli"))]
 use nix::unistd::Uid;
@@ -68,19 +68,19 @@ fn summary_line(view: &describe_me::SnapshotView) -> String {
     format!("updates={pending} reboot={reboot}{containers}")
 }
 
-fn handle_command(cmd: CliCommand) -> Result<()> {
+fn handle_command(cmd: CliCommand, ctx: &AppContext) -> Result<()> {
     match cmd {
-        CliCommand::Metadata(metadata) => handle_metadata_command(metadata),
+        CliCommand::Metadata(metadata) => handle_metadata_command(metadata, ctx),
         CliCommand::Plugin(plugin) => handle_plugin_command(plugin),
-        CliCommand::History(history) => handle_history_command(history),
+        CliCommand::History(history) => handle_history_command(history, ctx),
         CliCommand::Logs(logs) => handle_logs_command(logs),
     }
 }
 
-fn handle_metadata_command(cmd: MetadataCommand) -> Result<()> {
+fn handle_metadata_command(cmd: MetadataCommand, ctx: &AppContext) -> Result<()> {
     match cmd {
-        MetadataCommand::Description(action) => handle_description_command(action),
-        MetadataCommand::Tags(action) => handle_tags_command(action),
+        MetadataCommand::Description(action) => handle_description_command(action, ctx),
+        MetadataCommand::Tags(action) => handle_tags_command(action, ctx),
     }
 }
 
@@ -90,31 +90,31 @@ fn handle_plugin_command(cmd: PluginCommand) -> Result<()> {
     }
 }
 
-fn handle_description_command(cmd: DescriptionCommand) -> Result<()> {
+fn handle_description_command(cmd: DescriptionCommand, ctx: &AppContext) -> Result<()> {
     match cmd {
         DescriptionCommand::Show => {
-            if let Some(desc) = describe_me::load_server_description()? {
+            if let Some(desc) = describe_me::load_server_description_with(ctx)? {
                 println!("{desc}");
             } else {
                 println!("(aucune description stockée)");
             }
         }
         DescriptionCommand::Set { text } => {
-            describe_me::set_server_description(&text)?;
+            describe_me::set_server_description_with(ctx, &text)?;
             println!("Description enregistrée.");
         }
         DescriptionCommand::Clear => {
-            describe_me::clear_server_description()?;
+            describe_me::clear_server_description_with(ctx)?;
             println!("Description supprimée.");
         }
     }
     Ok(())
 }
 
-fn handle_tags_command(cmd: TagsCommand) -> Result<()> {
+fn handle_tags_command(cmd: TagsCommand, ctx: &AppContext) -> Result<()> {
     match cmd {
         TagsCommand::Show => {
-            let tags = describe_me::load_server_tags()?;
+            let tags = describe_me::load_server_tags_with(ctx)?;
             if tags.is_empty() {
                 println!("(aucun tag configuré)");
             } else {
@@ -122,7 +122,7 @@ fn handle_tags_command(cmd: TagsCommand) -> Result<()> {
             }
         }
         TagsCommand::Set { tags } => {
-            let normalized = describe_me::set_server_tags(&tags)?;
+            let normalized = describe_me::set_server_tags_with(ctx, &tags)?;
             if normalized.is_empty() {
                 println!("Aucun tag valide fourni, liste nettoyée.");
             } else {
@@ -130,11 +130,11 @@ fn handle_tags_command(cmd: TagsCommand) -> Result<()> {
             }
         }
         TagsCommand::Add { tags } => {
-            let normalized = describe_me::add_server_tags(&tags)?;
+            let normalized = describe_me::add_server_tags_with(ctx, &tags)?;
             println!("Tags actuels: {}", normalized.join(", "));
         }
         TagsCommand::Remove { tags } => {
-            let normalized = describe_me::remove_server_tags(&tags)?;
+            let normalized = describe_me::remove_server_tags_with(ctx, &tags)?;
             if normalized.is_empty() {
                 println!("Plus aucun tag défini.");
             } else {
@@ -142,22 +142,22 @@ fn handle_tags_command(cmd: TagsCommand) -> Result<()> {
             }
         }
         TagsCommand::Clear => {
-            describe_me::clear_server_tags()?;
+            describe_me::clear_server_tags_with(ctx)?;
             println!("Tags supprimés.");
         }
     }
     Ok(())
 }
 
-fn handle_history_command(cmd: HistoryCommand) -> Result<()> {
-    let settings = describe_me::history_settings_snapshot();
+fn handle_history_command(cmd: HistoryCommand, ctx: &AppContext) -> Result<()> {
+    let settings = ctx.history().settings_snapshot();
     if !settings.is_active() {
         bail!("L'historique n'est pas activé sur cette instance.");
     }
 
     let server_id = if let Some(id) = cmd.server {
         id
-    } else if let Some(default_id) = describe_me::history_default_server_id() {
+    } else if let Some(default_id) = ctx.history().default_server_id() {
         default_id
     } else {
         bail!("Aucun identifiant serveur n'est disponible (aucun snapshot capturé ?).");
@@ -174,7 +174,7 @@ fn handle_history_command(cmd: HistoryCommand) -> Result<()> {
         .min(retention_cap)
         .max(1);
 
-    let series = match describe_me::history_query_series(
+    let series = match ctx.history().query_series(
         &server_id,
         Duration::from_secs(window_secs),
         limit,
@@ -542,8 +542,10 @@ fn main() -> Result<()> {
         }
     }
 
+    let ctx = AppContext::new_default()?;
+
     if let Some(cmd) = cli.command.take() {
-        return handle_command(cmd);
+        return handle_command(cmd, &ctx);
     }
 
     let mut allow_config_exposure = cli.allow_config_exposure;
@@ -670,7 +672,7 @@ fn main() -> Result<()> {
         history_settings.set_retention_points(retention);
     }
 
-    describe_me::configure_history(history_settings)?;
+    ctx.history().configure(history_settings)?;
 
     #[cfg(all(feature = "web", feature = "config"))]
     let web_cfg = cfg.as_ref().and_then(|cfg| cfg.web.as_ref());
@@ -854,6 +856,7 @@ fn main() -> Result<()> {
         exposure,
         #[cfg(feature = "config")]
         cfg.as_ref(),
+        &ctx,
     )?;
 
     let output_format = cli.output.format();
