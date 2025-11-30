@@ -1,11 +1,13 @@
 use describe_me::{
     ContainersPluginExitCode, CONTAINERS_CONTRACT_VERSION, CONTAINERS_PLUGIN_TIMEOUT,
 };
-use describe_me_plugin_sdk::{LaunchContext, PluginOutput};
+use describe_me_plugin_sdk::{
+    run_plugin, PluginConfig, PluginErrorReport, PluginOutput, PluginResult,
+};
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::os::unix::fs::FileTypeExt;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -49,66 +51,31 @@ enum CollectError {
     Unexpected(String),
 }
 
-fn main() {
-    let code = match run() {
-        Ok(()) => ContainersPluginExitCode::Success,
-        Err(err) => {
-            let (code, msg) = match err {
-                CollectError::NoRuntime => (
-                    ContainersPluginExitCode::NoRuntime,
-                    "aucun runtime détecté".to_string(),
-                ),
-                CollectError::Permission(msg) => (ContainersPluginExitCode::PermissionDenied, msg),
-                CollectError::Unavailable(msg) => {
-                    (ContainersPluginExitCode::RuntimeUnavailable, msg)
-                }
-                CollectError::Unexpected(msg) => (ContainersPluginExitCode::Unexpected, msg),
-            };
-            eprintln!("describe-me-plugin-containers: {msg}");
-            code
+impl From<CollectError> for PluginErrorReport {
+    fn from(err: CollectError) -> Self {
+        match err {
+            CollectError::NoRuntime => PluginErrorReport::new("aucun runtime détecté")
+                .with_exit_code(ContainersPluginExitCode::NoRuntime.as_i32()),
+            CollectError::Permission(msg) => PluginErrorReport::new(msg)
+                .with_exit_code(ContainersPluginExitCode::PermissionDenied.as_i32()),
+            CollectError::Unavailable(msg) => PluginErrorReport::new(msg)
+                .with_exit_code(ContainersPluginExitCode::RuntimeUnavailable.as_i32()),
+            CollectError::Unexpected(msg) => PluginErrorReport::new(msg)
+                .with_exit_code(ContainersPluginExitCode::Unexpected.as_i32()),
         }
-    };
-    std::process::exit(code.as_i32());
+    }
 }
 
-fn run() -> Result<(), CollectError> {
-    let ctx = LaunchContext::from_env().map_err(|e| CollectError::Unexpected(e.to_string()))?;
-    validate_launch(&ctx)?;
-    ensure_non_root().map_err(|err| {
-        eprintln!("describe-me-plugin-containers: {:?}", err);
-        err
-    })?;
-
-    let output = collect_all_runtimes()?;
-    let mut stdout = io::stdout().lock();
-    serde_json::to_writer(&mut stdout, &output)
-        .map_err(|e| CollectError::Unexpected(format!("serialize: {e}")))?;
-    stdout
-        .flush()
-        .map_err(|e| CollectError::Unexpected(format!("flush: {e}")))?;
-    Ok(())
+fn main() {
+    let config = PluginConfig::new("containers")
+        .with_error_prefix("describe-me-plugin-containers")
+        .with_default_exit_code(ContainersPluginExitCode::Unexpected.as_i32());
+    run_plugin(config, |_ctx| collect());
 }
 
-fn validate_launch(ctx: &LaunchContext) -> Result<(), CollectError> {
-    if ctx.host != "describe_me" {
-        return Err(CollectError::Unexpected("lançeur inconnu".to_string()));
-    }
-    if ctx.proto != "v1" {
-        return Err(CollectError::Unexpected(
-            "proto plugin non supporté".to_string(),
-        ));
-    }
-    if ctx.token.is_empty() {
-        return Err(CollectError::Unexpected(
-            "jeton d'initialisation manquant".to_string(),
-        ));
-    }
-    if ctx.plugin_name != "containers" {
-        return Err(CollectError::Unexpected(
-            "nom de plugin inattendu".to_string(),
-        ));
-    }
-    Ok(())
+fn collect() -> PluginResult<PluginOutput> {
+    ensure_non_root()?;
+    collect_all_runtimes().map_err(PluginErrorReport::from)
 }
 
 fn collect_all_runtimes() -> Result<PluginOutput, CollectError> {
@@ -158,11 +125,10 @@ fn collect_all_runtimes() -> Result<PluginOutput, CollectError> {
         containers_json.push(value);
     }
 
-    let mut output = PluginOutput::new();
-    output.insert("version", CONTAINERS_CONTRACT_VERSION);
-    output.insert("summary", json!({"total": total, "running": running}));
-    output.insert("containers", json!(containers_json));
-    Ok(output)
+    Ok(PluginOutput::new()
+        .with_version(CONTAINERS_CONTRACT_VERSION)
+        .with("summary", json!({"total": total, "running": running}))
+        .with("containers", json!(containers_json)))
 }
 
 fn collect_runtime(rt: &RuntimeSpec) -> Result<RuntimeContainers, CollectError> {
