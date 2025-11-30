@@ -30,6 +30,7 @@ use super::{
     security::AuthGuard,
     set_session_cookie,
     template::{render_containers_page, render_index, render_logs_page, render_updates_page},
+    views::{ContainersViewModel, IndexViewModel, LogsViewModel, UpdatesViewModel},
     AppState, CspNonce,
 };
 
@@ -125,7 +126,11 @@ pub(super) async fn index(
     Extension(csp_nonce): Extension<CspNonce>,
 ) -> impl IntoResponse {
     let session = guard.into_session();
-    let mut response = Html(render_index(state.web_debug, csp_nonce.as_str())).into_response();
+    let vm = IndexViewModel {
+        web_debug: state.web_debug,
+        csp_nonce: csp_nonce.as_str(),
+    };
+    let mut response = Html(render_index(&vm)).into_response();
     if let Some(token) = session.session_cookie() {
         set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
     }
@@ -143,7 +148,12 @@ pub(super) async fn updates_page(
 
     if !state.exposure.updates() {
         let message = "L'exposition des mises à jour est désactivée pour cette instance.";
-        let html = render_updates_page(None, Some(message), csp_nonce.as_str());
+        let vm = UpdatesViewModel {
+            updates: None,
+            message: Some(message),
+            csp_nonce: csp_nonce.as_str(),
+        };
+        let html = render_updates_page(&vm);
         let mut response = Html(html).into_response();
         if let Some(token) = cookie_token.as_deref() {
             set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
@@ -157,7 +167,12 @@ pub(super) async fn updates_page(
         None => state.updates_cache.refresh_blocking().await,
     };
 
-    let html = render_updates_page(updates.as_ref(), None, csp_nonce.as_str());
+    let vm = UpdatesViewModel {
+        updates: updates.as_ref(),
+        message: None,
+        csp_nonce: csp_nonce.as_str(),
+    };
+    let html = render_updates_page(&vm);
     let mut response = Html(html).into_response();
     if let Some(token) = cookie_token.as_deref() {
         set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
@@ -395,7 +410,10 @@ pub(super) async fn logs_page(
     Extension(csp_nonce): Extension<CspNonce>,
 ) -> impl IntoResponse {
     let session = guard.into_session();
-    let mut response = Html(render_logs_page(csp_nonce.as_str())).into_response();
+    let vm = LogsViewModel {
+        csp_nonce: csp_nonce.as_str(),
+    };
+    let mut response = Html(render_logs_page(&vm)).into_response();
     if let Some(token) = session.session_cookie() {
         set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
     }
@@ -409,7 +427,10 @@ pub(super) async fn containers_page(
     Extension(csp_nonce): Extension<CspNonce>,
 ) -> impl IntoResponse {
     let session = guard.into_session();
-    let mut response = Html(render_containers_page(csp_nonce.as_str())).into_response();
+    let vm = ContainersViewModel {
+        csp_nonce: csp_nonce.as_str(),
+    };
+    let mut response = Html(render_containers_page(&vm)).into_response();
     if let Some(token) = session.session_cookie() {
         set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
     }
