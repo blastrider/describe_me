@@ -64,7 +64,7 @@ use crate::domain::{DescribeConfig, WebSecurityConfig};
 
 use handlers::{
     containers_api, containers_page, history_series, host_logs, index, logo_asset, logs_page,
-    update_description, update_tags, updates_page,
+    metrics_export, update_description, update_tags, updates_page,
 };
 use security::WebSecurity;
 use sse::sse_stream;
@@ -666,6 +666,7 @@ pub async fn serve_http_with_context<A: Into<SocketAddr>>(
         .route("/container", get(containers_page))
         .route("/logs", get(logs_page))
         .route("/sse", get(sse_stream))
+        .route("/metrics", get(metrics_export))
         .route("/api/containers", get(containers_api))
         .route("/api/history", get(history_series))
         .route("/api/logs", get(host_logs))
