@@ -380,7 +380,7 @@ impl WebRoute {
     pub fn from_path(path: &str) -> Self {
         if path == "/sse" {
             WebRoute::Sse
-        } else if path.starts_with("/api/logs") || path == "/logs" {
+        } else if path.starts_with("/api/logs") || path == "/logs" || path == "/metrics" {
             WebRoute::Logs
         } else if path.starts_with("/api/history") {
             WebRoute::History
