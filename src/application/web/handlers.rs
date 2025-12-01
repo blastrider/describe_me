@@ -5,8 +5,9 @@
 use std::{borrow::Cow, time::Duration};
 
 use axum::{
+    body::Body,
     extract::{Extension, Query, State},
-    http::StatusCode,
+    http::{header, HeaderValue, StatusCode},
     response::{Html, IntoResponse, Response},
     Json,
 };
@@ -21,6 +22,7 @@ use crate::{
             add_server_tags_with, clear_server_tags_with, remove_server_tags_with,
             set_server_description_with, set_server_tags_with,
         },
+        metrics::render_prometheus_metrics,
     },
     domain::{ContainersSnapshot, DescribeError},
 };
@@ -402,6 +404,35 @@ pub(super) async fn containers_api(
         Json(ContainersApiResponse { age_ms, containers }),
     )
         .into_response()
+}
+
+pub(super) async fn metrics_export(
+    State(state): State<AppState>,
+    _guard: AuthGuard,
+) -> impl IntoResponse {
+    let content_type = HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8");
+    let unavailable = "\
+# HELP describe_me_up 1 if last snapshot is available
+# TYPE describe_me_up gauge
+describe_me_up 0
+";
+
+    let Some(cached) = state.latest_snapshot() else {
+        return Response::builder()
+            .status(StatusCode::SERVICE_UNAVAILABLE)
+            .header(header::CONTENT_TYPE, content_type.clone())
+            .body(Body::from(unavailable))
+            .unwrap_or_else(|_| StatusCode::SERVICE_UNAVAILABLE.into_response());
+    };
+
+    let age_secs = cached.captured_at.elapsed().as_secs();
+    let payload = render_prometheus_metrics(&cached.view, age_secs);
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, content_type)
+        .body(Body::from(payload))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
 pub(super) async fn logs_page(
