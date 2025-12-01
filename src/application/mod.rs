@@ -203,4 +203,5 @@ pub mod history;
 pub mod logging;
 pub mod logs;
 pub mod metadata;
+pub mod metrics;
 pub mod pagination;
