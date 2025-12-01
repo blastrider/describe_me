@@ -266,6 +266,78 @@ async fn containers_api_returns_cached_snapshot() {
 }
 
 #[tokio::test]
+async fn metrics_return_503_when_missing_snapshot() {
+    let exposure = Exposure::all();
+    let state = test_app_state(exposure);
+    let guard = super::security::make_test_guard(super::security::WebRoute::Logs);
+
+    let response = handlers::metrics_export(State(state), guard)
+        .await
+        .into_response();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body bytes");
+    let text = std::str::from_utf8(&body).expect("utf8");
+    assert!(text.contains("describe_me_up 0"));
+}
+
+#[tokio::test]
+async fn metrics_return_cached_snapshot() {
+    use crate::application::exposure::SnapshotView;
+    use crate::domain::{DiskUsage, SystemSnapshot};
+    use crate::shared::SharedSlice;
+
+    let exposure = Exposure::all();
+    let snapshot = SystemSnapshot {
+        hostname: "host".into(),
+        os: None,
+        kernel: None,
+        uptime_seconds: 100,
+        cpu_count: 4,
+        load_average: (1.0, 0.5, 0.25),
+        total_memory_bytes: 1024,
+        used_memory_bytes: 256,
+        total_swap_bytes: 128,
+        used_swap_bytes: 32,
+        disk_usage: Some(DiskUsage {
+            total_bytes: 10_000,
+            available_bytes: 6_000,
+            used_bytes: 4_000,
+            partitions: SharedSlice::from_vec(Vec::new()),
+        }),
+        #[cfg(feature = "systemd")]
+        services_running: SharedSlice::from_vec(Vec::new()),
+        #[cfg(feature = "net")]
+        listening_sockets: None,
+        #[cfg(feature = "net")]
+        network_traffic: None,
+        containers: None,
+        updates: None,
+        extensions: None,
+    };
+
+    let mut view = SnapshotView::new(&snapshot, exposure);
+    view.server_description = None;
+
+    let state = test_app_state(exposure);
+    state.cache_snapshot(view);
+
+    let guard = super::security::make_test_guard(super::security::WebRoute::Logs);
+    let response = handlers::metrics_export(State(state), guard)
+        .await
+        .into_response();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body bytes");
+    let text = std::str::from_utf8(&body).expect("utf8");
+    assert!(text.contains("describe_me_cpu_count 4"));
+    assert!(text.contains("describe_me_snapshot_age_seconds"));
+    assert!(text.contains("describe_me_disk_bytes_total 10000"));
+}
+
+#[tokio::test]
 async fn containers_page_renders_html() {
     let exposure = Exposure::all();
     let state = test_app_state(exposure);
