@@ -5,7 +5,7 @@ mod sse;
 
 pub(crate) use limits::GlobalPermit;
 
-use super::{clear_session_cookie, template, AppState, CspNonce, WebAccess};
+use super::{clear_session_cookie, set_session_cookie, template, AppState, CspNonce, WebAccess};
 use auth::{build_request, verify_token, AuthRequest, CredentialOverride, TokenVerifier};
 use limits::{enforce_rate_limits, ensure_not_blocked, SecurityPolicy, SecurityState};
 use session::SessionManager;
@@ -18,7 +18,7 @@ use crate::domain::WebSecurityConfig;
 use axum::{
     async_trait,
     extract::FromRequestParts,
-    http::{header, header::HeaderValue, request::Parts, StatusCode},
+    http::{header, header::HeaderValue, request::Parts, HeaderMap, StatusCode},
     response::{Html, IntoResponse, Response},
 };
 pub(crate) use sse::SsePermit;
@@ -77,6 +77,21 @@ pub(super) struct AuthGuard {
 impl AuthGuard {
     pub fn into_session(self) -> AuthSession {
         self.session
+    }
+}
+
+pub(super) fn attach_session_cookie(
+    headers: &mut HeaderMap,
+    session: &AuthSession,
+    state: &AppState,
+) {
+    if let Some(cookie) = session.session_cookie() {
+        set_session_cookie(
+            headers,
+            cookie,
+            state.session_ttl,
+            state.session_cookie_secure,
+        );
     }
 }
 
@@ -222,6 +237,10 @@ impl WebSecurity {
 
     pub fn policy(&self) -> &SecurityPolicy {
         &self.policy
+    }
+
+    pub fn session_ttl(&self) -> Duration {
+        self.sessions.ttl()
     }
 
     fn log_incident(&self, category: &'static str, request: &AuthRequest, detail: Option<String>) {
@@ -729,7 +748,7 @@ impl IpMatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::application::web::SESSION_COOKIE_NAME;
+    use crate::application::web::{SESSION_COOKIE_NAME, WEB_SESSION_SECONDS};
     #[cfg(feature = "config")]
     use crate::domain::WebSecurityConfig;
     use axum::extract::ConnectInfo;
@@ -822,7 +841,13 @@ mod tests {
         assert_eq!(low.sessions.ttl_for_tests(), Duration::from_secs(60));
 
         let high = security_with_session_ttl(7200);
-        assert_eq!(high.sessions.ttl_for_tests(), Duration::from_secs(3600));
+        assert_eq!(high.sessions.ttl_for_tests(), Duration::from_secs(7200));
+
+        let capped = security_with_session_ttl(1_000_000);
+        assert_eq!(
+            capped.sessions.ttl_for_tests(),
+            Duration::from_secs(WEB_SESSION_SECONDS)
+        );
     }
 
     #[tokio::test]
@@ -941,6 +966,34 @@ mod tests {
             .await
             .expect_err("invalid session should be rejected");
         assert_eq!(err.status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn authorize_accepts_session_cookie_on_sse() {
+        let hash = cached_hash();
+        let security = build_security(Some(hash));
+        let login_parts = make_parts("/", IpAddr::V4(Ipv4Addr::LOCALHOST), None);
+        let session = security
+            .login(&login_parts, "secret", WebRoute::Html)
+            .await
+            .expect("login should succeed");
+        let cookie = session
+            .session_cookie()
+            .expect("session cookie issued")
+            .to_string();
+        let encoded = utf8_percent_encode(&cookie, NON_ALPHANUMERIC).to_string();
+
+        let mut sse_parts = make_parts("/sse", IpAddr::V4(Ipv4Addr::LOCALHOST), None);
+        sse_parts.headers.insert(
+            axum::http::header::COOKIE,
+            format!("{SESSION_COOKIE_NAME}={encoded}").parse().unwrap(),
+        );
+
+        let guard = security
+            .authorize(&sse_parts, WebRoute::Sse)
+            .await
+            .expect("session cookie should authenticate SSE");
+        assert_eq!(guard.token_key(), TokenKey::from_value("secret"));
     }
 
     use std::collections::HashMap;
