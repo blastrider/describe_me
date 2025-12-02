@@ -22,12 +22,8 @@
   }
 
   async function fetchLogs(lines) {
-    const headers = {};
-    if (typeof currentToken === "string" && currentToken) {
-      headers["Authorization"] = `Bearer ${currentToken}`;
-    }
     const url = `${ENDPOINT}?lines=${lines}`;
-    const res = await fetch(url, { headers, credentials: "same-origin" });
+    const res = await fetch(url, { credentials: "same-origin" });
 
     if (res.status === 401) {
       throw new Error("auth");
