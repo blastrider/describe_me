@@ -64,6 +64,18 @@ async function loadContainers() {
 
   try {
     const resp = await fetch('/api/containers', { credentials: 'same-origin' });
+    if (resp.status === 401) {
+      list.innerHTML = '';
+      list.appendChild(createEmpty("Jeton requis pour accéder aux conteneurs."));
+      if (errorEl) {
+        errorEl.hidden = false;
+        errorEl.textContent = "Authentifiez-vous pour consulter les conteneurs.";
+      }
+      if (typeof showTokenPrompt === "function") {
+        showTokenPrompt("Jeton requis pour accéder aux conteneurs.");
+      }
+      return;
+    }
     if (resp.status === 403) {
       list.innerHTML = '';
       list.appendChild(createEmpty("Les conteneurs ne sont pas exposés sur cette instance."));
