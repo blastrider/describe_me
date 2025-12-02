@@ -21,6 +21,7 @@
 //!   ).await?;
 
 mod assets;
+mod auth;
 mod handlers;
 mod security;
 mod sse;
@@ -57,6 +58,7 @@ use tracing::warn;
 use crate::application::context::AppContext;
 use crate::application::exposure::{Exposure, SnapshotView};
 use crate::application::logging::LogEvent;
+#[cfg(feature = "config")]
 use crate::application::metadata::override_state_directory;
 use crate::domain::DescribeError;
 #[cfg(feature = "config")]
@@ -75,13 +77,10 @@ use std::future::pending;
 #[cfg(unix)]
 use tokio::signal::unix::{signal as unix_signal, SignalKind};
 
+pub(crate) use auth::{clear_session_cookie, set_session_cookie, SESSION_COOKIE_NAME};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use rand_core::{OsRng, RngCore};
-
-pub(crate) const TOKEN_COOKIE_NAME: &str = "describe_me_token";
-pub(crate) const SESSION_COOKIE_NAME: &str = "describe_me_session";
-const TOKEN_COOKIE_MAX_AGE: u32 = 7 * 24 * 3600;
 const UPDATES_CACHE_SUCCESS_TTL: Duration = Duration::from_secs(300);
 const UPDATES_CACHE_FAILURE_RETRY: Duration = Duration::from_secs(60);
 const DESCRIPTION_MAX_BYTES: usize = 2048;
@@ -597,7 +596,7 @@ pub async fn serve_http_with_context<A: Into<SocketAddr>>(
 ) -> Result<(), DescribeError> {
     let origin_policy = OriginPolicy::from_allowlist(access.allow_origins.clone())?;
     let tls_settings = access.tls.clone();
-    let session_cookie_secure = access.session_cookie_secure;
+    let session_cookie_secure = access.session_cookie_secure && tls_settings.is_some();
     #[cfg(feature = "config")]
     let security_config: Option<WebSecurityConfig> = config
         .as_ref()
@@ -661,6 +660,8 @@ pub async fn serve_http_with_context<A: Into<SocketAddr>>(
 
     let router = Router::new()
         .route("/", get(index))
+        .route("/auth/login", post(auth::login))
+        .route("/auth/logout", post(auth::logout))
         .route("/assets/logo.svg", get(logo_asset))
         .route("/updates", get(updates_page))
         .route("/container", get(containers_page))
@@ -813,43 +814,6 @@ async fn build_rustls_config(cfg: &WebTlsConfig) -> Result<RustlsConfig, Describ
     RustlsConfig::from_pem_file(cert, key)
         .await
         .map_err(|err| DescribeError::Config(format!("chargement TLS {cert}/{key}: {err}")))
-}
-
-pub(super) fn set_session_cookie(headers: &mut HeaderMap, value: &str, secure: bool) {
-    if value.is_empty() {
-        return;
-    }
-    use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
-    let encoded = utf8_percent_encode(value, NON_ALPHANUMERIC).to_string();
-    let mut suffix = String::from("; HttpOnly");
-    if secure {
-        suffix.push_str("; Secure");
-    }
-    let cookie = format!(
-        "{name}={value}; Path=/; Max-Age={max_age}; SameSite=Strict{suffix}",
-        name = SESSION_COOKIE_NAME,
-        value = encoded,
-        max_age = TOKEN_COOKIE_MAX_AGE,
-        suffix = suffix
-    );
-    if let Ok(value) = HeaderValue::from_str(&cookie) {
-        headers.append(header::SET_COOKIE, value);
-    }
-}
-
-pub(crate) fn clear_session_cookie(headers: &mut HeaderMap, secure: bool) {
-    let mut suffix = String::from("; HttpOnly");
-    if secure {
-        suffix.push_str("; Secure");
-    }
-    let cookie = format!(
-        "{name}=deleted; Path=/; Max-Age=0; SameSite=Strict{suffix}",
-        name = SESSION_COOKIE_NAME,
-        suffix = suffix
-    );
-    if let Ok(value) = HeaderValue::from_str(&cookie) {
-        headers.append(header::SET_COOKIE, value);
-    }
 }
 
 #[cfg(test)]
