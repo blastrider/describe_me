@@ -501,7 +501,7 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
         TOKEN_HASH="${WEB_TOKEN_HASH_INPUT}"
         if [ -z "${TOKEN_HASH}" ]; then
           TOKEN_SRC=${WEB_TOKEN_INPUT:-vagrant}
-          TOKEN_HASH="$(${BIN_PATH} --hash-web-token "${TOKEN_SRC}" 2>/dev/null || true)"
+          TOKEN_HASH="$(${BIN_PATH} --hash-web-token "${TOKEN_SRC}" --hash-web-token-alg bcrypt 2>/dev/null || true)"
         fi
         if [ -z "${TOKEN_HASH}" ]; then
           echo "ERROR: token hash is empty. Provide WEB_TOKEN_HASH=\"<argon2/bcrypt>\" or WEB_TOKEN=<secret> to generate one."
@@ -523,7 +523,7 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
 
         [web]
         token = "${TOKEN_HASH}"
-        allow_ips = ["127.0.0.1", "::1", "192.168.56.0/24"]
+        allow_ips = ["127.0.0.1", "::1", "192.168.56.0/24", "10.0.2.0/24"]
         allow_origins = ["${ORIGIN}", "${ORIGIN_HOST}"]
         trusted_proxies = ["${HOST_IP}"]
         updates_refresh_seconds = 20
