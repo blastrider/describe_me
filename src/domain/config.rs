@@ -330,9 +330,9 @@ impl RouteLimitConfig {
     pub const fn history_default() -> Self {
         Self {
             window_seconds: 60,
-            per_ip: 6,
-            per_token: 4,
-            global: 40,
+            per_ip: 24,
+            per_token: 16,
+            global: 120,
         }
     }
 
