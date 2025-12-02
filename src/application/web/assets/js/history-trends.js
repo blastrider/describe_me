@@ -74,13 +74,8 @@
     const params = new URLSearchParams();
     params.set("window", HISTORY_WINDOW.toString());
     params.set("limit", HISTORY_LIMIT.toString());
-    const headers = {};
-    if (typeof currentToken === "string" && currentToken.trim().length > 0) {
-      headers["Authorization"] = `Bearer ${currentToken}`;
-    }
     pendingFetch = fetch(`${API_ENDPOINT}?${params.toString()}`, {
       method: "GET",
-      headers,
       credentials: "same-origin",
     })
       .then(async (response) => {
