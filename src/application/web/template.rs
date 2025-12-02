@@ -43,7 +43,12 @@ __INLINE_CSS__
     <div class="token-dialog">
       <h2>Authentification requise</h2>
       <p>__MESSAGE__</p>
-      <p>Présentez un jeton via l'en-tête <code>Authorization</code> (Bearer) ou rechargez cette page avec un jeton valide.</p>
+      <form method="post" action="/auth/login" class="token-form" style="display:flex;flex-direction:column;gap:10px;margin:12px 0;">
+        <label for="tokenInputPage">Jeton d'accès</label>
+        <input id="tokenInputPage" name="token" type="password" autocomplete="off" required />
+        <button type="submit" class="primary-button">Continuer</button>
+      </form>
+      <p>Présentez un jeton via l'en-tête <code>Authorization</code> (Bearer) ou utilisez le formulaire ci-dessus.</p>
     </div>
   </div>
 </body>
