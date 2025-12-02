@@ -8,18 +8,18 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::application::web::WEB_SESSION_SECONDS;
+
 pub(super) const SESSION_COOKIE_PREFIX: &str = "sess:v1:";
-const SESSION_TTL_DEFAULT: Duration = Duration::from_secs(180);
+const SESSION_TTL_DEFAULT: Duration = Duration::from_secs(WEB_SESSION_SECONDS);
 const SESSION_TTL_MIN: Duration = Duration::from_secs(60);
-const SESSION_TTL_MAX: Duration = Duration::from_secs(3600);
-const REPLAY_TTL_DEFAULT: Duration = Duration::from_secs(120);
+const SESSION_TTL_MAX: Duration = Duration::from_secs(WEB_SESSION_SECONDS);
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone)]
 pub(super) struct SessionManager {
     inner: Arc<Mutex<SessionStore>>,
     session_ttl: Duration,
-    replay_ttl: Duration,
 }
 
 impl SessionManager {
@@ -29,11 +29,9 @@ impl SessionManager {
 
     pub(super) fn with_ttl(session_ttl: Duration) -> Self {
         let ttl = clamp_session_ttl(session_ttl);
-        let replay = std::cmp::min(REPLAY_TTL_DEFAULT, ttl);
         Self {
             inner: Arc::new(Mutex::new(SessionStore::new())),
             session_ttl: ttl,
-            replay_ttl: replay,
         }
     }
 
@@ -55,7 +53,6 @@ impl SessionManager {
             SessionEntry {
                 token,
                 expires_at: now.checked_add(self.session_ttl).unwrap_or(now),
-                used: false,
             },
         );
 
@@ -80,9 +77,6 @@ impl SessionManager {
                     store.entries.remove(id);
                     return Err(SessionError::Expired);
                 }
-                if entry.used {
-                    return Err(SessionError::Replay);
-                }
                 Ok(SessionCandidate {
                     id: id.to_owned(),
                     token: entry.token,
@@ -101,15 +95,15 @@ impl SessionManager {
                     store.entries.remove(id);
                     return Err(SessionError::Expired);
                 }
-                if entry.used {
-                    return Err(SessionError::Replay);
-                }
-                entry.used = true;
-                entry.expires_at = now.checked_add(self.replay_ttl).unwrap_or(now);
+                entry.expires_at = now.checked_add(self.session_ttl).unwrap_or(now);
                 Ok(())
             }
             None => Err(SessionError::Unknown),
         }
+    }
+
+    pub(super) fn ttl(&self) -> Duration {
+        self.session_ttl
     }
 
     #[cfg(test)]
@@ -145,7 +139,6 @@ impl SessionStore {
 struct SessionEntry {
     token: TokenKey,
     expires_at: Instant,
-    used: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -169,7 +162,6 @@ pub(super) enum SessionError {
     InvalidFormat,
     Unknown,
     Expired,
-    Replay,
 }
 
 fn clamp_session_ttl(ttl: Duration) -> Duration {
@@ -179,5 +171,60 @@ fn clamp_session_ttl(ttl: Duration) -> Duration {
         SESSION_TTL_MAX
     } else {
         ttl
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_can_be_reused_until_expiry() {
+        let ttl = Duration::from_secs(120);
+        let manager = SessionManager::with_ttl(ttl);
+        let start = Instant::now();
+        let cookie = manager.issue(TokenKey::Anonymous, start);
+
+        // first usage
+        let t1 = start + Duration::from_secs(30);
+        let candidate1 = manager.lookup(&cookie, t1).expect("lookup 1");
+        manager.consume(candidate1.id(), t1).expect("consume 1");
+
+        // reuse same session id
+        let t2 = t1 + Duration::from_secs(30);
+        let candidate2 = manager.lookup(&cookie, t2).expect("lookup 2");
+        manager.consume(candidate2.id(), t2).expect("consume 2");
+
+        // still valid shortly before expiry
+        let t3 = t2 + Duration::from_secs(40);
+        let candidate3 = manager.lookup(&cookie, t3).expect("lookup 3");
+        manager.consume(candidate3.id(), t3).expect("consume 3");
+
+        // long after ttl, session must expire
+        let late = start + Duration::from_secs(500);
+        assert!(manager.lookup(&cookie, late).is_err());
+    }
+
+    #[test]
+    fn consume_extends_expiry_sliding_window() {
+        let ttl = Duration::from_secs(90);
+        let manager = SessionManager::with_ttl(ttl);
+        let start = Instant::now();
+        let cookie = manager.issue(TokenKey::Anonymous, start);
+
+        // Touch near the end of the first window to extend it.
+        let near_expiry = start + Duration::from_secs(80);
+        let candidate = manager
+            .lookup(&cookie, near_expiry)
+            .expect("lookup before expiry");
+        manager
+            .consume(candidate.id(), near_expiry)
+            .expect("consume refresh");
+
+        // After refresh, the session should still be valid well past the original expiry.
+        let refreshed = start + Duration::from_secs(150);
+        manager
+            .lookup(&cookie, refreshed)
+            .expect("lookup after sliding refresh");
     }
 }
