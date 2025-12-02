@@ -8,15 +8,18 @@ use axum::{
 use serde::Deserialize;
 
 use super::{
-    security::{SecurityRejection, WebRoute},
+    security::{attach_session_cookie, SecurityRejection, WebRoute},
     AppState, AxumRequest,
 };
 
-const TOKEN_COOKIE_MAX_AGE: u32 = 7 * 24 * 3600;
-
 pub(crate) const SESSION_COOKIE_NAME: &str = "describe_me_session";
 
-pub(crate) fn set_session_cookie(headers: &mut HeaderMap, value: &str, secure: bool) {
+pub(crate) fn set_session_cookie(
+    headers: &mut HeaderMap,
+    value: &str,
+    max_age: std::time::Duration,
+    secure: bool,
+) {
     if value.is_empty() {
         return;
     }
@@ -27,11 +30,12 @@ pub(crate) fn set_session_cookie(headers: &mut HeaderMap, value: &str, secure: b
     if secure {
         suffix.push_str("; Secure");
     }
+    let max_age_secs = max_age.as_secs().clamp(1, u64::from(u32::MAX));
     let cookie = format!(
         "{name}={value}; Path=/; Max-Age={max_age}{suffix}",
         name = SESSION_COOKIE_NAME,
         value = encoded,
-        max_age = TOKEN_COOKIE_MAX_AGE,
+        max_age = max_age_secs,
         suffix = suffix
     );
     if let Ok(value) = HeaderValue::from_str(&cookie) {
@@ -86,9 +90,7 @@ pub(super) async fn login(State(state): State<AppState>, request: AxumRequest) -
     match state.security.login(&parts, &token, WebRoute::Html).await {
         Ok(session) => {
             let mut response = Redirect::to("/").into_response();
-            if let Some(cookie) = session.session_cookie() {
-                set_session_cookie(response.headers_mut(), cookie, state.session_cookie_secure);
-            }
+            attach_session_cookie(response.headers_mut(), &session, &state);
             response
         }
         Err(rejection) => auth_error_response(rejection, state.session_cookie_secure),
