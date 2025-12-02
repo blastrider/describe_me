@@ -63,3 +63,13 @@ async fn enforce_rate_limits_blocks_after_threshold() {
         "second hit should trigger rate limit"
     );
 }
+
+#[test]
+fn history_route_defaults_are_generous_enough() {
+    let policy = SecurityPolicy::default();
+    let history = policy.route_policy(WebRoute::History);
+
+    assert_eq!(history.ip_limit(1, false), 24);
+    assert_eq!(history.token_limit(), 16);
+    assert_eq!(history.global_limit(), 120);
+}
