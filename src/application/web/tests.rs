@@ -1,5 +1,6 @@
 use super::{handlers, *};
 use axum::body::to_bytes;
+use axum::extract::{ConnectInfo, FromRequestParts};
 use axum::http::header::SET_COOKIE;
 use axum::http::StatusCode;
 use axum::Extension;
@@ -81,8 +82,8 @@ fn set_session_cookie_includes_http_only() {
         "cookie missing HttpOnly: {text}"
     );
     assert!(
-        text.contains("SameSite=Strict"),
-        "cookie missing SameSite=Strict: {text}"
+        text.contains("SameSite=Lax"),
+        "cookie missing SameSite=Lax: {text}"
     );
 }
 
@@ -181,6 +182,54 @@ fn normalize_description_enforces_limit() {
     let long = "x".repeat(super::DESCRIPTION_MAX_BYTES + 1);
     let err = handlers::normalize_description(&long).unwrap_err();
     assert!(err.contains("2048"), "unexpected message: {err}");
+}
+
+#[tokio::test]
+async fn login_endpoint_sets_cookie_and_redirects() {
+    let exposure = Exposure::all();
+    let state = test_secured_app_state(exposure);
+    let mut request = axum::http::Request::builder()
+        .method("POST")
+        .uri("/auth/login")
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .body(axum::body::Body::from(r#"{"token":"secret"}"#))
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(ConnectInfo(std::net::SocketAddr::from((
+            std::net::Ipv4Addr::LOCALHOST,
+            4242,
+        ))));
+
+    let response = auth::login(State(state.clone()), request).await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let cookie = response.headers().get(SET_COOKIE).cloned();
+    assert!(cookie.is_some(), "expected session cookie");
+
+    // reuse cookie on a protected route
+    let mut next_req = axum::http::Request::builder()
+        .uri("/logs")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    if let Some(value) = cookie {
+        next_req
+            .headers_mut()
+            .insert(axum::http::header::COOKIE, value);
+    }
+    next_req
+        .extensions_mut()
+        .insert(ConnectInfo(std::net::SocketAddr::from((
+            std::net::Ipv4Addr::LOCALHOST,
+            4242,
+        ))));
+    let (mut parts, _) = next_req.into_parts();
+    let guard = security::AuthGuard::from_request_parts(&mut parts, &state)
+        .await
+        .expect("cookie should authenticate");
+    assert_eq!(
+        guard.into_session().token_key(),
+        security::TokenKey::from_value("secret")
+    );
 }
 
 #[tokio::test]
@@ -380,6 +429,35 @@ fn test_app_state(exposure: Exposure) -> AppState {
         snapshot_cache: Arc::new(RwLock::new(None)),
         logo: LogoAsset::default(),
         session_cookie_secure: true,
+    }
+}
+
+fn test_secured_app_state(exposure: Exposure) -> AppState {
+    let access = WebAccess {
+        token: Some(bcrypt::hash("secret", bcrypt::DEFAULT_COST).expect("hash token")),
+        session_cookie_secure: false,
+        ..WebAccess::default()
+    };
+    let security = WebSecurity::build(
+        access,
+        #[cfg(feature = "config")]
+        None,
+    )
+    .unwrap();
+
+    AppState {
+        ctx: Arc::new(crate::application::context::AppContext::in_memory()),
+        interval: Duration::from_secs(1),
+        #[cfg(feature = "config")]
+        config: None,
+        web_debug: false,
+        security: Arc::new(security),
+        exposure,
+        shutdown: Arc::new(tokio::sync::Notify::new()),
+        updates_cache: UpdatesCache::new(Duration::from_secs(1), Duration::from_secs(1)),
+        snapshot_cache: Arc::new(RwLock::new(None)),
+        logo: LogoAsset::default(),
+        session_cookie_secure: false,
     }
 }
 
