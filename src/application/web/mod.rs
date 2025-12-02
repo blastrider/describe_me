@@ -86,6 +86,7 @@ const UPDATES_CACHE_FAILURE_RETRY: Duration = Duration::from_secs(60);
 const DESCRIPTION_MAX_BYTES: usize = 2048;
 const TAGS_MAX_PER_REQUEST: usize = 64;
 const TAG_LENGTH_LIMIT: usize = 48;
+pub(crate) const WEB_SESSION_SECONDS: u64 = 7 * 24 * 3600;
 
 #[cfg(feature = "config")]
 const LOGO_MAX_BYTES: u64 = 128 * 1024;
@@ -165,6 +166,7 @@ struct AppState {
     snapshot_cache: Arc<RwLock<Option<CachedSnapshot>>>,
     logo: LogoAsset,
     session_cookie_secure: bool,
+    session_ttl: Duration,
 }
 
 #[derive(Clone)]
@@ -324,6 +326,24 @@ async fn http_security_layer(
     let csp_nonce = CspNonce::new(nonce_value);
 
     if !is_origin_allowed(&req, &origin_policy) {
+        let origin_val = req
+            .headers()
+            .get(ORIGIN)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("<none>");
+        let host_val = req
+            .headers()
+            .get(header::HOST)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("<none>");
+        LogEvent::SecurityIncident {
+            category: Cow::Borrowed("origin_not_allowed"),
+            route: Cow::Owned(req.uri().path().to_string()),
+            ip: None,
+            token: None,
+            detail: Some(Cow::Owned(format!("origin={origin_val} host={host_val}"))),
+        }
+        .emit();
         let mut response = (
             StatusCode::FORBIDDEN,
             "Requête bloquée par la politique CORS (origin non autorisée).",
@@ -391,42 +411,35 @@ impl OriginPolicy {
             Err(_) => return false,
         };
 
-        if !self.allowed.is_empty() {
-            return self
-                .allowed
-                .iter()
-                .any(|allowed| allowed.matches(&origin_uri));
-        }
-
-        let host_header = match req.headers().get(header::HOST) {
-            Some(host) => host,
+        let host_authority = match effective_host(req) {
+            Some(auth) => auth,
             None => return false,
-        };
-        let host_str = match host_header.to_str() {
-            Ok(value) => value,
-            Err(_) => return false,
-        };
-        let host_authority: axum::http::uri::Authority = match host_str.parse() {
-            Ok(authority) => authority,
-            Err(_) => return false,
         };
         let origin_host = match origin_uri.host() {
             Some(host) => host,
             None => return false,
         };
 
-        if !origin_host.eq_ignore_ascii_case(host_authority.host()) {
-            return false;
+        let same_origin = origin_host.eq_ignore_ascii_case(host_authority.host())
+            && origin_uri
+                .port_u16()
+                .or_else(|| default_port(origin_uri.scheme_str()))
+                == host_authority
+                    .port_u16()
+                    .or_else(|| default_port(origin_uri.scheme_str()));
+
+        if !self.allowed.is_empty() {
+            if self
+                .allowed
+                .iter()
+                .any(|allowed| allowed.matches(&origin_uri))
+            {
+                return true;
+            }
+            return same_origin;
         }
 
-        let origin_port = origin_uri
-            .port_u16()
-            .or_else(|| default_port(origin_uri.scheme_str()));
-        let host_port = host_authority
-            .port_u16()
-            .or_else(|| default_port(origin_uri.scheme_str()));
-
-        origin_port == host_port
+        same_origin
     }
 }
 
@@ -435,6 +448,27 @@ struct AllowedOrigin {
     scheme: OriginScheme,
     host: String,
     port: Option<u16>,
+}
+
+fn effective_host(req: &AxumRequest) -> Option<axum::http::uri::Authority> {
+    if let Some(host) = req.headers().get(header::HOST) {
+        if let Ok(host_str) = host.to_str() {
+            if let Ok(auth) = host_str.parse() {
+                return Some(auth);
+            }
+        }
+    }
+    if let Some(authority) = req.headers().get(":authority") {
+        if let Ok(val) = authority.to_str() {
+            if let Ok(auth) = val.parse() {
+                return Some(auth);
+            }
+        }
+    }
+    if let Some(auth) = req.uri().authority().cloned() {
+        return Some(auth);
+    }
+    None
 }
 
 impl AllowedOrigin {
@@ -508,7 +542,7 @@ impl OriginScheme {
 fn apply_security_headers(headers: &mut HeaderMap, nonce: &CspNonce) {
     let csp_value = format!(
         "default-src 'none'; connect-src 'self'; img-src 'self'; font-src 'self'; \
-         style-src 'nonce-{nonce}'; script-src 'nonce-{nonce}'; script-src-attr 'none'; base-uri 'none'; form-action 'none'; \
+         style-src 'nonce-{nonce}'; script-src 'nonce-{nonce}'; script-src-attr 'none'; base-uri 'none'; form-action 'self'; \
          frame-ancestors 'none'; object-src 'none'; block-all-mixed-content; upgrade-insecure-requests",
         nonce = nonce.as_str()
     );
@@ -656,6 +690,7 @@ pub async fn serve_http_with_context<A: Into<SocketAddr>>(
         snapshot_cache: snapshot_cache.clone(),
         logo,
         session_cookie_secure,
+        session_ttl: security.session_ttl(),
     };
 
     let router = Router::new()
