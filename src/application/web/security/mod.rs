@@ -6,7 +6,7 @@ mod sse;
 pub(crate) use limits::GlobalPermit;
 
 use super::{clear_session_cookie, template, AppState, CspNonce, WebAccess};
-use auth::{build_request, verify_token, AuthRequest, TokenVerifier};
+use auth::{build_request, verify_token, AuthRequest, CredentialOverride, TokenVerifier};
 use limits::{enforce_rate_limits, ensure_not_blocked, SecurityPolicy, SecurityState};
 use session::SessionManager;
 use sse::acquire_permit;
@@ -254,15 +254,7 @@ impl WebSecurity {
         route: WebRoute,
     ) -> Result<AuthSession, SecurityRejection> {
         let now = std::time::Instant::now();
-        let request = match build_request(
-            &self.allow,
-            &self.trusted_proxies,
-            &self.sessions,
-            self.token.is_some(),
-            parts,
-            route,
-            now,
-        ) {
+        let request = match self.build_request(parts, route, now, None) {
             Ok(req) => req,
             Err(rejection) => {
                 if rejection.is_auth_failure() {
@@ -288,19 +280,9 @@ impl WebSecurity {
             }
             return Err(rejection);
         }
-        let session_cookie = match verify_token(
-            &self.state,
-            &self.policy,
-            self.token.as_ref(),
-            &self.sessions,
-            &request,
-            now,
-        )
-        .await
-        {
+        let session_cookie = match self.verify_request(&request, now).await {
             Ok(cookie) => cookie,
             Err(rejection) => {
-                self.log_rejection("token_verification_failed", &request, &rejection);
                 if rejection.is_auth_failure() {
                     uniform_auth_delay().await;
                 }
@@ -365,6 +347,146 @@ impl WebSecurity {
             session_cookie: session_cookie.map(|value| Arc::<str>::from(value.into_boxed_str())),
             global_permit,
         })
+    }
+
+    pub async fn login(
+        &self,
+        parts: &Parts,
+        token: &str,
+        route: WebRoute,
+    ) -> Result<AuthSession, SecurityRejection> {
+        let now = std::time::Instant::now();
+        let request = match self.build_request(
+            parts,
+            route,
+            now,
+            Some(CredentialOverride::RawToken(token.to_owned())),
+        ) {
+            Ok(req) => req,
+            Err(rejection) => return Err(rejection),
+        };
+
+        let global_permit = match self
+            .state
+            .acquire_global_permit(request.route, &self.policy)
+        {
+            Ok(permit) => permit,
+            Err(rejection) => {
+                self.log_rejection("rate_limit_global", &request, &rejection);
+                return Err(rejection);
+            }
+        };
+
+        if let Err(rejection) = ensure_not_blocked(&self.state, &self.policy, &request, now).await {
+            self.log_rejection("cooldown_active", &request, &rejection);
+            if rejection.is_auth_failure() {
+                uniform_auth_delay().await;
+            }
+            return Err(rejection);
+        }
+
+        let session_cookie = match self.verify_request(&request, now).await {
+            Ok(cookie) => cookie,
+            Err(rejection) => {
+                if rejection.is_auth_failure() {
+                    uniform_auth_delay().await;
+                }
+                return Err(rejection);
+            }
+        };
+
+        if !self
+            .state
+            .ensure_token_affinity(
+                request.route,
+                request.token_key,
+                request.remote_ip,
+                &self.policy,
+                request.trusted_ip,
+                now,
+            )
+            .await
+        {
+            self.log_incident(
+                "token_affinity_violation",
+                &request,
+                Some(format!(
+                    "limit={}",
+                    self.policy.token_affinity_limit(request.trusted_ip)
+                )),
+            );
+            uniform_auth_delay().await;
+            return Err(SecurityRejection::unauthorized(None));
+        }
+
+        if let Err(rejection) = enforce_rate_limits(&self.state, &self.policy, &request, now).await
+        {
+            self.log_rejection("rate_limit", &request, &rejection);
+            return Err(rejection);
+        }
+
+        self.state
+            .note_success(request.remote_ip, request.token_key)
+            .await;
+
+        LogEvent::AuthOk {
+            ip: Cow::Owned(request.remote_ip.to_string()),
+            route: Cow::Owned(request.route.as_str().to_string()),
+            token: Cow::Owned(request.token_key.to_string()),
+        }
+        .emit();
+
+        Ok(AuthSession {
+            route: request.route,
+            ip: request.remote_ip,
+            token: request.token_key,
+            sse_permit: None,
+            session_cookie: session_cookie.map(|value| Arc::<str>::from(value.into_boxed_str())),
+            global_permit,
+        })
+    }
+
+    fn build_request(
+        &self,
+        parts: &Parts,
+        route: WebRoute,
+        now: std::time::Instant,
+        credential_override: Option<CredentialOverride>,
+    ) -> Result<AuthRequest, SecurityRejection> {
+        build_request(
+            &self.allow,
+            &self.trusted_proxies,
+            &self.sessions,
+            self.token.is_some(),
+            parts,
+            route,
+            now,
+            credential_override,
+        )
+    }
+
+    async fn verify_request(
+        &self,
+        request: &AuthRequest,
+        now: std::time::Instant,
+    ) -> Result<Option<String>, SecurityRejection> {
+        let session_cookie = match verify_token(
+            &self.state,
+            &self.policy,
+            self.token.as_ref(),
+            &self.sessions,
+            request,
+            now,
+        )
+        .await
+        {
+            Ok(cookie) => cookie,
+            Err(rejection) => {
+                self.log_rejection("token_verification_failed", request, &rejection);
+                return Err(rejection);
+            }
+        };
+        Ok(session_cookie)
     }
 }
 
@@ -450,7 +572,7 @@ impl SecurityRejection {
         Self::rate_limited(retry)
     }
 
-    fn into_response(self, secure_cookie: bool, html_body: Option<String>) -> Response {
+    pub(super) fn into_response(self, secure_cookie: bool, html_body: Option<String>) -> Response {
         let mut response = match html_body {
             Some(html) => (self.status, Html(html)).into_response(),
             None => (self.status, self.body).into_response(),
@@ -607,10 +729,12 @@ impl IpMatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::web::SESSION_COOKIE_NAME;
     #[cfg(feature = "config")]
     use crate::domain::WebSecurityConfig;
     use axum::extract::ConnectInfo;
     use axum::http::Request;
+    use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
     use std::net::{IpAddr, Ipv4Addr};
     use std::sync::OnceLock;
 
@@ -744,6 +868,79 @@ mod tests {
         assert_eq!(session2.route(), WebRoute::Sse);
         assert_eq!(session2.ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
         assert_eq!(session2.token_key(), TokenKey::from_value("secret"));
+    }
+
+    #[tokio::test]
+    async fn login_issues_session_cookie() {
+        let hash = cached_hash();
+        let security = build_security(Some(hash));
+        let mut parts = make_parts("/", IpAddr::V4(Ipv4Addr::LOCALHOST), None);
+        parts.uri = "/auth/login".parse().unwrap();
+
+        let session = security
+            .login(&parts, "secret", WebRoute::Html)
+            .await
+            .expect("login should succeed");
+        let cookie = session
+            .session_cookie()
+            .expect("session cookie issued")
+            .to_string();
+
+        let encoded = utf8_percent_encode(&cookie, NON_ALPHANUMERIC).to_string();
+        let mut next = make_parts("/logs", IpAddr::V4(Ipv4Addr::LOCALHOST), None);
+        next.headers.insert(
+            axum::http::header::COOKIE,
+            format!("{SESSION_COOKIE_NAME}={encoded}").parse().unwrap(),
+        );
+
+        let guard = security
+            .authorize(&next, WebRoute::Logs)
+            .await
+            .expect("cookie should be accepted");
+        assert_eq!(guard.token_key(), TokenKey::from_value("secret"));
+    }
+
+    #[tokio::test]
+    async fn login_rejects_wrong_token() {
+        let hash = cached_hash();
+        let security = build_security(Some(hash));
+        let parts = make_parts("/", IpAddr::V4(Ipv4Addr::LOCALHOST), None);
+
+        let err = security
+            .login(&parts, "invalid", WebRoute::Html)
+            .await
+            .expect_err("login should fail");
+        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn authorize_requires_token_without_cookie() {
+        let hash = cached_hash();
+        let security = build_security(Some(hash));
+        let parts = make_parts("/logs", IpAddr::V4(Ipv4Addr::LOCALHOST), None);
+
+        let err = security
+            .authorize(&parts, WebRoute::Logs)
+            .await
+            .expect_err("missing token should be rejected");
+        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn authorize_rejects_invalid_session_cookie() {
+        let hash = cached_hash();
+        let security = build_security(Some(hash));
+        let mut parts = make_parts("/logs", IpAddr::V4(Ipv4Addr::LOCALHOST), None);
+        parts.headers.insert(
+            axum::http::header::COOKIE,
+            format!("{SESSION_COOKIE_NAME}=invalid").parse().unwrap(),
+        );
+
+        let err = security
+            .authorize(&parts, WebRoute::Logs)
+            .await
+            .expect_err("invalid session should be rejected");
+        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
     }
 
     use std::collections::HashMap;
