@@ -28,6 +28,7 @@ fn nonce_is_inserted_in_csp_header() {
         .unwrap();
     assert!(value.contains("style-src 'nonce-abcd1234'"));
     assert!(value.contains("script-src 'nonce-abcd1234'"));
+    assert!(value.contains("form-action 'self'"));
     let permissions = headers
         .get(HEADER_PERMISSIONS_POLICY)
         .and_then(|val| val.to_str().ok())
@@ -72,9 +73,20 @@ fn origin_defaults_to_same_host_port() {
 }
 
 #[test]
+fn origin_allowlist_allows_same_origin_even_if_unlisted() {
+    let request = build_request_with_headers(
+        Some("https://internal.example.lan:18443"),
+        "internal.example.lan:18443",
+    );
+    let policy = OriginPolicy::from_allowlist(vec!["https://public.example.com".to_string()])
+        .expect("origin policy");
+    assert!(is_origin_allowed(&request, &policy));
+}
+
+#[test]
 fn set_session_cookie_includes_http_only() {
     let mut headers = HeaderMap::new();
-    set_session_cookie(&mut headers, "sess:v1:test", true);
+    set_session_cookie(&mut headers, "sess:v1:test", Duration::from_secs(60), true);
     let value = headers.get(SET_COOKIE).expect("set-cookie");
     let text = value.to_str().expect("utf8");
     assert!(
@@ -102,7 +114,7 @@ fn clear_session_cookie_includes_http_only() {
 #[test]
 fn session_cookies_include_secure() {
     let mut headers = HeaderMap::new();
-    set_session_cookie(&mut headers, "sess:v1:test", true);
+    set_session_cookie(&mut headers, "sess:v1:test", Duration::from_secs(60), true);
     let value = headers.get(SET_COOKIE).expect("set-cookie");
     let text = value.to_str().expect("utf8");
     assert!(
@@ -114,12 +126,24 @@ fn session_cookies_include_secure() {
 #[test]
 fn session_cookie_secure_flag_can_be_disabled() {
     let mut headers = HeaderMap::new();
-    set_session_cookie(&mut headers, "sess:v1:test", false);
+    set_session_cookie(&mut headers, "sess:v1:test", Duration::from_secs(60), false);
     let value = headers.get(SET_COOKIE).expect("set-cookie");
     let text = value.to_str().expect("utf8");
     assert!(
         !text.contains("; Secure"),
         "insecure cookies should skip Secure: {text}"
+    );
+}
+
+#[test]
+fn session_cookie_max_age_matches_ttl() {
+    let mut headers = HeaderMap::new();
+    set_session_cookie(&mut headers, "sess:v1:test", Duration::from_secs(120), true);
+    let value = headers.get(SET_COOKIE).expect("set-cookie");
+    let text = value.to_str().expect("utf8");
+    assert!(
+        text.contains("Max-Age=120"),
+        "cookie max-age should reflect session ttl: {text}"
     );
 }
 
@@ -416,6 +440,7 @@ fn test_app_state(exposure: Exposure) -> AppState {
         None,
     )
     .unwrap();
+    let session_ttl = security.session_ttl();
     AppState {
         ctx: Arc::new(crate::application::context::AppContext::in_memory()),
         interval: Duration::from_secs(1),
@@ -429,6 +454,7 @@ fn test_app_state(exposure: Exposure) -> AppState {
         snapshot_cache: Arc::new(RwLock::new(None)),
         logo: LogoAsset::default(),
         session_cookie_secure: true,
+        session_ttl,
     }
 }
 
@@ -444,6 +470,7 @@ fn test_secured_app_state(exposure: Exposure) -> AppState {
         None,
     )
     .unwrap();
+    let session_ttl = security.session_ttl();
 
     AppState {
         ctx: Arc::new(crate::application::context::AppContext::in_memory()),
@@ -458,6 +485,7 @@ fn test_secured_app_state(exposure: Exposure) -> AppState {
         snapshot_cache: Arc::new(RwLock::new(None)),
         logo: LogoAsset::default(),
         session_cookie_secure: false,
+        session_ttl,
     }
 }
 
