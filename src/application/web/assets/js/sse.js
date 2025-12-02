@@ -21,24 +21,17 @@ async function connectSse() {
   }
 
   try {
-    const headers = {};
-    if (currentToken) {
-      headers["Authorization"] = `Bearer ${currentToken}`;
-    }
-
     const response = await fetch('/sse', {
       method: 'GET',
-      headers,
       signal: abortController.signal,
       credentials: 'same-origin',
     });
 
     if (response.status === 401) {
       const message = await readErrorMessage(response);
-      clearPersistedToken();
       currentToken = "";
       tokenInput.value = "";
-      clearSessionCookie();
+      await clearSessionCookie();
       showError(message || "Jeton requis pour accéder aux métriques.");
       showTokenPrompt(message || "Jeton requis pour accéder aux métriques.");
       return;
