@@ -20,7 +20,7 @@ impl SecurityPolicy {
         Self {
             html: RoutePolicy::new(Duration::from_secs(60), 30, 10, 120),
             sse: SsePolicy::default(),
-            history: RoutePolicy::new(Duration::from_secs(60), 6, 4, 40),
+            history: RoutePolicy::new(Duration::from_secs(60), 24, 16, 120),
             logs: RoutePolicy::new(Duration::from_secs(60), 6, 4, 40),
             allow_multiplier: 2,
             brute_force: BruteForcePolicy::default(),
