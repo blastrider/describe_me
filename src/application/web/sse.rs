@@ -27,8 +27,8 @@ use crate::application::capture_snapshot_with_view;
 use crate::application::logging::LogEvent;
 use crate::domain::CaptureOptions;
 
-use super::security::{AuthGuard, GlobalPermit, SsePermit, TokenKey};
-use super::{mark_response_no_store, set_session_cookie, AppState};
+use super::security::{attach_session_cookie, AuthGuard, GlobalPermit, SsePermit, TokenKey};
+use super::{mark_response_no_store, AppState};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SseCloseReason {
@@ -265,7 +265,6 @@ pub(super) async fn sse_stream(
     let with_services = false;
 
     let mut session = guard.into_session();
-    let cookie_token = session.session_cookie().map(str::to_owned);
     let client_ip = session.ip();
     let token_key = session.token_key();
     let permit = session.take_sse_permit();
@@ -414,9 +413,7 @@ pub(super) async fn sse_stream(
     let sse = Sse::new(stream).keep_alive(KeepAlive::default());
     let mut response = sse.into_response();
     mark_response_no_store(response.headers_mut());
-    if let Some(token) = cookie_token.as_deref() {
-        set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
-    }
+    attach_session_cookie(response.headers_mut(), &session, &state);
     response
 }
 
