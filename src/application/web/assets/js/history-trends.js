@@ -54,7 +54,12 @@
   }
 
   function scheduleRefresh(force = false) {
-    if (!initialized || !card || paranoidBlocked) {
+    if (
+      !initialized ||
+      !card ||
+      paranoidBlocked ||
+      (tokenOverlay && tokenOverlay.classList.contains("visible"))
+    ) {
       return;
     }
     const now = Date.now();
@@ -64,7 +69,12 @@
   }
 
   async function fetchHistory() {
-    if (!initialized || !card || paranoidBlocked) {
+    if (
+      !initialized ||
+      !card ||
+      paranoidBlocked ||
+      (tokenOverlay && tokenOverlay.classList.contains("visible"))
+    ) {
       return;
     }
     if (pendingFetch) {
@@ -118,6 +128,13 @@
       err && typeof err.message === "string"
         ? err.message
         : "Historique indisponible.";
+    if (status === 401) {
+      showError(message || "Authentification requise pour l'historique.");
+      if (typeof showTokenPrompt === "function") {
+        showTokenPrompt(message || "Jeton requis pour consulter l'historique.");
+      }
+      return;
+    }
     if (status === 403) {
       paranoidBlocked = true;
       showCard(true);
