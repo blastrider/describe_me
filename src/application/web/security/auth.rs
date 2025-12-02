@@ -1,3 +1,4 @@
+use super::session::SESSION_COOKIE_PREFIX;
 use super::{
     limits::{SecurityPolicy, SecurityState},
     session::{SessionCandidate, SessionError, SessionManager},
@@ -234,7 +235,7 @@ pub(super) async fn verify_token(
                 log_session_error(&err, request);
                 SecurityRejection::unauthorized(None)
             })?;
-            Ok(Some(sessions.issue(request.token_key, now)))
+            Ok(Some(format!("{SESSION_COOKIE_PREFIX}{}", candidate.id())))
         }
         Credential::RawToken(token) => {
             let auth_ok = match expected.verify(&token) {
@@ -281,40 +282,11 @@ pub(super) async fn verify_token(
 fn extract_credential(
     parts: &Parts,
     sessions: &SessionManager,
-    sessions_enabled: bool,
+    _sessions_enabled: bool,
     route: WebRoute,
     remote_ip: std::net::IpAddr,
     now: Instant,
 ) -> Result<(Credential, TokenKey), SecurityRejection> {
-    if let Some(header_value) = parts.headers.get(AUTHORIZATION) {
-        if let Ok(value) = header_value.to_str() {
-            let trimmed = value.trim();
-            if let Some((scheme, token)) = trimmed.split_once(' ') {
-                if scheme.eq_ignore_ascii_case("bearer") {
-                    let token = token.trim();
-                    if !token.is_empty() {
-                        return Ok((
-                            Credential::RawToken(token.to_owned()),
-                            TokenKey::from_value(token),
-                        ));
-                    }
-                }
-            }
-        }
-    }
-
-    if let Some(header_value) = parts.headers.get("x-describe-me-token") {
-        if let Ok(value) = header_value.to_str() {
-            let trimmed = value.trim();
-            if !trimmed.is_empty() {
-                return Ok((
-                    Credential::RawToken(trimmed.to_owned()),
-                    TokenKey::from_value(trimmed),
-                ));
-            }
-        }
-    }
-
     let mut encoded_session_cookie = None;
     if let Some(cookie_header) = parts.headers.get(COOKIE) {
         if let Ok(value) = cookie_header.to_str() {
@@ -328,10 +300,7 @@ fn extract_credential(
                 if trimmed.is_empty() {
                     continue;
                 }
-                if sessions_enabled
-                    && encoded_session_cookie.is_none()
-                    && name == Some(SESSION_COOKIE_NAME)
-                {
+                if encoded_session_cookie.is_none() && name == Some(SESSION_COOKIE_NAME) {
                     encoded_session_cookie = Some(trimmed.to_owned());
                 }
             }
@@ -359,6 +328,35 @@ fn extract_credential(
             Err(err) => {
                 log_session_error_raw(&err, route, remote_ip, TokenKey::Anonymous);
                 return Err(SecurityRejection::unauthorized(None));
+            }
+        }
+    }
+
+    if let Some(header_value) = parts.headers.get(AUTHORIZATION) {
+        if let Ok(value) = header_value.to_str() {
+            let trimmed = value.trim();
+            if let Some((scheme, token)) = trimmed.split_once(' ') {
+                if scheme.eq_ignore_ascii_case("bearer") {
+                    let token = token.trim();
+                    if !token.is_empty() {
+                        return Ok((
+                            Credential::RawToken(token.to_owned()),
+                            TokenKey::from_value(token),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(header_value) = parts.headers.get("x-describe-me-token") {
+        if let Ok(value) = header_value.to_str() {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Ok((
+                    Credential::RawToken(trimmed.to_owned()),
+                    TokenKey::from_value(trimmed),
+                ));
             }
         }
     }
@@ -495,7 +493,6 @@ fn log_session_error_raw(
         SessionError::InvalidFormat => "session_invalid_format",
         SessionError::Unknown => "session_unknown",
         SessionError::Expired => "session_expired",
-        SessionError::Replay => "session_replay",
     };
     LogEvent::SecurityIncident {
         category: Cow::Borrowed(category),
@@ -639,6 +636,44 @@ mod tests {
         )
         .await
         .expect("session cookie should be accepted");
+    }
+
+    #[tokio::test]
+    async fn invalid_session_cookie_logs_and_rejects() {
+        let state = SecurityState::new();
+        let policy = SecurityPolicy::default();
+        let sessions = SessionManager::new();
+
+        let request = Request::builder().uri("/sse").body(()).unwrap();
+        let (mut parts, _) = request.into_parts();
+        parts.headers.insert(
+            COOKIE,
+            format!("{SESSION_COOKIE_NAME}=not-a-session")
+                .parse()
+                .unwrap(),
+        );
+        parts
+            .extensions
+            .insert(ConnectInfo(std::net::SocketAddr::from((
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                4242,
+            ))));
+
+        let now = Instant::now();
+        let auth_request =
+            build_request(&[], &[], &sessions, true, &parts, WebRoute::Sse, now, None).unwrap();
+        let verifier = TokenVerifier::parse(cached_argon2()).expect("parse hash");
+        let err = verify_token(
+            &state,
+            &policy,
+            Some(&verifier),
+            &sessions,
+            &auth_request,
+            now,
+        )
+        .await
+        .expect_err("invalid session cookie should be rejected");
+        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
