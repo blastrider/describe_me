@@ -279,9 +279,6 @@
       }
       try {
         const headers = { "Content-Type": "application/json" };
-        if (typeof currentToken === "string" && currentToken) {
-          headers["Authorization"] = `Bearer ${currentToken}`;
-        }
         const response = await fetch(
           appendServerParam(this.descriptionEndpoint, this.serverId),
           {
@@ -437,9 +434,6 @@
       this.disableTagControls(true);
       try {
         const headers = { "Content-Type": "application/json" };
-        if (typeof currentToken === "string" && currentToken) {
-          headers["Authorization"] = `Bearer ${currentToken}`;
-        }
         const response = await fetch(
           appendServerParam(this.tagsEndpoint, this.serverId),
           {
