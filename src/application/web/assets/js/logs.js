@@ -162,6 +162,9 @@
         let message = "Lecture des logs impossible.";
         if (err && err.message === "auth") {
           message = "Jeton requis pour lire les logs.";
+          if (typeof showTokenPrompt === "function") {
+            showTokenPrompt(message);
+          }
         } else if (err && err.message === "forbidden") {
           message = "Accès aux logs refusé pour cette IP/token.";
         }
