@@ -1,7 +1,3 @@
-let currentToken = "";
-let abortController = null;
-let reconnectTimer = null;
-
 tokenForm.addEventListener('submit', async (event) => {
   event.preventDefault();
   const value = tokenInput.value.trim();
@@ -12,7 +8,6 @@ tokenForm.addEventListener('submit', async (event) => {
   }
   const ok = await submitToken(value);
   if (ok) {
-    currentToken = "";
     tokenInput.value = "";
     hideTokenPrompt();
     restartStream();
@@ -21,7 +16,6 @@ tokenForm.addEventListener('submit', async (event) => {
 
 tokenForget.addEventListener('click', async () => {
   await logoutServerSession();
-  currentToken = "";
   tokenInput.value = "";
   tokenErrorEl.textContent = "";
   showTokenPrompt("");
@@ -30,13 +24,8 @@ tokenForget.addEventListener('click', async () => {
 if (tokenOpen) {
   tokenOpen.addEventListener('click', () => {
     tokenErrorEl.textContent = "";
-    if (abortController) {
-      abortController.abort();
-      abortController = null;
-    }
-    if (reconnectTimer) {
-      clearTimeout(reconnectTimer);
-      reconnectTimer = null;
+    if (typeof stopStream === "function") {
+      stopStream();
     }
     showTokenPrompt("");
   });
@@ -68,10 +57,6 @@ function hideTokenPrompt() {
   sensitiveNodes.forEach((node) => node.classList.remove('blurred'));
 }
 
-async function clearSessionCookie() {
-  await logoutServerSession();
-}
-
 async function logoutServerSession() {
   try {
     await fetch("/auth/logout", {
@@ -91,7 +76,7 @@ async function submitToken(token) {
       credentials: "same-origin",
       body: JSON.stringify({ token }),
     });
-    if (res.ok) {
+    if (res.ok || res.status === 303) {
       return true;
     }
     const message = await readLoginError(res);
