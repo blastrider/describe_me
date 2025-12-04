@@ -5,7 +5,7 @@ edition = "2021"
 license = "Apache-2.0"
 description = "Décrit rapidement un serveur (CPU, RAM, OS, uptime, services…), pour admins système."
 readme = "README.md"
-repository = "https://github.com/Max-Perso/describe_me"
+repository = "https://github.com/blastrider/describe_me"
 keywords = ["system", "monitoring", "sysinfo", "server"]
 categories = ["system", "command-line-utilities"]
 
