@@ -5,7 +5,8 @@ mod sse;
 
 pub(crate) use limits::GlobalPermit;
 
-use super::{clear_session_cookie, set_session_cookie, template, AppState, CspNonce, WebAccess};
+use super::{clear_session_cookie, set_session_cookie, template, AppState, WebAccess};
+use crate::application::web::csp::CspNonce;
 use auth::{build_request, verify_token, AuthRequest, CredentialOverride, TokenVerifier};
 use limits::{enforce_rate_limits, ensure_not_blocked, SecurityPolicy, SecurityState};
 use session::SessionManager;
@@ -89,8 +90,8 @@ pub(super) fn attach_session_cookie(
         set_session_cookie(
             headers,
             cookie,
-            state.session_ttl,
-            state.session_cookie_secure,
+            state.session_ttl(),
+            state.session_cookie_secure(),
         );
     }
 }
@@ -120,7 +121,7 @@ impl FromRequestParts<AppState> for AuthGuard {
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
         let route = WebRoute::from_path(parts.uri.path());
-        match state.security.authorize(parts, route).await {
+        match state.security().authorize(parts, route).await {
             Ok(session) => Ok(AuthGuard { session }),
             Err(rejection) => {
                 let wants_styled_html = matches!(route, WebRoute::Html | WebRoute::Logs)
@@ -136,7 +137,7 @@ impl FromRequestParts<AppState> for AuthGuard {
                 } else {
                     None
                 };
-                Err(rejection.into_response(state.session_cookie_secure, html_body))
+                Err(rejection.into_response(state.session_cookie_secure(), html_body))
             }
         }
     }
