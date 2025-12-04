@@ -1,13 +1,13 @@
-use crate::args::{CaptureOpts, CliConfig, ExposureOpts, WebExposureOpts};
+use super::args::{CaptureOpts, CliConfig, ExposureOpts, WebExposureOpts};
 
 #[cfg(feature = "config")]
 pub fn apply_cli_exposure_flags(
-    exposure: &mut describe_me::Exposure,
+    exposure: &mut describe_me_lib::Exposure,
     cli: &CliConfig,
-    cfg: Option<&describe_me::DescribeConfig>,
+    cfg: Option<&describe_me_lib::DescribeConfig>,
     allow_config_exposure: bool,
 ) {
-    let mut builder = describe_me::ExposureBuilder::from_exposure(std::mem::take(exposure));
+    let mut builder = describe_me_lib::ExposureBuilder::from_exposure(std::mem::take(exposure));
 
     if allow_config_exposure {
         if let Some(cfg) = cfg {
@@ -24,11 +24,11 @@ pub fn apply_cli_exposure_flags(
 
 #[cfg(not(feature = "config"))]
 pub fn apply_cli_exposure_flags(
-    exposure: &mut describe_me::Exposure,
+    exposure: &mut describe_me_lib::Exposure,
     cli: &CliConfig,
     _allow_config_exposure: bool,
 ) {
-    let mut builder = describe_me::ExposureBuilder::from_exposure(std::mem::take(exposure));
+    let mut builder = describe_me_lib::ExposureBuilder::from_exposure(std::mem::take(exposure));
     builder.apply_overrides(&overrides_from_cli(&cli.exposure));
     builder.apply_capture(capture_context(&cli.capture));
     *exposure = builder.build();
@@ -36,12 +36,12 @@ pub fn apply_cli_exposure_flags(
 
 #[cfg(all(feature = "web", feature = "config"))]
 pub fn apply_web_exposure_flags(
-    exposure: describe_me::Exposure,
+    exposure: describe_me_lib::Exposure,
     cli: &CliConfig,
-    cfg: Option<&describe_me::DescribeConfig>,
+    cfg: Option<&describe_me_lib::DescribeConfig>,
     allow_config_exposure: bool,
-) -> describe_me::Exposure {
-    let mut builder = describe_me::ExposureBuilder::from_exposure(exposure);
+) -> describe_me_lib::Exposure {
+    let mut builder = describe_me_lib::ExposureBuilder::from_exposure(exposure);
 
     if allow_config_exposure {
         if let Some(cfg) = cfg {
@@ -62,11 +62,11 @@ pub fn apply_web_exposure_flags(
 
 #[cfg(all(feature = "web", not(feature = "config")))]
 pub fn apply_web_exposure_flags(
-    exposure: describe_me::Exposure,
+    exposure: describe_me_lib::Exposure,
     cli: &CliConfig,
     _allow_config_exposure: bool,
-) -> describe_me::Exposure {
-    let mut builder = describe_me::ExposureBuilder::from_exposure(exposure);
+) -> describe_me_lib::Exposure {
+    let mut builder = describe_me_lib::ExposureBuilder::from_exposure(exposure);
     builder.apply_overrides(&overrides_from_web(
         &cli.web_exposure,
         cli.exposure.no_redacted,
@@ -74,8 +74,8 @@ pub fn apply_web_exposure_flags(
     builder.build()
 }
 
-fn overrides_from_cli(opts: &ExposureOpts) -> describe_me::ExposureOverrides {
-    describe_me::ExposureOverrides {
+fn overrides_from_cli(opts: &ExposureOpts) -> describe_me_lib::ExposureOverrides {
+    describe_me_lib::ExposureOverrides {
         expose_hostname: opts.expose_hostname,
         expose_os: opts.expose_os,
         expose_kernel: opts.expose_kernel,
@@ -92,8 +92,11 @@ fn overrides_from_cli(opts: &ExposureOpts) -> describe_me::ExposureOverrides {
     }
 }
 
-fn overrides_from_web(opts: &WebExposureOpts, no_redacted: bool) -> describe_me::ExposureOverrides {
-    describe_me::ExposureOverrides {
+fn overrides_from_web(
+    opts: &WebExposureOpts,
+    no_redacted: bool,
+) -> describe_me_lib::ExposureOverrides {
+    describe_me_lib::ExposureOverrides {
         expose_hostname: opts.expose_hostname,
         expose_os: opts.expose_os,
         expose_kernel: opts.expose_kernel,
@@ -110,8 +113,8 @@ fn overrides_from_web(opts: &WebExposureOpts, no_redacted: bool) -> describe_me:
     }
 }
 
-fn capture_context(capture: &CaptureOpts) -> describe_me::ExposureCaptureContext {
-    describe_me::ExposureCaptureContext {
+fn capture_context(capture: &CaptureOpts) -> describe_me_lib::ExposureCaptureContext {
+    describe_me_lib::ExposureCaptureContext {
         net_listen: capture.net_listen,
         net_traffic: capture.net_traffic,
         containers: capture.containers,
