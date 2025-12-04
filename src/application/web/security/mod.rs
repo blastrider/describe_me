@@ -8,8 +8,8 @@
 //! - `WebSecurity`: Axum-facing facade (auth guards, hooks, SSE permits, logging).
 //!
 //! Typical request flow:
-//! ```
-//! Request -> Auth → RateLimit → BruteForce → TokenAffinity → GlobalSlots → Decision
+//! ```text
+//! Request -> Auth -> RateLimit -> BruteForce -> TokenAffinity -> GlobalSlots -> Decision
 //! ```
 //! This module is structured to keep these concerns isolated while staying extensible.
 
