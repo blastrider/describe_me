@@ -1,8 +1,12 @@
-use super::{handlers, *};
+use super::{csp, handlers, origin, *};
+use crate::application::web::csp::{
+    apply_security_headers, CspNonce, HEADER_STRICT_TRANSPORT_SECURITY,
+};
 use axum::body::to_bytes;
-use axum::extract::{ConnectInfo, FromRequestParts};
-use axum::http::header::SET_COOKIE;
+use axum::extract::{ConnectInfo, FromRequestParts, State};
+use axum::http::header::{ORIGIN, SET_COOKIE};
 use axum::http::StatusCode;
+use axum::response::IntoResponse;
 use axum::Extension;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -20,27 +24,27 @@ fn build_request_with_headers(origin: Option<&str>, host: &str) -> AxumRequest {
 #[test]
 fn nonce_is_inserted_in_csp_header() {
     let mut headers = HeaderMap::new();
-    let nonce = CspNonce::new("abcd1234".into());
-    apply_security_headers(&mut headers, &nonce);
+    let nonce = csp::CspNonce::new("abcd1234".into());
+    csp::apply_security_headers(&mut headers, &nonce);
     let value = headers
-        .get(HEADER_CONTENT_SECURITY_POLICY)
+        .get(csp::HEADER_CONTENT_SECURITY_POLICY)
         .and_then(|val| val.to_str().ok())
         .unwrap();
     assert!(value.contains("style-src 'nonce-abcd1234'"));
     assert!(value.contains("script-src 'nonce-abcd1234'"));
     assert!(value.contains("form-action 'self'"));
     let permissions = headers
-        .get(HEADER_PERMISSIONS_POLICY)
+        .get(csp::HEADER_PERMISSIONS_POLICY)
         .and_then(|val| val.to_str().ok())
         .unwrap();
     assert_eq!(permissions, "geolocation=(), camera=(), microphone=()");
     let coop = headers
-        .get(HEADER_CROSS_ORIGIN_OPENER_POLICY)
+        .get(csp::HEADER_CROSS_ORIGIN_OPENER_POLICY)
         .and_then(|val| val.to_str().ok())
         .unwrap();
     assert_eq!(coop, "same-origin");
     let coep = headers
-        .get(HEADER_CROSS_ORIGIN_EMBEDDER_POLICY)
+        .get(csp::HEADER_CROSS_ORIGIN_EMBEDDER_POLICY)
         .and_then(|val| val.to_str().ok())
         .unwrap();
     assert_eq!(coep, "require-corp");
@@ -52,24 +56,26 @@ fn origin_allowlist_accepts_configured_origin() {
         Some("https://public.example.com"),
         "internal.example.lan:8080",
     );
-    let policy = OriginPolicy::from_allowlist(vec!["https://public.example.com".to_string()])
-        .expect("origin policy");
-    assert!(is_origin_allowed(&request, &policy));
+    let policy =
+        origin::OriginPolicy::from_allowlist(vec!["https://public.example.com".to_string()])
+            .expect("origin policy");
+    assert!(origin::is_origin_allowed(&request, &policy));
 }
 
 #[test]
 fn origin_allowlist_blocks_unlisted_origin() {
     let request = build_request_with_headers(Some("https://evil.example.com"), "internal:8080");
-    let policy = OriginPolicy::from_allowlist(vec!["https://public.example.com".to_string()])
-        .expect("origin policy");
-    assert!(!is_origin_allowed(&request, &policy));
+    let policy =
+        origin::OriginPolicy::from_allowlist(vec!["https://public.example.com".to_string()])
+            .expect("origin policy");
+    assert!(!origin::is_origin_allowed(&request, &policy));
 }
 
 #[test]
 fn origin_defaults_to_same_host_port() {
     let request = build_request_with_headers(Some("http://internal:8080"), "internal:8080");
-    let policy = OriginPolicy::from_allowlist(Vec::new()).expect("origin policy");
-    assert!(is_origin_allowed(&request, &policy));
+    let policy = origin::OriginPolicy::from_allowlist(Vec::new()).expect("origin policy");
+    assert!(origin::is_origin_allowed(&request, &policy));
 }
 
 #[test]
@@ -78,9 +84,10 @@ fn origin_allowlist_allows_same_origin_even_if_unlisted() {
         Some("https://internal.example.lan:18443"),
         "internal.example.lan:18443",
     );
-    let policy = OriginPolicy::from_allowlist(vec!["https://public.example.com".to_string()])
-        .expect("origin policy");
-    assert!(is_origin_allowed(&request, &policy));
+    let policy =
+        origin::OriginPolicy::from_allowlist(vec!["https://public.example.com".to_string()])
+            .expect("origin policy");
+    assert!(origin::is_origin_allowed(&request, &policy));
 }
 
 #[test]
@@ -441,21 +448,27 @@ fn test_app_state(exposure: Exposure) -> AppState {
     )
     .unwrap();
     let session_ttl = security.session_ttl();
-    AppState {
-        ctx: Arc::new(crate::application::context::AppContext::in_memory()),
+    let static_cfg = StaticWebConfig {
         interval: Duration::from_secs(1),
         #[cfg(feature = "config")]
         config: None,
         web_debug: false,
         security: Arc::new(security),
         exposure,
-        shutdown: Arc::new(tokio::sync::Notify::new()),
-        updates_cache: UpdatesCache::new(Duration::from_secs(1), Duration::from_secs(1)),
-        snapshot_cache: Arc::new(RwLock::new(None)),
         logo: LogoAsset::default(),
         session_cookie_secure: true,
         session_ttl,
-    }
+    };
+    let runtime = RuntimeState {
+        shutdown: Arc::new(tokio::sync::Notify::new()),
+        updates_cache: UpdatesCache::new(Duration::from_secs(1), Duration::from_secs(1)),
+        snapshot_cache: Arc::new(RwLock::new(None)),
+    };
+    AppState::new(
+        Arc::new(crate::application::context::AppContext::in_memory()),
+        static_cfg,
+        runtime,
+    )
 }
 
 fn test_secured_app_state(exposure: Exposure) -> AppState {
@@ -472,21 +485,27 @@ fn test_secured_app_state(exposure: Exposure) -> AppState {
     .unwrap();
     let session_ttl = security.session_ttl();
 
-    AppState {
-        ctx: Arc::new(crate::application::context::AppContext::in_memory()),
+    let static_cfg = StaticWebConfig {
         interval: Duration::from_secs(1),
         #[cfg(feature = "config")]
         config: None,
         web_debug: false,
         security: Arc::new(security),
         exposure,
-        shutdown: Arc::new(tokio::sync::Notify::new()),
-        updates_cache: UpdatesCache::new(Duration::from_secs(1), Duration::from_secs(1)),
-        snapshot_cache: Arc::new(RwLock::new(None)),
         logo: LogoAsset::default(),
         session_cookie_secure: false,
         session_ttl,
-    }
+    };
+    let runtime = RuntimeState {
+        shutdown: Arc::new(tokio::sync::Notify::new()),
+        updates_cache: UpdatesCache::new(Duration::from_secs(1), Duration::from_secs(1)),
+        snapshot_cache: Arc::new(RwLock::new(None)),
+    };
+    AppState::new(
+        Arc::new(crate::application::context::AppContext::in_memory()),
+        static_cfg,
+        runtime,
+    )
 }
 
 #[tokio::test]
