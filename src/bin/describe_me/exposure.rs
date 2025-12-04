@@ -7,14 +7,19 @@ pub fn apply_cli_exposure_flags(
     cfg: Option<&describe_me::DescribeConfig>,
     allow_config_exposure: bool,
 ) {
+    let mut builder = describe_me::ExposureBuilder::from_exposure(std::mem::take(exposure));
+
     if allow_config_exposure {
         if let Some(cfg) = cfg {
             if let Some(cfg_exp) = cfg.exposure.as_ref() {
-                exposure.merge(describe_me::Exposure::from(cfg_exp));
+                builder.apply_config(cfg_exp);
             }
         }
     }
-    apply_cli_flags(exposure, &cli.exposure, &cli.capture);
+
+    builder.apply_overrides(&overrides_from_cli(&cli.exposure));
+    builder.apply_capture(capture_context(&cli.capture));
+    *exposure = builder.build();
 }
 
 #[cfg(not(feature = "config"))]
@@ -23,7 +28,10 @@ pub fn apply_cli_exposure_flags(
     cli: &CliConfig,
     _allow_config_exposure: bool,
 ) {
-    apply_cli_flags(exposure, &cli.exposure, &cli.capture);
+    let mut builder = describe_me::ExposureBuilder::from_exposure(std::mem::take(exposure));
+    builder.apply_overrides(&overrides_from_cli(&cli.exposure));
+    builder.apply_capture(capture_context(&cli.capture));
+    *exposure = builder.build();
 }
 
 #[cfg(all(feature = "web", feature = "config"))]
@@ -33,24 +41,23 @@ pub fn apply_web_exposure_flags(
     cfg: Option<&describe_me::DescribeConfig>,
     allow_config_exposure: bool,
 ) -> describe_me::Exposure {
-    let mut web_exposure = exposure;
+    let mut builder = describe_me::ExposureBuilder::from_exposure(exposure);
 
     if allow_config_exposure {
         if let Some(cfg) = cfg {
             if let Some(web_cfg) = cfg.web.as_ref() {
                 if let Some(web_exp) = web_cfg.exposure.as_ref() {
-                    web_exposure.merge(describe_me::Exposure::from(web_exp));
+                    builder.apply_config(web_exp);
                 }
             }
         }
     }
 
-    apply_web_flags(
-        &mut web_exposure,
+    builder.apply_overrides(&overrides_from_web(
         &cli.web_exposure,
         cli.exposure.no_redacted,
-    );
-    web_exposure
+    ));
+    builder.build()
 }
 
 #[cfg(all(feature = "web", not(feature = "config")))]
@@ -59,112 +66,54 @@ pub fn apply_web_exposure_flags(
     cli: &CliConfig,
     _allow_config_exposure: bool,
 ) -> describe_me::Exposure {
-    let mut web_exposure = exposure;
-    apply_web_flags(
-        &mut web_exposure,
+    let mut builder = describe_me::ExposureBuilder::from_exposure(exposure);
+    builder.apply_overrides(&overrides_from_web(
         &cli.web_exposure,
         cli.exposure.no_redacted,
-    );
-    web_exposure
+    ));
+    builder.build()
 }
 
-fn apply_cli_flags(
-    exposure: &mut describe_me::Exposure,
-    opts: &ExposureOpts,
-    capture: &CaptureOpts,
-) {
-    if opts.expose_all {
-        *exposure = describe_me::Exposure::all();
-    } else {
-        if opts.expose_hostname {
-            exposure.set_hostname(true);
-        }
-        if opts.expose_os {
-            exposure.set_os(true);
-        }
-        if opts.expose_kernel {
-            exposure.set_kernel(true);
-        }
-        if opts.expose_services {
-            exposure.set_services(true);
-        }
-        if opts.expose_disk_partitions {
-            exposure.set_disk_partitions(true);
-        }
-        if opts.expose_network_traffic {
-            exposure.set_network_traffic(true);
-        }
-        if opts.expose_containers_summary {
-            exposure.set_containers_summary(true);
-        }
-        if opts.expose_containers_details {
-            exposure.set_containers_details(true);
-        }
-        if opts.expose_updates {
-            exposure.set_updates(true);
-        }
-        if opts.expose_extensions {
-            exposure.set_extensions(true);
-        }
-    }
-
-    if opts.no_redacted {
-        exposure.redacted = false;
-    }
-
-    if capture.net_listen {
-        exposure.set_listening_sockets(true);
-    }
-    if capture.net_traffic {
-        exposure.set_network_traffic(true);
-    }
-    if capture.containers {
-        exposure.set_containers_details(true);
+fn overrides_from_cli(opts: &ExposureOpts) -> describe_me::ExposureOverrides {
+    describe_me::ExposureOverrides {
+        expose_hostname: opts.expose_hostname,
+        expose_os: opts.expose_os,
+        expose_kernel: opts.expose_kernel,
+        expose_services: opts.expose_services,
+        expose_disk_partitions: opts.expose_disk_partitions,
+        expose_network_traffic: opts.expose_network_traffic,
+        expose_containers_summary: opts.expose_containers_summary,
+        expose_containers_details: opts.expose_containers_details,
+        expose_updates: opts.expose_updates,
+        expose_extensions: opts.expose_extensions,
+        expose_all: opts.expose_all,
+        no_redacted: opts.no_redacted,
+        expose_listening_sockets: false,
     }
 }
 
-#[cfg(feature = "web")]
-fn apply_web_flags(
-    exposure: &mut describe_me::Exposure,
-    opts: &WebExposureOpts,
-    no_redacted: bool,
-) {
-    if opts.expose_all {
-        *exposure = describe_me::Exposure::all();
-    } else {
-        if opts.expose_hostname {
-            exposure.set_hostname(true);
-        }
-        if opts.expose_os {
-            exposure.set_os(true);
-        }
-        if opts.expose_kernel {
-            exposure.set_kernel(true);
-        }
-        if opts.expose_services {
-            exposure.set_services(true);
-        }
-        if opts.expose_disk_partitions {
-            exposure.set_disk_partitions(true);
-        }
-        if opts.expose_network_traffic {
-            exposure.set_network_traffic(true);
-        }
-        if opts.expose_containers_summary {
-            exposure.set_containers_summary(true);
-        }
-        if opts.expose_containers_details {
-            exposure.set_containers_details(true);
-        }
-        if opts.expose_updates {
-            exposure.set_updates(true);
-        }
-        if opts.expose_extensions {
-            exposure.set_extensions(true);
-        }
+fn overrides_from_web(opts: &WebExposureOpts, no_redacted: bool) -> describe_me::ExposureOverrides {
+    describe_me::ExposureOverrides {
+        expose_hostname: opts.expose_hostname,
+        expose_os: opts.expose_os,
+        expose_kernel: opts.expose_kernel,
+        expose_services: opts.expose_services,
+        expose_disk_partitions: opts.expose_disk_partitions,
+        expose_network_traffic: opts.expose_network_traffic,
+        expose_containers_summary: opts.expose_containers_summary,
+        expose_containers_details: opts.expose_containers_details,
+        expose_updates: opts.expose_updates,
+        expose_extensions: opts.expose_extensions,
+        expose_all: opts.expose_all,
+        no_redacted,
+        expose_listening_sockets: false,
     }
+}
 
-    if no_redacted {
-        exposure.redacted = false;
+fn capture_context(capture: &CaptureOpts) -> describe_me::ExposureCaptureContext {
+    describe_me::ExposureCaptureContext {
+        net_listen: capture.net_listen,
+        net_traffic: capture.net_traffic,
+        containers: capture.containers,
     }
 }
