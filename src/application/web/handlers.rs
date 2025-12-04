@@ -32,8 +32,9 @@ use super::{
     security::{attach_session_cookie, AuthGuard},
     template::{render_containers_page, render_index, render_logs_page, render_updates_page},
     views::{ContainersViewModel, IndexViewModel, LogsViewModel, UpdatesViewModel},
-    AppState, CspNonce,
+    AppState,
 };
+use crate::application::web::csp::CspNonce;
 
 #[derive(Deserialize)]
 pub(super) struct DescriptionPayload {
@@ -118,7 +119,7 @@ struct ContainersApiResponse {
 }
 
 pub(super) async fn logo_asset(State(state): State<AppState>) -> Response {
-    state.logo.response()
+    state.logo().response()
 }
 
 pub(super) async fn index(
@@ -128,7 +129,7 @@ pub(super) async fn index(
 ) -> impl IntoResponse {
     let session = guard.into_session();
     let vm = IndexViewModel {
-        web_debug: state.web_debug,
+        web_debug: state.web_debug(),
         csp_nonce: csp_nonce.as_str(),
     };
     let mut response = Html(render_index(&vm)).into_response();
@@ -144,7 +145,7 @@ pub(super) async fn updates_page(
 ) -> impl IntoResponse {
     let session = guard.into_session();
 
-    if !state.exposure.updates() {
+    if !state.exposure().updates() {
         let message = "L'exposition des mises à jour est désactivée pour cette instance.";
         let vm = UpdatesViewModel {
             updates: None,
@@ -157,10 +158,10 @@ pub(super) async fn updates_page(
         return response;
     }
 
-    state.updates_cache.ensure_fresh().await;
-    let updates = match state.updates_cache.peek().await {
+    state.updates_cache().ensure_fresh().await;
+    let updates = match state.updates_cache().peek().await {
         Some(info) => Some(info),
-        None => state.updates_cache.refresh_blocking().await,
+        None => state.updates_cache().refresh_blocking().await,
     };
 
     let vm = UpdatesViewModel {
@@ -181,7 +182,7 @@ pub(super) async fn update_description(
 ) -> Response {
     let session = guard.into_session();
     let mut response = match normalize_description(&payload.text) {
-        Ok(text) => match set_server_description_with(&state.ctx, &text) {
+        Ok(text) => match set_server_description_with(&state.ctx(), &text) {
             Ok(()) => (
                 StatusCode::OK,
                 Json(DescriptionResponse { description: text }),
@@ -224,12 +225,16 @@ pub(super) async fn update_tags(
 
         let op = payload.op;
         let result = match op {
-            TagOperation::Set => set_server_tags_with(&state.ctx, tags.iter().map(|s| s.as_str())),
-            TagOperation::Add => add_server_tags_with(&state.ctx, tags.iter().map(|s| s.as_str())),
-            TagOperation::Remove => {
-                remove_server_tags_with(&state.ctx, tags.iter().map(|s| s.as_str()))
+            TagOperation::Set => {
+                set_server_tags_with(&state.ctx(), tags.iter().map(|s| s.as_str()))
             }
-            TagOperation::Clear => clear_server_tags_with(&state.ctx).map(|_| Vec::new()),
+            TagOperation::Add => {
+                add_server_tags_with(&state.ctx(), tags.iter().map(|s| s.as_str()))
+            }
+            TagOperation::Remove => {
+                remove_server_tags_with(&state.ctx(), tags.iter().map(|s| s.as_str()))
+            }
+            TagOperation::Clear => clear_server_tags_with(&state.ctx()).map(|_| Vec::new()),
         };
 
         match result {
@@ -247,14 +252,14 @@ pub(super) async fn history_series(
     guard: AuthGuard,
     Query(query): Query<HistoryRequestQuery>,
 ) -> impl IntoResponse {
-    if state.exposure.redacted {
+    if state.exposure().redacted {
         return json_error(
             StatusCode::FORBIDDEN,
             "L'historique est masqué lorsque l'exposition est redacted.",
         );
     }
 
-    let settings = state.ctx.history().settings_snapshot();
+    let settings = state.ctx().history().settings_snapshot();
     if !settings.is_active() {
         return json_error(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -271,7 +276,7 @@ pub(super) async fn history_series(
 
     let requested_server = if let Some(id) = query.server.clone() {
         id
-    } else if let Some(default_id) = state.ctx.history().default_server_id() {
+    } else if let Some(default_id) = state.ctx().history().default_server_id() {
         default_id
     } else {
         return json_error(
@@ -294,7 +299,7 @@ pub(super) async fn history_series(
         .min(retention_cap);
 
     let rounding = settings.rounding_seconds.max(1);
-    let series = match state.ctx.history().query_series(
+    let series = match state.ctx().history().query_series(
         &requested_server,
         Duration::from_secs(window_secs),
         limit,
@@ -329,7 +334,7 @@ pub(super) async fn history_series(
         }
     };
 
-    let allow_disk = state.exposure.disk_partitions();
+    let allow_disk = state.exposure().disk_partitions();
     let points = series
         .points
         .into_iter()
