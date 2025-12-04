@@ -27,9 +27,11 @@ pub use crate::application::history::{
 
 #[cfg(feature = "serde")]
 pub use crate::application::capture_snapshot_with_view;
-pub use crate::application::exposure::Exposure;
 #[cfg(feature = "serde")]
 pub use crate::application::exposure::SnapshotView;
+pub use crate::application::exposure::{
+    Exposure, ExposureBuilder, ExposureCaptureContext, ExposureOverrides,
+};
 
 pub use crate::application::metadata::{
     add_server_tags_with, clear_server_description_with, clear_server_tags_with,
