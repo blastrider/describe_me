@@ -87,19 +87,19 @@ pub(super) async fn login(State(state): State<AppState>, request: AxumRequest) -
         }
     };
 
-    match state.security.login(&parts, &token, WebRoute::Html).await {
+    match state.security().login(&parts, &token, WebRoute::Html).await {
         Ok(session) => {
             let mut response = Redirect::to("/").into_response();
             attach_session_cookie(response.headers_mut(), &session, &state);
             response
         }
-        Err(rejection) => auth_error_response(rejection, state.session_cookie_secure),
+        Err(rejection) => auth_error_response(rejection, state.session_cookie_secure()),
     }
 }
 
 pub(super) async fn logout(State(state): State<AppState>) -> Response {
     let mut response = Redirect::to("/").into_response();
-    clear_session_cookie(response.headers_mut(), state.session_cookie_secure);
+    clear_session_cookie(response.headers_mut(), state.session_cookie_secure());
     response
 }
 
