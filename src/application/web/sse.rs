@@ -269,10 +269,11 @@ pub(super) async fn sse_stream(
     let token_key = session.token_key();
     let permit = session.take_sse_permit();
     let global_permit = session.take_global_permit();
-    let policy = state.security.policy();
-    let shutdown_notify = state.shutdown.clone();
+    let security = state.security();
+    let policy = security.policy();
+    let shutdown_notify = state.shutdown();
 
-    let mut interval = state.interval;
+    let mut interval = state.interval();
     let min_interval = policy.sse_min_event_interval();
     if interval < min_interval {
         interval = min_interval;
@@ -306,11 +307,11 @@ pub(super) async fn sse_stream(
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     #[cfg(feature = "config")]
-    let config = state.config.clone();
-    let exposure = state.exposure;
-    let updates_cache = state.updates_cache.clone();
+    let config = state.config();
+    let exposure = state.exposure();
+    let updates_cache = state.updates_cache().clone();
     let state_for_cache = state.clone();
-    let ctx = state.ctx.clone();
+    let ctx = state.ctx();
 
     let stream = IntervalStream::new(ticker).then(move |_| {
         #[cfg(feature = "config")]
