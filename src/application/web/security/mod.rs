@@ -1,3 +1,18 @@
+//! Web security stack orchestrating authentication, rate limits, brute-force protection,
+//! token affinity and SSE admission.
+//!
+//! Key roles:
+//! - `SecurityPolicy`: configuration of thresholds, windows, cooldowns and limits per route.
+//! - `SecurityState`: in-memory counters and trackers updated for each request.
+//! - `WebSecurityEngine`: internal orchestrator applying the policy on the state.
+//! - `WebSecurity`: Axum-facing facade (auth guards, hooks, SSE permits, logging).
+//!
+//! Typical request flow:
+//! ```text
+//! Request -> Auth -> RateLimit -> BruteForce -> TokenAffinity -> GlobalSlots -> Decision
+//! ```
+//! This module is structured to keep these concerns isolated while staying extensible.
+
 mod auth;
 mod limits;
 mod session;
@@ -5,8 +20,9 @@ mod sse;
 
 pub(crate) use limits::GlobalPermit;
 
-use super::{clear_session_cookie, template, AppState, CspNonce, WebAccess};
-use auth::{build_request, verify_token, AuthRequest, TokenVerifier};
+use super::{clear_session_cookie, set_session_cookie, template, AppState, WebAccess};
+use crate::application::web::csp::CspNonce;
+use auth::{build_request, verify_token, AuthRequest, CredentialOverride, TokenVerifier};
 use limits::{enforce_rate_limits, ensure_not_blocked, SecurityPolicy, SecurityState};
 use session::SessionManager;
 use sse::acquire_permit;
@@ -18,7 +34,7 @@ use crate::domain::WebSecurityConfig;
 use axum::{
     async_trait,
     extract::FromRequestParts,
-    http::{header, header::HeaderValue, request::Parts, StatusCode},
+    http::{header, header::HeaderValue, request::Parts, HeaderMap, StatusCode},
     response::{Html, IntoResponse, Response},
 };
 pub(crate) use sse::SsePermit;
@@ -80,6 +96,21 @@ impl AuthGuard {
     }
 }
 
+pub(super) fn attach_session_cookie(
+    headers: &mut HeaderMap,
+    session: &AuthSession,
+    state: &AppState,
+) {
+    if let Some(cookie) = session.session_cookie() {
+        set_session_cookie(
+            headers,
+            cookie,
+            state.session_ttl(),
+            state.session_cookie_secure(),
+        );
+    }
+}
+
 #[cfg(test)]
 pub(super) fn make_test_guard(route: WebRoute) -> AuthGuard {
     use std::net::Ipv4Addr;
@@ -105,7 +136,7 @@ impl FromRequestParts<AppState> for AuthGuard {
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
         let route = WebRoute::from_path(parts.uri.path());
-        match state.security.authorize(parts, route).await {
+        match state.security().authorize(parts, route).await {
             Ok(session) => Ok(AuthGuard { session }),
             Err(rejection) => {
                 let wants_styled_html = matches!(route, WebRoute::Html | WebRoute::Logs)
@@ -121,7 +152,7 @@ impl FromRequestParts<AppState> for AuthGuard {
                 } else {
                     None
                 };
-                Err(rejection.into_response(state.session_cookie_secure, html_body))
+                Err(rejection.into_response(state.session_cookie_secure(), html_body))
             }
         }
     }
@@ -224,6 +255,10 @@ impl WebSecurity {
         &self.policy
     }
 
+    pub fn session_ttl(&self) -> Duration {
+        self.sessions.ttl()
+    }
+
     fn log_incident(&self, category: &'static str, request: &AuthRequest, detail: Option<String>) {
         LogEvent::SecurityIncident {
             category: Cow::Borrowed(category),
@@ -254,15 +289,7 @@ impl WebSecurity {
         route: WebRoute,
     ) -> Result<AuthSession, SecurityRejection> {
         let now = std::time::Instant::now();
-        let request = match build_request(
-            &self.allow,
-            &self.trusted_proxies,
-            &self.sessions,
-            self.token.is_some(),
-            parts,
-            route,
-            now,
-        ) {
+        let request = match self.build_request(parts, route, now, None) {
             Ok(req) => req,
             Err(rejection) => {
                 if rejection.is_auth_failure() {
@@ -288,19 +315,9 @@ impl WebSecurity {
             }
             return Err(rejection);
         }
-        let session_cookie = match verify_token(
-            &self.state,
-            &self.policy,
-            self.token.as_ref(),
-            &self.sessions,
-            &request,
-            now,
-        )
-        .await
-        {
+        let session_cookie = match self.verify_request(&request, now).await {
             Ok(cookie) => cookie,
             Err(rejection) => {
-                self.log_rejection("token_verification_failed", &request, &rejection);
                 if rejection.is_auth_failure() {
                     uniform_auth_delay().await;
                 }
@@ -366,6 +383,146 @@ impl WebSecurity {
             global_permit,
         })
     }
+
+    pub async fn login(
+        &self,
+        parts: &Parts,
+        token: &str,
+        route: WebRoute,
+    ) -> Result<AuthSession, SecurityRejection> {
+        let now = std::time::Instant::now();
+        let request = match self.build_request(
+            parts,
+            route,
+            now,
+            Some(CredentialOverride::RawToken(token.to_owned())),
+        ) {
+            Ok(req) => req,
+            Err(rejection) => return Err(rejection),
+        };
+
+        let global_permit = match self
+            .state
+            .acquire_global_permit(request.route, &self.policy)
+        {
+            Ok(permit) => permit,
+            Err(rejection) => {
+                self.log_rejection("rate_limit_global", &request, &rejection);
+                return Err(rejection);
+            }
+        };
+
+        if let Err(rejection) = ensure_not_blocked(&self.state, &self.policy, &request, now).await {
+            self.log_rejection("cooldown_active", &request, &rejection);
+            if rejection.is_auth_failure() {
+                uniform_auth_delay().await;
+            }
+            return Err(rejection);
+        }
+
+        let session_cookie = match self.verify_request(&request, now).await {
+            Ok(cookie) => cookie,
+            Err(rejection) => {
+                if rejection.is_auth_failure() {
+                    uniform_auth_delay().await;
+                }
+                return Err(rejection);
+            }
+        };
+
+        if !self
+            .state
+            .ensure_token_affinity(
+                request.route,
+                request.token_key,
+                request.remote_ip,
+                &self.policy,
+                request.trusted_ip,
+                now,
+            )
+            .await
+        {
+            self.log_incident(
+                "token_affinity_violation",
+                &request,
+                Some(format!(
+                    "limit={}",
+                    self.policy.token_affinity_limit(request.trusted_ip)
+                )),
+            );
+            uniform_auth_delay().await;
+            return Err(SecurityRejection::unauthorized(None));
+        }
+
+        if let Err(rejection) = enforce_rate_limits(&self.state, &self.policy, &request, now).await
+        {
+            self.log_rejection("rate_limit", &request, &rejection);
+            return Err(rejection);
+        }
+
+        self.state
+            .note_success(request.remote_ip, request.token_key)
+            .await;
+
+        LogEvent::AuthOk {
+            ip: Cow::Owned(request.remote_ip.to_string()),
+            route: Cow::Owned(request.route.as_str().to_string()),
+            token: Cow::Owned(request.token_key.to_string()),
+        }
+        .emit();
+
+        Ok(AuthSession {
+            route: request.route,
+            ip: request.remote_ip,
+            token: request.token_key,
+            sse_permit: None,
+            session_cookie: session_cookie.map(|value| Arc::<str>::from(value.into_boxed_str())),
+            global_permit,
+        })
+    }
+
+    fn build_request(
+        &self,
+        parts: &Parts,
+        route: WebRoute,
+        now: std::time::Instant,
+        credential_override: Option<CredentialOverride>,
+    ) -> Result<AuthRequest, SecurityRejection> {
+        build_request(
+            &self.allow,
+            &self.trusted_proxies,
+            &self.sessions,
+            self.token.is_some(),
+            parts,
+            route,
+            now,
+            credential_override,
+        )
+    }
+
+    async fn verify_request(
+        &self,
+        request: &AuthRequest,
+        now: std::time::Instant,
+    ) -> Result<Option<String>, SecurityRejection> {
+        let session_cookie = match verify_token(
+            &self.state,
+            &self.policy,
+            self.token.as_ref(),
+            &self.sessions,
+            request,
+            now,
+        )
+        .await
+        {
+            Ok(cookie) => cookie,
+            Err(rejection) => {
+                self.log_rejection("token_verification_failed", request, &rejection);
+                return Err(rejection);
+            }
+        };
+        Ok(session_cookie)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -380,7 +537,7 @@ impl WebRoute {
     pub fn from_path(path: &str) -> Self {
         if path == "/sse" {
             WebRoute::Sse
-        } else if path.starts_with("/api/logs") || path == "/logs" {
+        } else if path.starts_with("/api/logs") || path == "/logs" || path == "/metrics" {
             WebRoute::Logs
         } else if path.starts_with("/api/history") {
             WebRoute::History
@@ -450,7 +607,7 @@ impl SecurityRejection {
         Self::rate_limited(retry)
     }
 
-    fn into_response(self, secure_cookie: bool, html_body: Option<String>) -> Response {
+    pub(super) fn into_response(self, secure_cookie: bool, html_body: Option<String>) -> Response {
         let mut response = match html_body {
             Some(html) => (self.status, Html(html)).into_response(),
             None => (self.status, self.body).into_response(),
@@ -603,286 +760,11 @@ impl IpMatcher {
         }
     }
 }
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[cfg(feature = "config")]
-    use crate::domain::WebSecurityConfig;
-    use axum::extract::ConnectInfo;
-    use axum::http::Request;
-    use std::net::{IpAddr, Ipv4Addr};
-    use std::sync::OnceLock;
-
-    fn make_access(token: Option<&str>) -> WebAccess {
-        WebAccess {
-            token: token.map(|t| t.to_string()),
-            allow_ips: Vec::new(),
-            allow_origins: Vec::new(),
-            trusted_proxies: Vec::new(),
-            tls: None,
-            session_cookie_secure: true,
-        }
-    }
-
-    fn bcrypt_hash(token: &str) -> String {
-        bcrypt::hash(token, bcrypt::DEFAULT_COST).expect("bcrypt hash")
-    }
-
-    fn cached_hash() -> &'static str {
-        static HASH: OnceLock<String> = OnceLock::new();
-        HASH.get_or_init(|| bcrypt_hash("secret"))
-    }
-
-    #[cfg(feature = "config")]
-    fn build_security(token: Option<&str>) -> WebSecurity {
-        WebSecurity::build(make_access(token), None).unwrap()
-    }
-
-    #[cfg(not(feature = "config"))]
-    fn build_security(token: Option<&str>) -> WebSecurity {
-        WebSecurity::build(make_access(token)).unwrap()
-    }
-
-    fn make_parts(path: &str, ip: IpAddr, token: Option<&str>) -> Parts {
-        let request = Request::builder().uri(path).body(()).unwrap();
-        let (mut parts, _) = request.into_parts();
-        if let Some(token) = token {
-            parts.headers.insert(
-                axum::http::header::AUTHORIZATION,
-                format!("Bearer {token}").parse().unwrap(),
-            );
-        }
-        parts
-            .extensions
-            .insert(ConnectInfo(std::net::SocketAddr::from((ip, 4242))));
-        parts
-    }
-
-    #[tokio::test]
-    async fn rate_limit_ip_html() {
-        let security = build_security(None);
-        let parts = make_parts("/", IpAddr::V4(Ipv4Addr::LOCALHOST), None);
-
-        let mut ok = 0u32;
-        loop {
-            match security.authorize(&parts, WebRoute::Html).await {
-                Ok(_) => ok += 1,
-                Err(err) => {
-                    assert_eq!(err.status, StatusCode::TOO_MANY_REQUESTS);
-                    assert!(err.retry_after.is_some());
-                    break;
-                }
-            }
-        }
-
-        assert_eq!(ok, 10);
-    }
-
-    #[cfg(feature = "config")]
-    fn security_with_session_ttl(secs: u64) -> WebSecurity {
-        let cfg = WebSecurityConfig {
-            session_ttl_seconds: Some(secs),
-            ..WebSecurityConfig::default()
-        };
-        WebSecurity::build(make_access(None), Some(cfg)).expect("build security")
-    }
-
-    #[cfg(feature = "config")]
-    #[test]
-    fn session_ttl_override_is_clamped() {
-        let normal = security_with_session_ttl(900);
-        assert_eq!(normal.sessions.ttl_for_tests(), Duration::from_secs(900));
-
-        let low = security_with_session_ttl(10);
-        assert_eq!(low.sessions.ttl_for_tests(), Duration::from_secs(60));
-
-        let high = security_with_session_ttl(7200);
-        assert_eq!(high.sessions.ttl_for_tests(), Duration::from_secs(3600));
-    }
-
-    #[tokio::test]
-    async fn auth_backoff_after_failures() {
-        let security = build_security(Some(cached_hash()));
-        let parts = make_parts("/", IpAddr::V4(Ipv4Addr::LOCALHOST), Some("wrong"));
-
-        for attempt in 0..6 {
-            let res = security.authorize(&parts, WebRoute::Html).await;
-            if attempt < 5 {
-                assert!(res.is_err());
-            } else {
-                let err = res.expect_err("backoff expected");
-                assert_eq!(err.status, StatusCode::TOO_MANY_REQUESTS);
-                assert!(err.retry_after.is_some());
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn sse_concurrency_limited() {
-        let hash = cached_hash();
-        let security = build_security(Some(hash));
-        let parts = make_parts("/sse", IpAddr::V4(Ipv4Addr::LOCALHOST), Some("secret"));
-
-        let session1 = security
-            .authorize(&parts, WebRoute::Sse)
-            .await
-            .expect("first SSE");
-        let err = security
-            .authorize(&parts, WebRoute::Sse)
-            .await
-            .expect_err("second SSE should be blocked");
-        assert_eq!(err.status, StatusCode::TOO_MANY_REQUESTS);
-        assert!(err.retry_after.is_some());
-
-        drop(session1);
-
-        let session2 = security
-            .authorize(&parts, WebRoute::Sse)
-            .await
-            .expect("slot released");
-        assert_eq!(session2.route(), WebRoute::Sse);
-        assert_eq!(session2.ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
-        assert_eq!(session2.token_key(), TokenKey::from_value("secret"));
-    }
-
-    use std::collections::HashMap;
-    use std::sync::{Arc, Mutex};
-    use tracing::{field::Visit, Event};
-    use tracing_subscriber::{layer::Context, prelude::*, registry::LookupSpan, Layer, Registry};
-
-    #[derive(Clone, Default)]
-    struct RecordingLayer {
-        events: Arc<Mutex<Vec<HashMap<String, String>>>>,
-    }
-
-    impl RecordingLayer {
-        fn new() -> Self {
-            Self::default()
-        }
-
-        fn records(&self) -> Vec<HashMap<String, String>> {
-            self.events.lock().unwrap().clone()
-        }
-
-        fn clear(&self) {
-            self.events.lock().unwrap().clear();
-        }
-    }
-
-    impl<S> Layer<S> for RecordingLayer
-    where
-        S: tracing::Subscriber + for<'a> LookupSpan<'a>,
-    {
-        fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-            let mut visitor = FieldRecorder::default();
-            event.record(&mut visitor);
-            let mut record = visitor.finish();
-            record.insert(
-                "level".into(),
-                event.metadata().level().as_str().to_string(),
-            );
-            record.insert("target".into(), event.metadata().target().to_string());
-            self.events.lock().unwrap().push(record);
-        }
-    }
-
-    #[derive(Default)]
-    struct FieldRecorder {
-        fields: HashMap<String, String>,
-    }
-
-    impl FieldRecorder {
-        fn finish(self) -> HashMap<String, String> {
-            self.fields
-        }
-    }
-
-    impl Visit for FieldRecorder {
-        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-            self.fields
-                .insert(field.name().to_string(), value.to_string());
-        }
-
-        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-            self.fields
-                .insert(field.name().to_string(), format!("{:?}", value));
-        }
-    }
-
-    #[tokio::test]
-    async fn logs_token_affinity_violation() {
-        let layer = RecordingLayer::new();
-        let subscriber = Registry::default().with(layer.clone());
-        let guard = tracing::subscriber::set_default(subscriber);
-        tracing::callsite::rebuild_interest_cache();
-
-        LogEvent::SecurityIncident {
-            category: Cow::Borrowed("test"),
-            route: Cow::Borrowed("/"),
-            ip: None,
-            token: None,
-            detail: None,
-        }
-        .emit();
-        assert!(
-            !layer.records().is_empty(),
-            "recording layer inactive before test"
-        );
-        layer.clear();
-
-        let hash = cached_hash();
-        let security = build_security(Some(hash));
-        let token = "secret";
-
-        let ip1 = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10));
-        let ip2 = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 11));
-        let ip3 = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 12));
-
-        let parts1 = make_parts("/", ip1, Some(token));
-        let parts2 = make_parts("/", ip2, Some(token));
-        let parts3 = make_parts("/", ip3, Some(token));
-
-        let session1 = security
-            .authorize(&parts1, WebRoute::Html)
-            .await
-            .expect("first request should succeed");
-        let session2 = security
-            .authorize(&parts2, WebRoute::Html)
-            .await
-            .expect("second request should succeed");
-
-        let err = security
-            .authorize(&parts3, WebRoute::Html)
-            .await
-            .expect_err("third request should be rejected");
-        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
-
-        drop(session1);
-        drop(session2);
-
-        tokio::task::yield_now().await;
-        let mut found = false;
-        let mut records_snapshot = Vec::new();
-        for _ in 0..10 {
-            let records = layer.records();
-            if records.iter().any(|record| {
-                record
-                    .get("category")
-                    .map(|value| value == "token_affinity_violation")
-                    .unwrap_or(false)
-            }) {
-                records_snapshot = records;
-                found = true;
-                break;
-            }
-            records_snapshot = records;
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        drop(guard);
-        assert!(
-            found,
-            "expected token_affinity_violation log, got {records_snapshot:?}"
-        );
-    }
-}
+mod tests_auth;
+#[cfg(test)]
+mod tests_bruteforce;
+#[cfg(test)]
+mod tests_common;
+#[cfg(test)]
+mod tests_token_affinity;

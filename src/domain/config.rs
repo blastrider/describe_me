@@ -170,6 +170,7 @@ pub struct ExposureConfig {
     /// Autoriser l'exposition des extensions/plugins.
     pub expose_extensions: bool,
     /// Fournir des valeurs masquées (versions tronquées) lorsque l'exposition complète est désactivée.
+    /// Safe by default; mettre à `false` expose davantage d'informations potentiellement sensibles.
     #[cfg_attr(feature = "serde", serde(default = "ExposureConfig::default_redacted"))]
     pub redacted: bool,
 }
@@ -330,9 +331,9 @@ impl RouteLimitConfig {
     pub const fn history_default() -> Self {
         Self {
             window_seconds: 60,
-            per_ip: 6,
-            per_token: 4,
-            global: 40,
+            per_ip: 24,
+            per_token: 16,
+            global: 120,
         }
     }
 

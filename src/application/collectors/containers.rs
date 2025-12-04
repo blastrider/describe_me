@@ -1,7 +1,6 @@
-use crate::application::collectors::SnapshotCollector;
+use crate::application::collectors::{log_system_error, SnapshotCollector};
 use crate::application::context::AppContext;
 use crate::domain::{CaptureOptions, DescribeError, SystemSnapshot};
-use tracing::warn;
 
 pub struct ContainersCollector;
 
@@ -22,7 +21,7 @@ impl SnapshotCollector for ContainersCollector {
                 snapshot.containers = Some(data);
             }
             Err(err) => {
-                warn!(error = %err, "capture_containers_failed");
+                log_system_error("capture_containers", &err);
                 snapshot.containers = None;
             }
         }

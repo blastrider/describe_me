@@ -2,6 +2,8 @@ use crate::domain::{ContainerInfo, ContainersSnapshot, ContainersSummary};
 use crate::SharedSlice;
 use describe_me_plugin_sdk::PluginOutput;
 use std::net::IpAddr;
+#[cfg(feature = "serde")]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 #[cfg(feature = "serde")]
 use std::time::Instant;
@@ -191,6 +193,9 @@ pub struct ContainersCacheService {
 }
 
 #[cfg(feature = "serde")]
+static NO_RUNTIME_LOGGED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(feature = "serde")]
 impl Clone for ContainersCacheService {
     fn clone(&self) -> Self {
         let snapshot = self
@@ -231,6 +236,15 @@ impl ContainersCacheService {
                 Ok(snapshot)
             }
             Err(err) => {
+                if is_no_runtime(&err) {
+                    let snapshot = placeholder_snapshot();
+                    {
+                        let mut guard = self.cache.lock().expect("containers cache mutex poisoned");
+                        guard.store(snapshot.clone(), now);
+                    }
+                    log_no_runtime_once(&err);
+                    return Ok(snapshot);
+                }
                 let cached = {
                     let guard = self.cache.lock().expect("containers cache mutex poisoned");
                     guard.reuse_stale()
@@ -290,6 +304,38 @@ fn collect_from_plugin() -> Result<ContainersSnapshot, ContainersCaptureError> {
     })?;
 
     parse_plugin_output(&output).map_err(ContainersCaptureError::from)
+}
+
+#[cfg(feature = "serde")]
+fn placeholder_snapshot() -> ContainersSnapshot {
+    ContainersSnapshot {
+        summary: Some(ContainersSummary {
+            total: 0,
+            running: 0,
+        }),
+        containers: None,
+    }
+}
+
+#[cfg(feature = "serde")]
+fn is_no_runtime(err: &ContainersCaptureError) -> bool {
+    matches!(
+        err,
+        ContainersCaptureError::Plugin {
+            exit_code: Some(ContainersPluginExitCode::NoRuntime),
+            ..
+        }
+    )
+}
+
+#[cfg(feature = "serde")]
+fn log_no_runtime_once(err: &ContainersCaptureError) {
+    if NO_RUNTIME_LOGGED
+        .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+        .is_ok()
+    {
+        warn!(error = %err, "containers_runtime_absent");
+    }
 }
 
 #[cfg(feature = "serde")]
@@ -521,5 +567,26 @@ mod tests {
             err,
             ContainersContractError::UnsupportedVersion { .. }
         ));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn detects_no_runtime_error() {
+        let err = ContainersCaptureError::Plugin {
+            message: "aucun runtime détecté".into(),
+            exit_code: Some(ContainersPluginExitCode::NoRuntime),
+            soft: true,
+        };
+        assert!(is_no_runtime(&err));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn placeholder_snapshot_sets_zero_counts() {
+        let snapshot = placeholder_snapshot();
+        let summary = snapshot.summary.expect("summary");
+        assert_eq!(summary.total, 0);
+        assert_eq!(summary.running, 0);
+        assert!(snapshot.containers.is_none());
     }
 }

@@ -1,11 +1,11 @@
 [package]
 name = "describe_me"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "Décrit rapidement un serveur (CPU, RAM, OS, uptime, services…), pour admins système."
 readme = "README.md"
-repository = "https://github.com/Max-Perso/describe_me"
+repository = "https://github.com/blastrider/describe_me"
 keywords = ["system", "monitoring", "sysinfo", "server"]
 categories = ["system", "command-line-utilities"]
 
@@ -43,7 +43,7 @@ cli = ["dep:anyhow", "dep:clap", "serde", "dep:nix", "dep:argon2", "dep:bcrypt",
 internals = []
 config = ["serde", "dep:toml"]
 net = []
-web = ["dep:tokio", "dep:axum", "dep:tokio-stream", "serde", "dep:argon2", "dep:bcrypt", "dep:rand_core", "dep:axum-server"]
+web = ["dep:tokio", "dep:axum", "dep:tokio-stream", "serde", "dep:argon2", "dep:bcrypt", "dep:rand_core", "dep:axum-server", "dep:serde_urlencoded"]
 journald = ["dep:tracing-journald"]  
 
 [dependencies]
@@ -68,7 +68,9 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }   # <
 tracing-journald = { version = "0.3", optional = true }    
 pin-project = "1.1"
 percent-encoding = "2.3"
+serde_urlencoded = { version = "0.7", optional = true }
 base64 = "0.22"
+tower = "0.4"
 hex = "0.4"
 sha2 = "0.10"
 axum-server = { version = "0.7", features = ["tls-rustls"], optional = true }

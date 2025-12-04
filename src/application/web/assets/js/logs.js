@@ -22,12 +22,8 @@
   }
 
   async function fetchLogs(lines) {
-    const headers = {};
-    if (typeof currentToken === "string" && currentToken) {
-      headers["Authorization"] = `Bearer ${currentToken}`;
-    }
     const url = `${ENDPOINT}?lines=${lines}`;
-    const res = await fetch(url, { headers, credentials: "same-origin" });
+    const res = await fetch(url, { credentials: "same-origin" });
 
     if (res.status === 401) {
       throw new Error("auth");
@@ -166,6 +162,9 @@
         let message = "Lecture des logs impossible.";
         if (err && err.message === "auth") {
           message = "Jeton requis pour lire les logs.";
+          if (typeof showTokenPrompt === "function") {
+            showTokenPrompt(message);
+          }
         } else if (err && err.message === "forbidden") {
           message = "Accès aux logs refusé pour cette IP/token.";
         }

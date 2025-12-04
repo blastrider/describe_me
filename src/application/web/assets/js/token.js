@@ -1,50 +1,4 @@
-const TOKEN_STORAGE_KEY = 'describe_me_token';
-
-function loadPersistedToken() {
-  try {
-    return window.localStorage.getItem(TOKEN_STORAGE_KEY) || "";
-  } catch (_) {
-    try {
-      return window.sessionStorage.getItem(TOKEN_STORAGE_KEY) || "";
-    } catch (_) {
-      return "";
-    }
-  }
-}
-
-function persistToken(value) {
-  try {
-    window.localStorage.setItem(TOKEN_STORAGE_KEY, value);
-  } catch (_) {
-    try {
-      window.sessionStorage.setItem(TOKEN_STORAGE_KEY, value);
-    } catch (_) {
-      // ignore
-    }
-  }
-}
-
-function clearPersistedToken() {
-  try {
-    window.localStorage.removeItem(TOKEN_STORAGE_KEY);
-  } catch (_) {
-    // ignore
-  }
-  try {
-    window.sessionStorage.removeItem(TOKEN_STORAGE_KEY);
-  } catch (_) {
-    // ignore
-  }
-}
-
-let currentToken = loadPersistedToken();
-if (currentToken) {
-  tokenInput.value = currentToken;
-}
-let abortController = null;
-let reconnectTimer = null;
-
-tokenForm.addEventListener('submit', (event) => {
+tokenForm.addEventListener('submit', async (event) => {
   event.preventDefault();
   const value = tokenInput.value.trim();
   if (!value) {
@@ -52,15 +6,16 @@ tokenForm.addEventListener('submit', (event) => {
     tokenInput.focus();
     return;
   }
-  currentToken = value;
-  persistToken(currentToken);
-  hideTokenPrompt();
-  restartStream();
+  const ok = await submitToken(value);
+  if (ok) {
+    tokenInput.value = "";
+    hideTokenPrompt();
+    restartStream();
+  }
 });
 
-tokenForget.addEventListener('click', () => {
-  clearPersistedToken();
-  currentToken = "";
+tokenForget.addEventListener('click', async () => {
+  await logoutServerSession();
   tokenInput.value = "";
   tokenErrorEl.textContent = "";
   showTokenPrompt("");
@@ -68,15 +23,9 @@ tokenForget.addEventListener('click', () => {
 
 if (tokenOpen) {
   tokenOpen.addEventListener('click', () => {
-    tokenInput.value = currentToken;
     tokenErrorEl.textContent = "";
-    if (abortController) {
-      abortController.abort();
-      abortController = null;
-    }
-    if (reconnectTimer) {
-      clearTimeout(reconnectTimer);
-      reconnectTimer = null;
+    if (typeof stopStream === "function") {
+      stopStream();
     }
     showTokenPrompt("");
   });
@@ -108,6 +57,47 @@ function hideTokenPrompt() {
   sensitiveNodes.forEach((node) => node.classList.remove('blurred'));
 }
 
-function clearSessionCookie() {
-  document.cookie = `${SESSION_COOKIE_NAME}=; Max-Age=0; path=/; SameSite=Strict`;
+async function logoutServerSession() {
+  try {
+    await fetch("/auth/logout", {
+      method: "POST",
+      credentials: "same-origin",
+    });
+  } catch (_) {
+    // ignore network failures
+  }
+}
+
+async function submitToken(token) {
+  try {
+    const res = await fetch("/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({ token }),
+    });
+    if (res.ok || res.status === 303) {
+      return true;
+    }
+    const message = await readLoginError(res);
+    tokenErrorEl.textContent = message || "Jeton invalide.";
+    return false;
+  } catch (err) {
+    tokenErrorEl.textContent = "Connexion impossible (réessayez).";
+    return false;
+  }
+}
+
+async function readLoginError(response) {
+  try {
+    const text = await response.text();
+    if (!text) return "";
+    const data = JSON.parse(text);
+    if (data && typeof data.error === "string") {
+      return data.error;
+    }
+    return text;
+  } catch (_) {
+    return "";
+  }
 }

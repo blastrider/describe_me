@@ -86,10 +86,154 @@ impl std::ops::BitOrAssign for ExposureFlags {
     }
 }
 
+/// Builder centralisant l'agrégation des différentes sources (config, CLI, web) vers une [`Exposure`].
+#[derive(Debug, Clone)]
+pub struct ExposureBuilder {
+    flags: ExposureFlags,
+    redacted: bool,
+}
+
+impl ExposureBuilder {
+    pub fn new() -> Self {
+        Self {
+            flags: ExposureFlags::empty(),
+            redacted: true,
+        }
+    }
+
+    pub fn from_exposure(exposure: Exposure) -> Self {
+        Self {
+            flags: exposure.flags,
+            redacted: exposure.redacted,
+        }
+    }
+
+    #[cfg(feature = "config")]
+    pub fn from_config(cfg: &crate::domain::ExposureConfig) -> Self {
+        let mut builder = Self::new();
+        builder.apply_config(cfg);
+        builder
+    }
+
+    #[cfg(feature = "config")]
+    pub fn apply_config(&mut self, cfg: &crate::domain::ExposureConfig) {
+        let overrides = ExposureOverrides {
+            expose_hostname: cfg.expose_hostname,
+            expose_os: cfg.expose_os,
+            expose_kernel: cfg.expose_kernel,
+            expose_services: cfg.expose_services,
+            expose_disk_partitions: cfg.expose_disk_partitions,
+            expose_network_traffic: cfg.expose_network_traffic,
+            expose_containers_summary: cfg.expose_containers_summary,
+            expose_containers_details: cfg.expose_containers_details,
+            expose_updates: cfg.expose_updates,
+            expose_extensions: cfg.expose_extensions,
+            expose_all: false,
+            no_redacted: !cfg.redacted,
+            expose_listening_sockets: cfg.expose_listening_sockets,
+        };
+        self.apply_overrides(&overrides);
+        self.redacted &= cfg.redacted;
+    }
+
+    /// Applique des overrides explicites (CLI, Web…).
+    pub fn apply_overrides(&mut self, overrides: &ExposureOverrides) {
+        if overrides.expose_all {
+            self.flags = ExposureFlags::ALL;
+            self.redacted = false;
+            return;
+        }
+
+        self.flags
+            .set(ExposureFlags::HOSTNAME, overrides.expose_hostname);
+        self.flags.set(ExposureFlags::OS, overrides.expose_os);
+        self.flags
+            .set(ExposureFlags::KERNEL, overrides.expose_kernel);
+        self.flags
+            .set(ExposureFlags::SERVICES, overrides.expose_services);
+        self.flags
+            .set(ExposureFlags::DISK, overrides.expose_disk_partitions);
+        self.flags
+            .set(ExposureFlags::NETWORK, overrides.expose_network_traffic);
+        self.flags.set(
+            ExposureFlags::CONTAINERS_SUMMARY,
+            overrides.expose_containers_summary,
+        );
+        if overrides.expose_containers_details {
+            self.flags.insert(ExposureFlags::CONTAINERS_DETAILS);
+            self.flags.insert(ExposureFlags::CONTAINERS_SUMMARY);
+        }
+        self.flags
+            .set(ExposureFlags::UPDATES, overrides.expose_updates);
+        self.flags
+            .set(ExposureFlags::EXTENSIONS, overrides.expose_extensions);
+        self.flags
+            .set(ExposureFlags::SOCKETS, overrides.expose_listening_sockets);
+
+        if overrides.no_redacted {
+            self.redacted = false;
+        }
+    }
+
+    /// Applique les implications liées au mode capture (collecte sockets, réseau, conteneurs...).
+    pub fn apply_capture(&mut self, ctx: ExposureCaptureContext) {
+        if ctx.net_listen {
+            self.flags.insert(ExposureFlags::SOCKETS);
+        }
+        if ctx.net_traffic {
+            self.flags.insert(ExposureFlags::NETWORK);
+        }
+        if ctx.containers {
+            self.flags.insert(ExposureFlags::CONTAINERS_DETAILS);
+            self.flags.insert(ExposureFlags::CONTAINERS_SUMMARY);
+        }
+    }
+
+    pub fn build(self) -> Exposure {
+        Exposure {
+            flags: self.flags,
+            redacted: self.redacted,
+        }
+    }
+}
+
+impl Default for ExposureBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Overrides explicites d'exposition (flags CLI/Web).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ExposureOverrides {
+    pub expose_hostname: bool,
+    pub expose_os: bool,
+    pub expose_kernel: bool,
+    pub expose_services: bool,
+    pub expose_disk_partitions: bool,
+    pub expose_network_traffic: bool,
+    pub expose_containers_summary: bool,
+    pub expose_containers_details: bool,
+    pub expose_updates: bool,
+    pub expose_extensions: bool,
+    pub expose_all: bool,
+    pub no_redacted: bool,
+    pub expose_listening_sockets: bool,
+}
+
+/// Contexte de capture qui force certains champs (sockets, trafic, conteneurs).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ExposureCaptureContext {
+    pub net_listen: bool,
+    pub net_traffic: bool,
+    pub containers: bool,
+}
+
 #[derive(Debug, Copy, Clone)]
 pub struct Exposure {
     flags: ExposureFlags,
-    /// Affiche des valeurs masquées (ex: versions tronquées) lorsque les détails complets sont interdits.
+    /// When `true`, sensitive fields are redacted (safe-by-default). Can be opted-out explicitly,
+    /// which may leak hostname, kernel version or service names.
     pub redacted: bool,
 }
 
@@ -215,20 +359,7 @@ impl Exposure {
 #[cfg(feature = "config")]
 impl From<&crate::domain::ExposureConfig> for Exposure {
     fn from(cfg: &crate::domain::ExposureConfig) -> Self {
-        let mut exposure = Exposure::default();
-        exposure.set_hostname(cfg.expose_hostname);
-        exposure.set_os(cfg.expose_os);
-        exposure.set_kernel(cfg.expose_kernel);
-        exposure.set_services(cfg.expose_services);
-        exposure.set_disk_partitions(cfg.expose_disk_partitions);
-        exposure.set_listening_sockets(cfg.expose_listening_sockets);
-        exposure.set_updates(cfg.expose_updates);
-        exposure.set_network_traffic(cfg.expose_network_traffic);
-        exposure.set_extensions(cfg.expose_extensions);
-        exposure.set_containers_summary(cfg.expose_containers_summary);
-        exposure.set_containers_details(cfg.expose_containers_details);
-        exposure.redacted = cfg.redacted;
-        exposure
+        ExposureBuilder::from_config(cfg).build()
     }
 }
 

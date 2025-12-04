@@ -1,7 +1,12 @@
-use super::{handlers, *};
+use super::{csp, handlers, origin, *};
+use crate::application::web::csp::{
+    apply_security_headers, CspNonce, HEADER_STRICT_TRANSPORT_SECURITY,
+};
 use axum::body::to_bytes;
-use axum::http::header::SET_COOKIE;
+use axum::extract::{ConnectInfo, FromRequestParts, State};
+use axum::http::header::{ORIGIN, SET_COOKIE};
 use axum::http::StatusCode;
+use axum::response::IntoResponse;
 use axum::Extension;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -19,26 +24,27 @@ fn build_request_with_headers(origin: Option<&str>, host: &str) -> AxumRequest {
 #[test]
 fn nonce_is_inserted_in_csp_header() {
     let mut headers = HeaderMap::new();
-    let nonce = CspNonce::new("abcd1234".into());
-    apply_security_headers(&mut headers, &nonce);
+    let nonce = csp::CspNonce::new("abcd1234".into());
+    csp::apply_security_headers(&mut headers, &nonce);
     let value = headers
-        .get(HEADER_CONTENT_SECURITY_POLICY)
+        .get(csp::HEADER_CONTENT_SECURITY_POLICY)
         .and_then(|val| val.to_str().ok())
         .unwrap();
     assert!(value.contains("style-src 'nonce-abcd1234'"));
     assert!(value.contains("script-src 'nonce-abcd1234'"));
+    assert!(value.contains("form-action 'self'"));
     let permissions = headers
-        .get(HEADER_PERMISSIONS_POLICY)
+        .get(csp::HEADER_PERMISSIONS_POLICY)
         .and_then(|val| val.to_str().ok())
         .unwrap();
     assert_eq!(permissions, "geolocation=(), camera=(), microphone=()");
     let coop = headers
-        .get(HEADER_CROSS_ORIGIN_OPENER_POLICY)
+        .get(csp::HEADER_CROSS_ORIGIN_OPENER_POLICY)
         .and_then(|val| val.to_str().ok())
         .unwrap();
     assert_eq!(coop, "same-origin");
     let coep = headers
-        .get(HEADER_CROSS_ORIGIN_EMBEDDER_POLICY)
+        .get(csp::HEADER_CROSS_ORIGIN_EMBEDDER_POLICY)
         .and_then(|val| val.to_str().ok())
         .unwrap();
     assert_eq!(coep, "require-corp");
@@ -50,30 +56,44 @@ fn origin_allowlist_accepts_configured_origin() {
         Some("https://public.example.com"),
         "internal.example.lan:8080",
     );
-    let policy = OriginPolicy::from_allowlist(vec!["https://public.example.com".to_string()])
-        .expect("origin policy");
-    assert!(is_origin_allowed(&request, &policy));
+    let policy =
+        origin::OriginPolicy::from_allowlist(vec!["https://public.example.com".to_string()])
+            .expect("origin policy");
+    assert!(origin::is_origin_allowed(&request, &policy));
 }
 
 #[test]
 fn origin_allowlist_blocks_unlisted_origin() {
     let request = build_request_with_headers(Some("https://evil.example.com"), "internal:8080");
-    let policy = OriginPolicy::from_allowlist(vec!["https://public.example.com".to_string()])
-        .expect("origin policy");
-    assert!(!is_origin_allowed(&request, &policy));
+    let policy =
+        origin::OriginPolicy::from_allowlist(vec!["https://public.example.com".to_string()])
+            .expect("origin policy");
+    assert!(!origin::is_origin_allowed(&request, &policy));
 }
 
 #[test]
 fn origin_defaults_to_same_host_port() {
     let request = build_request_with_headers(Some("http://internal:8080"), "internal:8080");
-    let policy = OriginPolicy::from_allowlist(Vec::new()).expect("origin policy");
-    assert!(is_origin_allowed(&request, &policy));
+    let policy = origin::OriginPolicy::from_allowlist(Vec::new()).expect("origin policy");
+    assert!(origin::is_origin_allowed(&request, &policy));
+}
+
+#[test]
+fn origin_allowlist_allows_same_origin_even_if_unlisted() {
+    let request = build_request_with_headers(
+        Some("https://internal.example.lan:18443"),
+        "internal.example.lan:18443",
+    );
+    let policy =
+        origin::OriginPolicy::from_allowlist(vec!["https://public.example.com".to_string()])
+            .expect("origin policy");
+    assert!(origin::is_origin_allowed(&request, &policy));
 }
 
 #[test]
 fn set_session_cookie_includes_http_only() {
     let mut headers = HeaderMap::new();
-    set_session_cookie(&mut headers, "sess:v1:test", true);
+    set_session_cookie(&mut headers, "sess:v1:test", Duration::from_secs(60), true);
     let value = headers.get(SET_COOKIE).expect("set-cookie");
     let text = value.to_str().expect("utf8");
     assert!(
@@ -81,8 +101,8 @@ fn set_session_cookie_includes_http_only() {
         "cookie missing HttpOnly: {text}"
     );
     assert!(
-        text.contains("SameSite=Strict"),
-        "cookie missing SameSite=Strict: {text}"
+        text.contains("SameSite=Lax"),
+        "cookie missing SameSite=Lax: {text}"
     );
 }
 
@@ -101,7 +121,7 @@ fn clear_session_cookie_includes_http_only() {
 #[test]
 fn session_cookies_include_secure() {
     let mut headers = HeaderMap::new();
-    set_session_cookie(&mut headers, "sess:v1:test", true);
+    set_session_cookie(&mut headers, "sess:v1:test", Duration::from_secs(60), true);
     let value = headers.get(SET_COOKIE).expect("set-cookie");
     let text = value.to_str().expect("utf8");
     assert!(
@@ -113,12 +133,24 @@ fn session_cookies_include_secure() {
 #[test]
 fn session_cookie_secure_flag_can_be_disabled() {
     let mut headers = HeaderMap::new();
-    set_session_cookie(&mut headers, "sess:v1:test", false);
+    set_session_cookie(&mut headers, "sess:v1:test", Duration::from_secs(60), false);
     let value = headers.get(SET_COOKIE).expect("set-cookie");
     let text = value.to_str().expect("utf8");
     assert!(
         !text.contains("; Secure"),
         "insecure cookies should skip Secure: {text}"
+    );
+}
+
+#[test]
+fn session_cookie_max_age_matches_ttl() {
+    let mut headers = HeaderMap::new();
+    set_session_cookie(&mut headers, "sess:v1:test", Duration::from_secs(120), true);
+    let value = headers.get(SET_COOKIE).expect("set-cookie");
+    let text = value.to_str().expect("utf8");
+    assert!(
+        text.contains("Max-Age=120"),
+        "cookie max-age should reflect session ttl: {text}"
     );
 }
 
@@ -181,6 +213,54 @@ fn normalize_description_enforces_limit() {
     let long = "x".repeat(super::DESCRIPTION_MAX_BYTES + 1);
     let err = handlers::normalize_description(&long).unwrap_err();
     assert!(err.contains("2048"), "unexpected message: {err}");
+}
+
+#[tokio::test]
+async fn login_endpoint_sets_cookie_and_redirects() {
+    let exposure = Exposure::all();
+    let state = test_secured_app_state(exposure);
+    let mut request = axum::http::Request::builder()
+        .method("POST")
+        .uri("/auth/login")
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .body(axum::body::Body::from(r#"{"token":"secret"}"#))
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(ConnectInfo(std::net::SocketAddr::from((
+            std::net::Ipv4Addr::LOCALHOST,
+            4242,
+        ))));
+
+    let response = auth::login(State(state.clone()), request).await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let cookie = response.headers().get(SET_COOKIE).cloned();
+    assert!(cookie.is_some(), "expected session cookie");
+
+    // reuse cookie on a protected route
+    let mut next_req = axum::http::Request::builder()
+        .uri("/logs")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    if let Some(value) = cookie {
+        next_req
+            .headers_mut()
+            .insert(axum::http::header::COOKIE, value);
+    }
+    next_req
+        .extensions_mut()
+        .insert(ConnectInfo(std::net::SocketAddr::from((
+            std::net::Ipv4Addr::LOCALHOST,
+            4242,
+        ))));
+    let (mut parts, _) = next_req.into_parts();
+    let guard = security::AuthGuard::from_request_parts(&mut parts, &state)
+        .await
+        .expect("cookie should authenticate");
+    assert_eq!(
+        guard.into_session().token_key(),
+        security::TokenKey::from_value("secret")
+    );
 }
 
 #[tokio::test]
@@ -266,6 +346,78 @@ async fn containers_api_returns_cached_snapshot() {
 }
 
 #[tokio::test]
+async fn metrics_return_503_when_missing_snapshot() {
+    let exposure = Exposure::all();
+    let state = test_app_state(exposure);
+    let guard = super::security::make_test_guard(super::security::WebRoute::Logs);
+
+    let response = handlers::metrics_export(State(state), guard)
+        .await
+        .into_response();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body bytes");
+    let text = std::str::from_utf8(&body).expect("utf8");
+    assert!(text.contains("describe_me_up 0"));
+}
+
+#[tokio::test]
+async fn metrics_return_cached_snapshot() {
+    use crate::application::exposure::SnapshotView;
+    use crate::domain::{DiskUsage, SystemSnapshot};
+    use crate::shared::SharedSlice;
+
+    let exposure = Exposure::all();
+    let snapshot = SystemSnapshot {
+        hostname: "host".into(),
+        os: None,
+        kernel: None,
+        uptime_seconds: 100,
+        cpu_count: 4,
+        load_average: (1.0, 0.5, 0.25),
+        total_memory_bytes: 1024,
+        used_memory_bytes: 256,
+        total_swap_bytes: 128,
+        used_swap_bytes: 32,
+        disk_usage: Some(DiskUsage {
+            total_bytes: 10_000,
+            available_bytes: 6_000,
+            used_bytes: 4_000,
+            partitions: SharedSlice::from_vec(Vec::new()),
+        }),
+        #[cfg(feature = "systemd")]
+        services_running: SharedSlice::from_vec(Vec::new()),
+        #[cfg(feature = "net")]
+        listening_sockets: None,
+        #[cfg(feature = "net")]
+        network_traffic: None,
+        containers: None,
+        updates: None,
+        extensions: None,
+    };
+
+    let mut view = SnapshotView::new(&snapshot, exposure);
+    view.server_description = None;
+
+    let state = test_app_state(exposure);
+    state.cache_snapshot(view);
+
+    let guard = super::security::make_test_guard(super::security::WebRoute::Logs);
+    let response = handlers::metrics_export(State(state), guard)
+        .await
+        .into_response();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body bytes");
+    let text = std::str::from_utf8(&body).expect("utf8");
+    assert!(text.contains("describe_me_cpu_count 4"));
+    assert!(text.contains("describe_me_snapshot_age_seconds"));
+    assert!(text.contains("describe_me_disk_bytes_total 10000"));
+}
+
+#[tokio::test]
 async fn containers_page_renders_html() {
     let exposure = Exposure::all();
     let state = test_app_state(exposure);
@@ -295,20 +447,65 @@ fn test_app_state(exposure: Exposure) -> AppState {
         None,
     )
     .unwrap();
-    AppState {
-        ctx: Arc::new(crate::application::context::AppContext::in_memory()),
+    let session_ttl = security.session_ttl();
+    let static_cfg = StaticWebConfig {
         interval: Duration::from_secs(1),
         #[cfg(feature = "config")]
         config: None,
         web_debug: false,
         security: Arc::new(security),
         exposure,
+        logo: LogoAsset::default(),
+        session_cookie_secure: true,
+        session_ttl,
+    };
+    let runtime = RuntimeState {
         shutdown: Arc::new(tokio::sync::Notify::new()),
         updates_cache: UpdatesCache::new(Duration::from_secs(1), Duration::from_secs(1)),
         snapshot_cache: Arc::new(RwLock::new(None)),
+    };
+    AppState::new(
+        Arc::new(crate::application::context::AppContext::in_memory()),
+        static_cfg,
+        runtime,
+    )
+}
+
+fn test_secured_app_state(exposure: Exposure) -> AppState {
+    let access = WebAccess {
+        token: Some(bcrypt::hash("secret", bcrypt::DEFAULT_COST).expect("hash token")),
+        session_cookie_secure: false,
+        ..WebAccess::default()
+    };
+    let security = WebSecurity::build(
+        access,
+        #[cfg(feature = "config")]
+        None,
+    )
+    .unwrap();
+    let session_ttl = security.session_ttl();
+
+    let static_cfg = StaticWebConfig {
+        interval: Duration::from_secs(1),
+        #[cfg(feature = "config")]
+        config: None,
+        web_debug: false,
+        security: Arc::new(security),
+        exposure,
         logo: LogoAsset::default(),
-        session_cookie_secure: true,
-    }
+        session_cookie_secure: false,
+        session_ttl,
+    };
+    let runtime = RuntimeState {
+        shutdown: Arc::new(tokio::sync::Notify::new()),
+        updates_cache: UpdatesCache::new(Duration::from_secs(1), Duration::from_secs(1)),
+        snapshot_cache: Arc::new(RwLock::new(None)),
+    };
+    AppState::new(
+        Arc::new(crate::application::context::AppContext::in_memory()),
+        static_cfg,
+        runtime,
+    )
 }
 
 #[tokio::test]

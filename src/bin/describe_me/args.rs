@@ -319,7 +319,7 @@ pub struct ExposureOpts {
     #[arg(id = "cli-expose-extensions", long = "expose-extensions", action = ArgAction::SetTrue)]
     pub expose_extensions: bool,
 
-    /// Désactive le mode redacted (versions OS/noyau tronquées par défaut).
+    /// Désactive le mode redacted (versions OS/noyau tronquées par défaut). Opt-out explicite : peut exposer des données sensibles.
     #[arg(id = "cli-no-redacted", long = "no-redacted", action = ArgAction::SetTrue)]
     pub no_redacted: bool,
 

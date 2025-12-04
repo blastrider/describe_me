@@ -1,13 +1,17 @@
 use crate::{
     application::context::AppContext,
+    application::logging::LogEvent,
     domain::{CaptureOptions, DescribeError, SystemSnapshot},
 };
+use std::{borrow::Cow, fmt::Display};
 
-#[cfg(any(feature = "systemd", feature = "net"))]
-use crate::application::logging::LogEvent;
-#[cfg(any(feature = "systemd", feature = "net"))]
-use std::borrow::Cow;
-
+/// Collecteur participant à la construction d'un [`SystemSnapshot`].
+///
+/// Contrat :
+/// - ne doit jamais paniquer ;
+/// - journalise ses erreurs via [`log_system_error`] afin de ne pas perdre de signal ;
+/// - ne bloque pas indéfiniment (échoue proprement plutôt que de figer la capture) ;
+/// - n'écrase pas les parties du snapshot qu'il ne gère pas explicitement.
 pub trait SnapshotCollector {
     fn collect(
         &self,
@@ -56,8 +60,8 @@ pub fn default_collectors() -> Vec<Box<dyn SnapshotCollector>> {
     collectors
 }
 
-#[cfg(any(feature = "systemd", feature = "net"))]
-pub(crate) fn log_system_error(location: &'static str, err: &DescribeError) {
+/// Helper centralisé pour loguer une erreur de collecte sans faire échouer la capture globale.
+pub(crate) fn log_system_error(location: &'static str, err: &(impl Display + ?Sized)) {
     LogEvent::SystemError {
         location: Cow::Borrowed(location),
         error: Cow::Owned(err.to_string()),

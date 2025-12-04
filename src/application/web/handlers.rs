@@ -5,8 +5,9 @@
 use std::{borrow::Cow, time::Duration};
 
 use axum::{
+    body::Body,
     extract::{Extension, Query, State},
-    http::StatusCode,
+    http::{header, HeaderValue, StatusCode},
     response::{Html, IntoResponse, Response},
     Json,
 };
@@ -21,18 +22,19 @@ use crate::{
             add_server_tags_with, clear_server_tags_with, remove_server_tags_with,
             set_server_description_with, set_server_tags_with,
         },
+        metrics::render_prometheus_metrics,
     },
     domain::{ContainersSnapshot, DescribeError},
 };
 
 use super::{
     mark_response_no_store,
-    security::AuthGuard,
-    set_session_cookie,
+    security::{attach_session_cookie, AuthGuard},
     template::{render_containers_page, render_index, render_logs_page, render_updates_page},
     views::{ContainersViewModel, IndexViewModel, LogsViewModel, UpdatesViewModel},
-    AppState, CspNonce,
+    AppState,
 };
+use crate::application::web::csp::CspNonce;
 
 #[derive(Deserialize)]
 pub(super) struct DescriptionPayload {
@@ -117,7 +119,7 @@ struct ContainersApiResponse {
 }
 
 pub(super) async fn logo_asset(State(state): State<AppState>) -> Response {
-    state.logo.response()
+    state.logo().response()
 }
 
 pub(super) async fn index(
@@ -127,13 +129,11 @@ pub(super) async fn index(
 ) -> impl IntoResponse {
     let session = guard.into_session();
     let vm = IndexViewModel {
-        web_debug: state.web_debug,
+        web_debug: state.web_debug(),
         csp_nonce: csp_nonce.as_str(),
     };
     let mut response = Html(render_index(&vm)).into_response();
-    if let Some(token) = session.session_cookie() {
-        set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
-    }
+    attach_session_cookie(response.headers_mut(), &session, &state);
     mark_response_no_store(response.headers_mut());
     response
 }
@@ -144,9 +144,8 @@ pub(super) async fn updates_page(
     Extension(csp_nonce): Extension<CspNonce>,
 ) -> impl IntoResponse {
     let session = guard.into_session();
-    let cookie_token = session.session_cookie().map(str::to_owned);
 
-    if !state.exposure.updates() {
+    if !state.exposure().updates() {
         let message = "L'exposition des mises à jour est désactivée pour cette instance.";
         let vm = UpdatesViewModel {
             updates: None,
@@ -155,16 +154,14 @@ pub(super) async fn updates_page(
         };
         let html = render_updates_page(&vm);
         let mut response = Html(html).into_response();
-        if let Some(token) = cookie_token.as_deref() {
-            set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
-        }
+        attach_session_cookie(response.headers_mut(), &session, &state);
         return response;
     }
 
-    state.updates_cache.ensure_fresh().await;
-    let updates = match state.updates_cache.peek().await {
+    state.updates_cache().ensure_fresh().await;
+    let updates = match state.updates_cache().peek().await {
         Some(info) => Some(info),
-        None => state.updates_cache.refresh_blocking().await,
+        None => state.updates_cache().refresh_blocking().await,
     };
 
     let vm = UpdatesViewModel {
@@ -174,73 +171,80 @@ pub(super) async fn updates_page(
     };
     let html = render_updates_page(&vm);
     let mut response = Html(html).into_response();
-    if let Some(token) = cookie_token.as_deref() {
-        set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
-    }
+    attach_session_cookie(response.headers_mut(), &session, &state);
     response
 }
 
 pub(super) async fn update_description(
-    _guard: AuthGuard,
+    guard: AuthGuard,
     State(state): State<AppState>,
     Json(payload): Json<DescriptionPayload>,
-) -> impl IntoResponse {
-    let text = match normalize_description(&payload.text) {
-        Ok(value) => value,
-        Err(msg) => return json_error(StatusCode::BAD_REQUEST, msg),
+) -> Response {
+    let session = guard.into_session();
+    let mut response = match normalize_description(&payload.text) {
+        Ok(text) => match set_server_description_with(&state.ctx(), &text) {
+            Ok(()) => (
+                StatusCode::OK,
+                Json(DescriptionResponse { description: text }),
+            )
+                .into_response(),
+            Err(err) => {
+                LogEvent::SystemError {
+                    location: Cow::Borrowed("web_description_update"),
+                    error: Cow::Owned(err.to_string()),
+                }
+                .emit();
+                json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Impossible d'enregistrer la description.",
+                )
+            }
+        },
+        Err(msg) => json_error(StatusCode::BAD_REQUEST, msg),
     };
-
-    if let Err(err) = set_server_description_with(&state.ctx, &text) {
-        LogEvent::SystemError {
-            location: Cow::Borrowed("web_description_update"),
-            error: Cow::Owned(err.to_string()),
-        }
-        .emit();
-        return json_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Impossible d'enregistrer la description.",
-        );
-    }
-
-    (
-        StatusCode::OK,
-        Json(DescriptionResponse { description: text }),
-    )
-        .into_response()
+    attach_session_cookie(response.headers_mut(), &session, &state);
+    response
 }
 
 pub(super) async fn update_tags(
-    _guard: AuthGuard,
+    guard: AuthGuard,
     State(state): State<AppState>,
     Json(payload): Json<TagsPayload>,
-) -> impl IntoResponse {
-    if let Some(error) = validate_tags_payload(&payload) {
-        return json_error(StatusCode::BAD_REQUEST, error);
-    }
+) -> Response {
+    let session = guard.into_session();
+    let mut response = if let Some(error) = validate_tags_payload(&payload) {
+        json_error(StatusCode::BAD_REQUEST, error)
+    } else {
+        let tags = payload
+            .tags
+            .into_iter()
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .take(super::TAGS_MAX_PER_REQUEST)
+            .collect::<Vec<_>>();
 
-    let tags = payload
-        .tags
-        .into_iter()
-        .map(|t| t.trim().to_string())
-        .filter(|t| !t.is_empty())
-        .take(super::TAGS_MAX_PER_REQUEST)
-        .collect::<Vec<_>>();
+        let op = payload.op;
+        let result = match op {
+            TagOperation::Set => {
+                set_server_tags_with(&state.ctx(), tags.iter().map(|s| s.as_str()))
+            }
+            TagOperation::Add => {
+                add_server_tags_with(&state.ctx(), tags.iter().map(|s| s.as_str()))
+            }
+            TagOperation::Remove => {
+                remove_server_tags_with(&state.ctx(), tags.iter().map(|s| s.as_str()))
+            }
+            TagOperation::Clear => clear_server_tags_with(&state.ctx()).map(|_| Vec::new()),
+        };
 
-    let op = payload.op;
-    let result = match op {
-        TagOperation::Set => set_server_tags_with(&state.ctx, tags.iter().map(|s| s.as_str())),
-        TagOperation::Add => add_server_tags_with(&state.ctx, tags.iter().map(|s| s.as_str())),
-        TagOperation::Remove => {
-            remove_server_tags_with(&state.ctx, tags.iter().map(|s| s.as_str()))
+        match result {
+            Ok(list) => (StatusCode::OK, Json(TagsResponse { tags: list.clone() })).into_response(),
+            Err(DescribeError::System(msg)) => json_error(StatusCode::INTERNAL_SERVER_ERROR, msg),
+            Err(err) => json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
         }
-        TagOperation::Clear => clear_server_tags_with(&state.ctx).map(|_| Vec::new()),
     };
-
-    match result {
-        Ok(list) => (StatusCode::OK, Json(TagsResponse { tags: list.clone() })).into_response(),
-        Err(DescribeError::System(msg)) => json_error(StatusCode::INTERNAL_SERVER_ERROR, msg),
-        Err(err) => json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
-    }
+    attach_session_cookie(response.headers_mut(), &session, &state);
+    response
 }
 
 pub(super) async fn history_series(
@@ -248,14 +252,14 @@ pub(super) async fn history_series(
     guard: AuthGuard,
     Query(query): Query<HistoryRequestQuery>,
 ) -> impl IntoResponse {
-    if state.exposure.redacted {
+    if state.exposure().redacted {
         return json_error(
             StatusCode::FORBIDDEN,
             "L'historique est masqué lorsque l'exposition est redacted.",
         );
     }
 
-    let settings = state.ctx.history().settings_snapshot();
+    let settings = state.ctx().history().settings_snapshot();
     if !settings.is_active() {
         return json_error(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -272,7 +276,7 @@ pub(super) async fn history_series(
 
     let requested_server = if let Some(id) = query.server.clone() {
         id
-    } else if let Some(default_id) = state.ctx.history().default_server_id() {
+    } else if let Some(default_id) = state.ctx().history().default_server_id() {
         default_id
     } else {
         return json_error(
@@ -282,7 +286,6 @@ pub(super) async fn history_series(
     };
 
     let session = guard.into_session();
-    let cookie_token = session.session_cookie().map(str::to_owned);
 
     let max_window_secs = settings.max_window_seconds.max(1) as u64;
     let requested_window = query.window.filter(|v| *v > 0).unwrap_or(max_window_secs);
@@ -296,7 +299,7 @@ pub(super) async fn history_series(
         .min(retention_cap);
 
     let rounding = settings.rounding_seconds.max(1);
-    let series = match state.ctx.history().query_series(
+    let series = match state.ctx().history().query_series(
         &requested_server,
         Duration::from_secs(window_secs),
         limit,
@@ -331,7 +334,7 @@ pub(super) async fn history_series(
         }
     };
 
-    let allow_disk = state.exposure.disk_partitions();
+    let allow_disk = state.exposure().disk_partitions();
     let points = series
         .points
         .into_iter()
@@ -364,44 +367,70 @@ pub(super) async fn history_series(
     };
 
     let mut response = Json(payload).into_response();
-    if let Some(token) = cookie_token.as_deref() {
-        set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
-    }
+    attach_session_cookie(response.headers_mut(), &session, &state);
     response
 }
 
-pub(super) async fn containers_api(
-    State(state): State<AppState>,
-    _guard: AuthGuard,
-) -> impl IntoResponse {
-    let cached = match state.latest_snapshot() {
-        Some(value) => value,
-        None => {
-            return json_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Aucun snapshot disponible pour le moment.",
+pub(super) async fn containers_api(State(state): State<AppState>, guard: AuthGuard) -> Response {
+    let session = guard.into_session();
+    let mut response = match state.latest_snapshot() {
+        Some(value) => {
+            let Some(containers) = value.view.containers else {
+                return json_error(
+                    StatusCode::FORBIDDEN,
+                    "Les conteneurs ne sont pas exposés ou non capturés.",
+                );
+            };
+
+            let age_ms = value
+                .captured_at
+                .elapsed()
+                .as_millis()
+                .min(u128::from(u64::MAX)) as u64;
+
+            (
+                StatusCode::OK,
+                Json(ContainersApiResponse { age_ms, containers }),
             )
+                .into_response()
         }
+        None => json_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Aucun snapshot disponible pour le moment.",
+        ),
     };
+    attach_session_cookie(response.headers_mut(), &session, &state);
+    response
+}
 
-    let Some(containers) = cached.view.containers else {
-        return json_error(
-            StatusCode::FORBIDDEN,
-            "Les conteneurs ne sont pas exposés ou non capturés.",
-        );
+pub(super) async fn metrics_export(State(state): State<AppState>, guard: AuthGuard) -> Response {
+    let session = guard.into_session();
+    let content_type = HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8");
+    let unavailable = "\
+# HELP describe_me_up 1 if last snapshot is available
+# TYPE describe_me_up gauge
+describe_me_up 0
+";
+
+    let mut response = match state.latest_snapshot() {
+        Some(cached) => {
+            let age_secs = cached.captured_at.elapsed().as_secs();
+            let payload = render_prometheus_metrics(&cached.view, age_secs);
+
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, content_type)
+                .body(Body::from(payload))
+                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+        }
+        None => Response::builder()
+            .status(StatusCode::SERVICE_UNAVAILABLE)
+            .header(header::CONTENT_TYPE, content_type.clone())
+            .body(Body::from(unavailable))
+            .unwrap_or_else(|_| StatusCode::SERVICE_UNAVAILABLE.into_response()),
     };
-
-    let age_ms = cached
-        .captured_at
-        .elapsed()
-        .as_millis()
-        .min(u128::from(u64::MAX)) as u64;
-
-    (
-        StatusCode::OK,
-        Json(ContainersApiResponse { age_ms, containers }),
-    )
-        .into_response()
+    attach_session_cookie(response.headers_mut(), &session, &state);
+    response
 }
 
 pub(super) async fn logs_page(
@@ -414,9 +443,7 @@ pub(super) async fn logs_page(
         csp_nonce: csp_nonce.as_str(),
     };
     let mut response = Html(render_logs_page(&vm)).into_response();
-    if let Some(token) = session.session_cookie() {
-        set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
-    }
+    attach_session_cookie(response.headers_mut(), &session, &state);
     mark_response_no_store(response.headers_mut());
     response
 }
@@ -431,9 +458,7 @@ pub(super) async fn containers_page(
         csp_nonce: csp_nonce.as_str(),
     };
     let mut response = Html(render_containers_page(&vm)).into_response();
-    if let Some(token) = session.session_cookie() {
-        set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
-    }
+    attach_session_cookie(response.headers_mut(), &session, &state);
     mark_response_no_store(response.headers_mut());
     response
 }
@@ -454,9 +479,7 @@ pub(super) async fn host_logs(
         Ok(Ok(page)) => {
             let session = guard.into_session();
             let mut response = Json(page).into_response();
-            if let Some(token) = session.session_cookie() {
-                set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
-            }
+            attach_session_cookie(response.headers_mut(), &session, &state);
             response
         }
         Ok(Err(err)) => {

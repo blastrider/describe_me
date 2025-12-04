@@ -1,6 +1,4 @@
-use std::borrow::Cow;
-
-use crate::application::logging::LogEvent;
+use crate::application::collectors::log_system_error;
 #[cfg(feature = "systemd")]
 use crate::domain::ServiceInfo;
 use crate::domain::{CaptureOptions, DescribeError, SystemSnapshot};
@@ -8,26 +6,19 @@ use crate::infrastructure::sysinfo;
 #[cfg(feature = "systemd")]
 use crate::SharedSlice;
 
+/// Collecteur de base chargé d'initialiser un [`SystemSnapshot`] cohérent.
+///
+/// Ce collecteur est responsable de la création initiale du snapshot avec des valeurs par défaut
+/// (champs `None` ou `SharedSlice` vides lorsque l'information est absente). Les collecteurs
+/// suivants complètent ces champs sans réinitialiser ceux qu'ils ne gèrent pas.
 pub struct CoreCollector;
 
 impl CoreCollector {
     pub fn capture_base(&self, opts: &CaptureOptions) -> Result<SystemSnapshot, DescribeError> {
-        let base = sysinfo::gather().inspect_err(|err| {
-            LogEvent::SystemError {
-                location: Cow::Borrowed("gather"),
-                error: Cow::Owned(err.to_string()),
-            }
-            .emit();
-        })?;
+        let base = sysinfo::gather().inspect_err(|err| log_system_error("gather", err))?;
 
         let disk_usage = if opts.with_disk_usage {
-            Some(sysinfo::gather_disks().inspect_err(|err| {
-                LogEvent::SystemError {
-                    location: Cow::Borrowed("gather_disks"),
-                    error: Cow::Owned(err.to_string()),
-                }
-                .emit();
-            })?)
+            Some(sysinfo::gather_disks().inspect_err(|err| log_system_error("gather_disks", err))?)
         } else {
             None
         };

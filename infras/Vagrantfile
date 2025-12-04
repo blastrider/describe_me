@@ -70,8 +70,11 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
         set -euo pipefail
         BINARY="#{BINARY}"
         CUSTOM_BINARY_REL_PATH="#{ENV['BINARY_REL_PATH']}"
-        PLUGIN_NAME="#{ENV['PLUGIN_NAME'] || 'describe-me-plugin-certificates'}"
+        PLUGIN_CERT_NAME="describe-me-plugin-certificates"
+        PLUGIN_CONTAINERS_NAME="describe-me-plugin-containers"
         CUSTOM_PLUGIN_REL_PATH="#{ENV['PLUGIN_REL_PATH']}"
+        CUSTOM_PLUGIN_CERT_REL_PATH="#{ENV['PLUGIN_CERT_REL_PATH']}"
+        CUSTOM_PLUGIN_CONTAINERS_REL_PATH="#{ENV['PLUGIN_CONTAINERS_REL_PATH']}"
         declare -a CANDIDATES=()
         if [ -n "${CUSTOM_BINARY_REL_PATH}" ]; then
           CANDIDATES+=("/vagrant/target/${CUSTOM_BINARY_REL_PATH}")
@@ -83,15 +86,30 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
         CANDIDATES+=("/vagrant/target/debug/${BINARY}")
         CANDIDATES+=("/vagrant/target/${BINARY}")
 
-        declare -a PLUGIN_CANDIDATES=()
-        if [ -n "${CUSTOM_PLUGIN_REL_PATH}" ]; then
-          PLUGIN_CANDIDATES+=("/vagrant/target/${CUSTOM_PLUGIN_REL_PATH}")
-        fi
-        PLUGIN_CANDIDATES+=("/vagrant/target/x86_64-unknown-linux-musl/release/${PLUGIN_NAME}")
-        PLUGIN_CANDIDATES+=("/vagrant/target/x86_64-unknown-linux-musl/debug/${PLUGIN_NAME}")
-        PLUGIN_CANDIDATES+=("/vagrant/target/release/${PLUGIN_NAME}")
-        PLUGIN_CANDIDATES+=("/vagrant/target/debug/${PLUGIN_NAME}")
-        PLUGIN_CANDIDATES+=("/vagrant/target/${PLUGIN_NAME}")
+        find_plugin_src() {
+          local name="$1"
+          local custom_rel="$2"
+          local src=""
+          local candidates=()
+          if [ -n "${custom_rel}" ]; then
+            candidates+=("/vagrant/target/${custom_rel}")
+          fi
+          if [ -n "${CUSTOM_PLUGIN_REL_PATH}" ]; then
+            candidates+=("/vagrant/target/${CUSTOM_PLUGIN_REL_PATH}")
+          fi
+          candidates+=("/vagrant/target/x86_64-unknown-linux-musl/release/${name}")
+          candidates+=("/vagrant/target/x86_64-unknown-linux-musl/debug/${name}")
+          candidates+=("/vagrant/target/release/${name}")
+          candidates+=("/vagrant/target/debug/${name}")
+          candidates+=("/vagrant/target/${name}")
+          for candidate in "${candidates[@]}"; do
+            if [ -f "${candidate}" ]; then
+              src="${candidate}"
+              break
+            fi
+          done
+          echo "${src}"
+        }
 
         SRC=""
         for candidate in "${CANDIDATES[@]}"; do
@@ -101,17 +119,13 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
           fi
         done
 
-        PLUGIN_SRC=""
-        for candidate in "${PLUGIN_CANDIDATES[@]}"; do
-          if [ -f "${candidate}" ]; then
-            PLUGIN_SRC="${candidate}"
-            break
-          fi
-        done
+        PLUGIN_CERT_SRC="$(find_plugin_src "${PLUGIN_CERT_NAME}" "${CUSTOM_PLUGIN_CERT_REL_PATH}")"
+        PLUGIN_CONTAINERS_SRC="$(find_plugin_src "${PLUGIN_CONTAINERS_NAME}" "${CUSTOM_PLUGIN_CONTAINERS_REL_PATH}")"
 
         DEST_DIR="/opt/describe_me"
         BIN_PATH="${DEST_DIR}/${BINARY}"
-        PLUGIN_BIN_PATH="/usr/lib/describe_me/plugins/${PLUGIN_NAME}"
+        PLUGIN_CERT_BIN_PATH="/usr/lib/describe_me/plugins/${PLUGIN_CERT_NAME}"
+        PLUGIN_CONTAINERS_BIN_PATH="/usr/lib/describe_me/plugins/${PLUGIN_CONTAINERS_NAME}"
         CONFIG_DIR="/etc/describe_me"
         CERT_DIR="${CONFIG_DIR}/certs"
         CONFIG_FILE="${CONFIG_DIR}/config.toml"
@@ -360,7 +374,8 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
 
         # deploy binary (may be replaced later if incompatible)
         mkdir -p "${DEST_DIR}"
-        mkdir -p "$(dirname "${PLUGIN_BIN_PATH}")"
+        mkdir -p "$(dirname "${PLUGIN_CERT_BIN_PATH}")"
+        mkdir -p "$(dirname "${PLUGIN_CONTAINERS_BIN_PATH}")"
         if [ "${INSTALL_MODE}" = "copy" ]; then
           if [ -n "${SRC}" ]; then
             cp -f "${SRC}" "${BIN_PATH}"
@@ -371,14 +386,21 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
         else
           echo "[deb] utilisation du binaire installé par paquet: ${BIN_PATH}"
         fi
-        if [ "${INSTALL_MODE}" = "copy" ]; then
-          if [ -n "${PLUGIN_SRC}" ]; then
-            install -m 0755 "${PLUGIN_SRC}" "${PLUGIN_BIN_PATH}"
+        install_plugin() {
+          local src="$1"
+          local dest="$2"
+          local label="$3"
+          if [ -n "${src}" ]; then
+            install -m 0755 "${src}" "${dest}"
           else
-            echo "[plugin] aucun binaire trouvé pour ${PLUGIN_NAME} (candidats: ${PLUGIN_CANDIDATES[*]})"
+            echo "[plugin] aucun binaire trouvé pour ${label}"
           fi
+        }
+        if [ "${INSTALL_MODE}" = "copy" ]; then
+          install_plugin "${PLUGIN_CERT_SRC}" "${PLUGIN_CERT_BIN_PATH}" "${PLUGIN_CERT_NAME}"
+          install_plugin "${PLUGIN_CONTAINERS_SRC}" "${PLUGIN_CONTAINERS_BIN_PATH}" "${PLUGIN_CONTAINERS_NAME}"
         else
-          echo "[deb] plugin ${PLUGIN_NAME} fourni via paquet (cible: ${PLUGIN_BIN_PATH})"
+          echo "[deb] plugins fournis via paquet (cibles: ${PLUGIN_CERT_BIN_PATH}, ${PLUGIN_CONTAINERS_BIN_PATH})"
         fi
         chown -R "${SERVICE_USER}:${SERVICE_USER}" "${DEST_DIR}" || true
 
@@ -443,22 +465,43 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
           (cd "${WORKSPACE}" && CARGO_TARGET_DIR="${TARGET_DIR}" cargo build --release --features "${BUILD_FEATURES}")
           cp -f "${TARGET_DIR}/release/${BINARY}" "${BIN_PATH}"
           chmod 0755 "${BIN_PATH}"
-          if [ -d "${WORKSPACE}/plugin-examples/certificates" ]; then
-            (cd "${WORKSPACE}/plugin-examples/certificates" && CARGO_TARGET_DIR="${TARGET_DIR}" cargo build --release)
-            if [ -f "${TARGET_DIR}/release/${PLUGIN_NAME}" ]; then
-              cp -f "${TARGET_DIR}/release/${PLUGIN_NAME}" "${PLUGIN_BIN_PATH}"
-              chmod 0755 "${PLUGIN_BIN_PATH}"
+          if [ -d "${WORKSPACE}" ]; then
+            (cd "${WORKSPACE}" && CARGO_TARGET_DIR="${TARGET_DIR}" cargo build --release --bin "${PLUGIN_CERT_NAME}" --bin "${PLUGIN_CONTAINERS_NAME}") || true
+            if [ -f "${TARGET_DIR}/release/${PLUGIN_CERT_NAME}" ]; then
+              cp -f "${TARGET_DIR}/release/${PLUGIN_CERT_NAME}" "${PLUGIN_CERT_BIN_PATH}"
+              chmod 0755 "${PLUGIN_CERT_BIN_PATH}"
+            fi
+            if [ -f "${TARGET_DIR}/release/${PLUGIN_CONTAINERS_NAME}" ]; then
+              cp -f "${TARGET_DIR}/release/${PLUGIN_CONTAINERS_NAME}" "${PLUGIN_CONTAINERS_BIN_PATH}"
+              chmod 0755 "${PLUGIN_CONTAINERS_BIN_PATH}"
             fi
           fi
           chown -R "${SERVICE_USER}:${SERVICE_USER}" "${DEST_DIR}" || true
         }
         ensure_binary
 
+        compute_sha256() {
+          local file="$1"
+          if [ ! -f "${file}" ]; then
+            echo ""
+            return
+          fi
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${file}" | awk '{print $1}'
+          elif command -v shasum >/dev/null 2>&1; then
+            shasum -a 256 "${file}" | awk '{print $1}'
+          else
+            echo ""
+          fi
+        }
+        PLUGIN_CERT_SHA="$(compute_sha256 "${PLUGIN_CERT_BIN_PATH}")"
+        PLUGIN_CONTAINERS_SHA="$(compute_sha256 "${PLUGIN_CONTAINERS_BIN_PATH}")"
+
         # resolve token hash: prefer precomputed WEB_TOKEN_HASH, else hash WEB_TOKEN (default 'vagrant')
         TOKEN_HASH="${WEB_TOKEN_HASH_INPUT}"
         if [ -z "${TOKEN_HASH}" ]; then
           TOKEN_SRC=${WEB_TOKEN_INPUT:-vagrant}
-          TOKEN_HASH="$(${BIN_PATH} --hash-web-token "${TOKEN_SRC}" 2>/dev/null || true)"
+          TOKEN_HASH="$(${BIN_PATH} --hash-web-token "${TOKEN_SRC}" --hash-web-token-alg bcrypt 2>/dev/null || true)"
         fi
         if [ -z "${TOKEN_HASH}" ]; then
           echo "ERROR: token hash is empty. Provide WEB_TOKEN_HASH=\"<argon2/bcrypt>\" or WEB_TOKEN=<secret> to generate one."
@@ -480,7 +523,7 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
 
         [web]
         token = "${TOKEN_HASH}"
-        allow_ips = ["127.0.0.1", "::1", "192.168.56.0/24"]
+        allow_ips = ["127.0.0.1", "::1", "192.168.56.0/24", "10.0.2.0/24"]
         allow_origins = ["${ORIGIN}", "${ORIGIN_HOST}"]
         trusted_proxies = ["${HOST_IP}"]
         updates_refresh_seconds = 20
@@ -556,9 +599,16 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
         [extensions]
         [[extensions.plugins]]
         name = "certificates-demo"
-        cmd = "${PLUGIN_BIN_PATH}"
+        path = "${PLUGIN_CERT_BIN_PATH}"
+        sha256 = "${PLUGIN_CERT_SHA}"
         args = ["--probe", "/etc/ssl/certs", "--probe", "${CERT_DIR}"]
         timeout_secs = 10
+
+        [[extensions.plugins]]
+        name = "containers"
+        path = "${PLUGIN_CONTAINERS_BIN_PATH}"
+        sha256 = "${PLUGIN_CONTAINERS_SHA}"
+        timeout_secs = 4
 
         [history]
         enabled = true

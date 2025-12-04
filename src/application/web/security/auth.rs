@@ -1,10 +1,11 @@
+use super::session::SESSION_COOKIE_PREFIX;
 use super::{
     limits::{SecurityPolicy, SecurityState},
     session::{SessionCandidate, SessionError, SessionManager},
     IpMatcher, SecurityRejection, TokenKey, WebRoute,
 };
 use crate::application::logging::LogEvent;
-use crate::application::web::{SESSION_COOKIE_NAME, TOKEN_COOKIE_NAME};
+use crate::application::web::SESSION_COOKIE_NAME;
 use argon2::{
     password_hash::{
         Error as PasswordHashError, PasswordHash, PasswordHashString, PasswordVerifier,
@@ -127,6 +128,12 @@ pub(super) enum TokenVerifyError {
     InvalidHash(String),
 }
 
+#[derive(Debug, Clone)]
+pub(super) enum CredentialOverride {
+    RawToken(String),
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(super) fn build_request(
     allow: &[IpMatcher],
     trusted_proxies: &[IpMatcher],
@@ -135,6 +142,7 @@ pub(super) fn build_request(
     parts: &Parts,
     route: WebRoute,
     now: Instant,
+    credential_override: Option<CredentialOverride>,
 ) -> Result<AuthRequest, SecurityRejection> {
     let remote_ip = parts
         .extensions
@@ -184,15 +192,27 @@ pub(super) fn build_request(
         .emit();
     }
 
-    let (credential, token_key) =
-        extract_credential(parts, sessions, sessions_enabled, route, remote_ip, now)?;
+    let has_override = credential_override.is_some();
+    let (credential, token_key) = match credential_override.as_ref() {
+        Some(CredentialOverride::RawToken(raw)) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return Err(SecurityRejection::unauthorized(None));
+            }
+            (
+                Credential::RawToken(trimmed.to_owned()),
+                TokenKey::from_value(trimmed),
+            )
+        }
+        None => extract_credential(parts, sessions, sessions_enabled, route, remote_ip, now)?,
+    };
 
     Ok(AuthRequest {
         route,
         remote_ip,
         credential,
         token_key,
-        require_token: route.requires_token(),
+        require_token: has_override || route.requires_token(),
         trusted_ip,
     })
 }
@@ -215,7 +235,7 @@ pub(super) async fn verify_token(
                 log_session_error(&err, request);
                 SecurityRejection::unauthorized(None)
             })?;
-            Ok(Some(sessions.issue(request.token_key, now)))
+            Ok(Some(format!("{SESSION_COOKIE_PREFIX}{}", candidate.id())))
         }
         Credential::RawToken(token) => {
             let auth_ok = match expected.verify(&token) {
@@ -262,11 +282,58 @@ pub(super) async fn verify_token(
 fn extract_credential(
     parts: &Parts,
     sessions: &SessionManager,
-    sessions_enabled: bool,
+    _sessions_enabled: bool,
     route: WebRoute,
     remote_ip: std::net::IpAddr,
     now: Instant,
 ) -> Result<(Credential, TokenKey), SecurityRejection> {
+    let mut encoded_session_cookie = None;
+    if let Some(cookie_header) = parts.headers.get(COOKIE) {
+        if let Ok(value) = cookie_header.to_str() {
+            for pair in value.split(';') {
+                let mut kv = pair.trim().splitn(2, '=');
+                let name = kv.next().map(str::trim);
+                let Some(raw_value) = kv.next() else {
+                    continue;
+                };
+                let trimmed = raw_value.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if encoded_session_cookie.is_none() && name == Some(SESSION_COOKIE_NAME) {
+                    encoded_session_cookie = Some(trimmed.to_owned());
+                }
+            }
+        }
+    }
+
+    if let Some(encoded) = encoded_session_cookie {
+        let decoded = match percent_decode_str(&encoded).decode_utf8() {
+            Ok(value) => value.into_owned(),
+            Err(_) => {
+                log_session_error_raw(
+                    &SessionError::InvalidFormat,
+                    route,
+                    remote_ip,
+                    TokenKey::Anonymous,
+                );
+                String::new()
+            }
+        };
+        if !decoded.is_empty() {
+            match sessions.lookup(&decoded, now) {
+                Ok(candidate) => {
+                    let token_key = candidate.token_key();
+                    return Ok((Credential::Session(candidate), token_key));
+                }
+                Err(err) => {
+                    log_session_error_raw(&err, route, remote_ip, TokenKey::Anonymous);
+                }
+            }
+        }
+        // Invalid session cookie: logged above, fall through to other credentials.
+    }
+
     if let Some(header_value) = parts.headers.get(AUTHORIZATION) {
         if let Ok(value) = header_value.to_str() {
             let trimmed = value.trim();
@@ -293,72 +360,6 @@ fn extract_credential(
                     TokenKey::from_value(trimmed),
                 ));
             }
-        }
-    }
-
-    let mut encoded_session_cookie = None;
-    let mut raw_cookie = None;
-    if let Some(cookie_header) = parts.headers.get(COOKIE) {
-        if let Ok(value) = cookie_header.to_str() {
-            for pair in value.split(';') {
-                let mut kv = pair.trim().splitn(2, '=');
-                let name = kv.next().map(str::trim);
-                let Some(raw_value) = kv.next() else {
-                    continue;
-                };
-                let trimmed = raw_value.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                if sessions_enabled
-                    && encoded_session_cookie.is_none()
-                    && name == Some(SESSION_COOKIE_NAME)
-                {
-                    encoded_session_cookie = Some(trimmed.to_owned());
-                    continue;
-                }
-                if raw_cookie.is_none() && name == Some(TOKEN_COOKIE_NAME) {
-                    raw_cookie = Some(trimmed.to_owned());
-                }
-            }
-        }
-    }
-
-    if let Some(encoded) = encoded_session_cookie {
-        let decoded = match percent_decode_str(&encoded).decode_utf8() {
-            Ok(value) => value.into_owned(),
-            Err(_) => {
-                log_session_error_raw(
-                    &SessionError::InvalidFormat,
-                    route,
-                    remote_ip,
-                    TokenKey::Anonymous,
-                );
-                return Err(SecurityRejection::unauthorized(None));
-            }
-        };
-        match sessions.lookup(&decoded, now) {
-            Ok(candidate) => {
-                let token_key = candidate.token_key();
-                return Ok((Credential::Session(candidate), token_key));
-            }
-            Err(err) => {
-                log_session_error_raw(&err, route, remote_ip, TokenKey::Anonymous);
-                return Err(SecurityRejection::unauthorized(None));
-            }
-        }
-    }
-
-    if let Some(raw_value) = raw_cookie {
-        let decoded = percent_decode_str(&raw_value)
-            .decode_utf8()
-            .map(|cow| cow.into_owned())
-            .unwrap_or_else(|_| raw_value);
-        if !decoded.is_empty() {
-            return Ok((
-                Credential::RawToken(decoded.clone()),
-                TokenKey::from_value(&decoded),
-            ));
         }
     }
 
@@ -494,7 +495,6 @@ fn log_session_error_raw(
         SessionError::InvalidFormat => "session_invalid_format",
         SessionError::Unknown => "session_unknown",
         SessionError::Expired => "session_expired",
-        SessionError::Replay => "session_replay",
     };
     LogEvent::SecurityIncident {
         category: Cow::Borrowed(category),
@@ -560,7 +560,7 @@ mod tests {
         let parts = make_parts("/", IpAddr::V4(Ipv4Addr::LOCALHOST), Some("secret"));
         let now = Instant::now();
         let request =
-            build_request(&[], &[], &sessions, true, &parts, WebRoute::Html, now).unwrap();
+            build_request(&[], &[], &sessions, true, &parts, WebRoute::Html, now, None).unwrap();
 
         let verifier = TokenVerifier::parse(cached_argon2()).expect("parse hash");
         verify_token(&state, &policy, Some(&verifier), &sessions, &request, now)
@@ -575,7 +575,8 @@ mod tests {
         let sessions = SessionManager::new();
         let parts = make_parts("/sse", IpAddr::V4(Ipv4Addr::LOCALHOST), None);
         let now = Instant::now();
-        let request = build_request(&[], &[], &sessions, true, &parts, WebRoute::Sse, now).unwrap();
+        let request =
+            build_request(&[], &[], &sessions, true, &parts, WebRoute::Sse, now, None).unwrap();
 
         let verifier = TokenVerifier::parse(cached_argon2()).expect("parse hash");
         let err = verify_token(&state, &policy, Some(&verifier), &sessions, &request, now)
@@ -592,46 +593,12 @@ mod tests {
         let parts = make_parts("/", IpAddr::V4(Ipv4Addr::LOCALHOST), None);
         let now = Instant::now();
         let request =
-            build_request(&[], &[], &sessions, true, &parts, WebRoute::Html, now).unwrap();
+            build_request(&[], &[], &sessions, true, &parts, WebRoute::Html, now, None).unwrap();
 
         let verifier = TokenVerifier::parse(cached_argon2()).expect("parse hash");
         verify_token(&state, &policy, Some(&verifier), &sessions, &request, now)
             .await
             .expect("html route should allow missing token");
-    }
-
-    #[tokio::test]
-    async fn verify_token_accepts_cookie() {
-        let state = SecurityState::new();
-        let policy = SecurityPolicy::default();
-        let sessions = SessionManager::new();
-        let request = Request::builder().uri("/sse").body(()).unwrap();
-        let (mut parts, _) = request.into_parts();
-        parts.headers.insert(
-            COOKIE,
-            format!("{TOKEN_COOKIE_NAME}=secret").parse().unwrap(),
-        );
-        parts
-            .extensions
-            .insert(ConnectInfo(std::net::SocketAddr::from((
-                IpAddr::V4(Ipv4Addr::LOCALHOST),
-                4242,
-            ))));
-
-        let now = Instant::now();
-        let auth_request =
-            build_request(&[], &[], &sessions, true, &parts, WebRoute::Sse, now).unwrap();
-        let verifier = TokenVerifier::parse(cached_argon2()).expect("parse hash");
-        verify_token(
-            &state,
-            &policy,
-            Some(&verifier),
-            &sessions,
-            &auth_request,
-            now,
-        )
-        .await
-        .expect("cookie token should be accepted");
     }
 
     #[tokio::test]
@@ -659,7 +626,7 @@ mod tests {
             ))));
 
         let auth_request =
-            build_request(&[], &[], &sessions, true, &parts, WebRoute::Sse, now).unwrap();
+            build_request(&[], &[], &sessions, true, &parts, WebRoute::Sse, now, None).unwrap();
         let verifier = TokenVerifier::parse(cached_argon2()).expect("parse hash");
         verify_token(
             &state,
@@ -674,6 +641,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn invalid_session_cookie_logs_and_rejects() {
+        let state = SecurityState::new();
+        let policy = SecurityPolicy::default();
+        let sessions = SessionManager::new();
+
+        let request = Request::builder().uri("/sse").body(()).unwrap();
+        let (mut parts, _) = request.into_parts();
+        parts.headers.insert(
+            COOKIE,
+            format!("{SESSION_COOKIE_NAME}=not-a-session")
+                .parse()
+                .unwrap(),
+        );
+        parts
+            .extensions
+            .insert(ConnectInfo(std::net::SocketAddr::from((
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                4242,
+            ))));
+
+        let now = Instant::now();
+        let auth_request =
+            build_request(&[], &[], &sessions, true, &parts, WebRoute::Sse, now, None).unwrap();
+        let verifier = TokenVerifier::parse(cached_argon2()).expect("parse hash");
+        let err = verify_token(
+            &state,
+            &policy,
+            Some(&verifier),
+            &sessions,
+            &auth_request,
+            now,
+        )
+        .await
+        .expect_err("invalid session cookie should be rejected");
+        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
     async fn trusted_proxy_overrides_client_ip() {
         let sessions = SessionManager::new();
         let mut parts = make_parts("/", IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)), None);
@@ -683,8 +688,17 @@ mod tests {
         );
         let trusted = vec![IpMatcher::Exact(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)))];
         let now = Instant::now();
-        let request =
-            build_request(&[], &trusted, &sessions, true, &parts, WebRoute::Html, now).unwrap();
+        let request = build_request(
+            &[],
+            &trusted,
+            &sessions,
+            true,
+            &parts,
+            WebRoute::Html,
+            now,
+            None,
+        )
+        .unwrap();
         assert_eq!(
             request.remote_ip,
             IpAddr::V4(Ipv4Addr::new(198, 51, 100, 25))
@@ -701,7 +715,7 @@ mod tests {
             .insert("x-forwarded-for", "198.51.100.25".parse().unwrap());
         let now = Instant::now();
         let request =
-            build_request(&[], &[], &sessions, true, &parts, WebRoute::Html, now).unwrap();
+            build_request(&[], &[], &sessions, true, &parts, WebRoute::Html, now, None).unwrap();
         assert_eq!(request.remote_ip, IpAddr::V4(Ipv4Addr::new(203, 0, 113, 5)));
     }
 

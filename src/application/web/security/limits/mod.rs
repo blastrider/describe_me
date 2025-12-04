@@ -32,4 +32,4 @@ pub(crate) use state::{enforce_rate_limits, ensure_not_blocked, GlobalPermit, Se
 pub(crate) use token_affinity::TokenAffinity;
 
 #[cfg(test)]
-mod tests;
+mod tests_policy;

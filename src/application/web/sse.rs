@@ -27,8 +27,8 @@ use crate::application::capture_snapshot_with_view;
 use crate::application::logging::LogEvent;
 use crate::domain::CaptureOptions;
 
-use super::security::{AuthGuard, GlobalPermit, SsePermit, TokenKey};
-use super::{mark_response_no_store, set_session_cookie, AppState};
+use super::security::{attach_session_cookie, AuthGuard, GlobalPermit, SsePermit, TokenKey};
+use super::{mark_response_no_store, AppState};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SseCloseReason {
@@ -265,15 +265,15 @@ pub(super) async fn sse_stream(
     let with_services = false;
 
     let mut session = guard.into_session();
-    let cookie_token = session.session_cookie().map(str::to_owned);
     let client_ip = session.ip();
     let token_key = session.token_key();
     let permit = session.take_sse_permit();
     let global_permit = session.take_global_permit();
-    let policy = state.security.policy();
-    let shutdown_notify = state.shutdown.clone();
+    let security = state.security();
+    let policy = security.policy();
+    let shutdown_notify = state.shutdown();
 
-    let mut interval = state.interval;
+    let mut interval = state.interval();
     let min_interval = policy.sse_min_event_interval();
     if interval < min_interval {
         interval = min_interval;
@@ -307,11 +307,11 @@ pub(super) async fn sse_stream(
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     #[cfg(feature = "config")]
-    let config = state.config.clone();
-    let exposure = state.exposure;
-    let updates_cache = state.updates_cache.clone();
+    let config = state.config();
+    let exposure = state.exposure();
+    let updates_cache = state.updates_cache().clone();
     let state_for_cache = state.clone();
-    let ctx = state.ctx.clone();
+    let ctx = state.ctx();
 
     let stream = IntervalStream::new(ticker).then(move |_| {
         #[cfg(feature = "config")]
@@ -414,9 +414,7 @@ pub(super) async fn sse_stream(
     let sse = Sse::new(stream).keep_alive(KeepAlive::default());
     let mut response = sse.into_response();
     mark_response_no_store(response.headers_mut());
-    if let Some(token) = cookie_token.as_deref() {
-        set_session_cookie(response.headers_mut(), token, state.session_cookie_secure);
-    }
+    attach_session_cookie(response.headers_mut(), &session, &state);
     response
 }
 

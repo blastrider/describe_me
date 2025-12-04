@@ -21,32 +21,30 @@
 //!   ).await?;
 
 mod assets;
+mod auth;
+mod csp;
 mod handlers;
+mod origin;
 mod security;
 mod sse;
+mod state;
 mod template;
 mod updates_cache;
 mod views;
 
+pub(crate) use csp::SecurityHeadersLayer;
+pub(crate) use origin::{OriginCheckLayer, OriginPolicy};
+pub(crate) use state::{AppState, LogoAsset, RuntimeState, StaticWebConfig};
+
 use std::{
     borrow::Cow,
-    collections::HashSet,
     net::SocketAddr,
     sync::{Arc, RwLock},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use axum::{
-    body::{Body, Bytes},
-    extract::State,
-    http::{
-        header,
-        header::{HeaderName, HeaderValue, ORIGIN},
-        HeaderMap, StatusCode, Uri,
-    },
-    middleware,
-    middleware::Next,
-    response::{IntoResponse, Response},
+    http::{header, HeaderMap, HeaderValue},
     routing::{get, post},
     Router,
 };
@@ -55,8 +53,9 @@ use tokio::sync::Notify;
 use tracing::warn;
 
 use crate::application::context::AppContext;
-use crate::application::exposure::{Exposure, SnapshotView};
+use crate::application::exposure::Exposure;
 use crate::application::logging::LogEvent;
+#[cfg(feature = "config")]
 use crate::application::metadata::override_state_directory;
 use crate::domain::DescribeError;
 #[cfg(feature = "config")]
@@ -64,7 +63,7 @@ use crate::domain::{DescribeConfig, WebSecurityConfig};
 
 use handlers::{
     containers_api, containers_page, history_series, host_logs, index, logo_asset, logs_page,
-    update_description, update_tags, updates_page,
+    metrics_export, update_description, update_tags, updates_page,
 };
 use security::WebSecurity;
 use sse::sse_stream;
@@ -75,18 +74,13 @@ use std::future::pending;
 #[cfg(unix)]
 use tokio::signal::unix::{signal as unix_signal, SignalKind};
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use base64::Engine as _;
-use rand_core::{OsRng, RngCore};
-
-pub(crate) const TOKEN_COOKIE_NAME: &str = "describe_me_token";
-pub(crate) const SESSION_COOKIE_NAME: &str = "describe_me_session";
-const TOKEN_COOKIE_MAX_AGE: u32 = 7 * 24 * 3600;
+pub(crate) use auth::{clear_session_cookie, set_session_cookie, SESSION_COOKIE_NAME};
 const UPDATES_CACHE_SUCCESS_TTL: Duration = Duration::from_secs(300);
 const UPDATES_CACHE_FAILURE_RETRY: Duration = Duration::from_secs(60);
 const DESCRIPTION_MAX_BYTES: usize = 2048;
 const TAGS_MAX_PER_REQUEST: usize = 64;
 const TAG_LENGTH_LIMIT: usize = 48;
+pub(crate) const WEB_SESSION_SECONDS: u64 = 7 * 24 * 3600;
 
 #[cfg(feature = "config")]
 const LOGO_MAX_BYTES: u64 = 128 * 1024;
@@ -99,21 +93,6 @@ fn duration_from_secs_or_default(value: u64, default: Duration) -> Duration {
         Duration::from_secs(value)
     }
 }
-
-const HEADER_CONTENT_SECURITY_POLICY: HeaderName =
-    HeaderName::from_static("content-security-policy");
-const HEADER_REFERRER_POLICY: HeaderName = HeaderName::from_static("referrer-policy");
-const HEADER_X_FRAME_OPTIONS: HeaderName = HeaderName::from_static("x-frame-options");
-const HEADER_X_CONTENT_TYPE_OPTIONS: HeaderName = HeaderName::from_static("x-content-type-options");
-const HEADER_CROSS_ORIGIN_RESOURCE_POLICY: HeaderName =
-    HeaderName::from_static("cross-origin-resource-policy");
-const HEADER_PERMISSIONS_POLICY: HeaderName = HeaderName::from_static("permissions-policy");
-const HEADER_STRICT_TRANSPORT_SECURITY: HeaderName =
-    HeaderName::from_static("strict-transport-security");
-const HEADER_CROSS_ORIGIN_OPENER_POLICY: HeaderName =
-    HeaderName::from_static("cross-origin-opener-policy");
-const HEADER_CROSS_ORIGIN_EMBEDDER_POLICY: HeaderName =
-    HeaderName::from_static("cross-origin-embedder-policy");
 
 type AxumRequest = axum::extract::Request;
 
@@ -152,416 +131,8 @@ pub struct WebTlsConfig {
     pub key_path: String,
 }
 
-#[derive(Clone)]
-struct AppState {
-    ctx: Arc<AppContext>,
-    interval: Duration,
-    #[cfg(feature = "config")]
-    config: Option<DescribeConfig>,
-    web_debug: bool,
-    security: Arc<WebSecurity>,
-    exposure: Exposure,
-    shutdown: Arc<Notify>,
-    updates_cache: UpdatesCache,
-    snapshot_cache: Arc<RwLock<Option<CachedSnapshot>>>,
-    logo: LogoAsset,
-    session_cookie_secure: bool,
-}
-
-#[derive(Clone)]
-struct CachedSnapshot {
-    view: SnapshotView,
-    captured_at: Instant,
-}
-
-impl AppState {
-    fn cache_snapshot(&self, view: SnapshotView) {
-        let mut guard = self
-            .snapshot_cache
-            .write()
-            .expect("snapshot cache poisoned");
-        *guard = Some(CachedSnapshot {
-            view,
-            captured_at: Instant::now(),
-        });
-    }
-
-    fn latest_snapshot(&self) -> Option<CachedSnapshot> {
-        let guard = self.snapshot_cache.read().expect("snapshot cache poisoned");
-        guard.clone()
-    }
-}
-
-/// Ressource statique (ou personnalisée) représentant le logo exposé par l'UI.
-#[derive(Clone)]
-struct LogoAsset {
-    bytes: Bytes,
-}
-
-impl LogoAsset {
-    fn default() -> Self {
-        Self {
-            bytes: Bytes::from_static(assets::LOGO_SVG),
-        }
-    }
-
-    fn response(&self) -> Response {
-        Response::builder()
-            .status(StatusCode::OK)
-            .header(
-                header::CONTENT_TYPE,
-                HeaderValue::from_static("image/svg+xml"),
-            )
-            .body(Body::from(self.bytes.clone()))
-            .expect("logo response")
-    }
-
-    #[cfg(feature = "config")]
-    fn from_optional_path(path: Option<&str>) -> Result<Self, DescribeError> {
-        match path {
-            Some(raw) => Self::from_path(raw),
-            None => Ok(Self::default()),
-        }
-    }
-
-    #[cfg(feature = "config")]
-    fn from_path(raw: &str) -> Result<Self, DescribeError> {
-        use std::fs;
-        use std::path::Path;
-
-        let path = Path::new(raw);
-        if !path.is_absolute() {
-            return Err(DescribeError::Config(format!(
-                "web.logo_path \"{}\" doit être un chemin absolu",
-                path.display()
-            )));
-        }
-
-        let canonical = fs::canonicalize(path).map_err(|err| {
-            DescribeError::Config(format!("web.logo_path \"{}\": {err}", path.display()))
-        })?;
-        let metadata = fs::metadata(&canonical).map_err(|err| {
-            DescribeError::Config(format!("web.logo_path \"{}\": {err}", canonical.display()))
-        })?;
-        if !metadata.is_file() {
-            return Err(DescribeError::Config(format!(
-                "web.logo_path \"{}\" n'est pas un fichier",
-                canonical.display()
-            )));
-        }
-        if metadata.len() > LOGO_MAX_BYTES {
-            return Err(DescribeError::Config(format!(
-                "web.logo_path \"{}\" dépasse la limite de {LOGO_MAX_BYTES} octets",
-                canonical.display()
-            )));
-        }
-
-        let data = fs::read(&canonical).map_err(|err| {
-            DescribeError::Config(format!("web.logo_path \"{}\": {err}", canonical.display()))
-        })?;
-
-        validate_logo_bytes(&data).map_err(|reason| {
-            DescribeError::Config(format!(
-                "web.logo_path \"{}\" invalide: {reason}",
-                canonical.display()
-            ))
-        })?;
-
-        Ok(Self {
-            bytes: Bytes::from(data),
-        })
-    }
-}
-
-#[cfg(feature = "config")]
-fn validate_logo_bytes(bytes: &[u8]) -> Result<(), String> {
-    if bytes.is_empty() {
-        return Err("le fichier est vide".into());
-    }
-    if (bytes.len() as u64) > LOGO_MAX_BYTES {
-        return Err(format!(
-            "le fichier dépasse la limite de {LOGO_MAX_BYTES} octets"
-        ));
-    }
-    let text = std::str::from_utf8(bytes)
-        .map_err(|_| "le logo doit être un SVG encodé en UTF-8".to_string())?;
-    let lower = text.to_ascii_lowercase();
-    if !lower.contains("<svg") {
-        return Err("balise <svg> introuvable".into());
-    }
-    if lower.contains("<script") {
-        return Err("les balises <script> sont interdites".into());
-    }
-    for attr in ["onload", "onerror", "onclick", "onfocus", "onmouseover"] {
-        if lower.contains(&format!("{attr}=")) {
-            return Err(format!("l'attribut {attr}= est interdit"));
-        }
-    }
-    if lower.contains("javascript:") {
-        return Err("les URLs javascript: sont interdites".into());
-    }
-    Ok(())
-}
-
-#[derive(Clone)]
-struct CspNonce(Arc<str>);
-
-impl CspNonce {
-    fn new(value: String) -> Self {
-        Self(Arc::<str>::from(value))
-    }
-
-    fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-async fn http_security_layer(
-    State(origin_policy): State<OriginPolicy>,
-    mut req: AxumRequest,
-    next: Next,
-) -> Response {
-    let nonce_value = generate_csp_nonce();
-    let csp_nonce = CspNonce::new(nonce_value);
-
-    if !is_origin_allowed(&req, &origin_policy) {
-        let mut response = (
-            StatusCode::FORBIDDEN,
-            "Requête bloquée par la politique CORS (origin non autorisée).",
-        )
-            .into_response();
-        apply_security_headers(response.headers_mut(), &csp_nonce);
-        return response;
-    }
-
-    req.extensions_mut().insert(csp_nonce.clone());
-
-    let mut response = next.run(req).await;
-    apply_security_headers(response.headers_mut(), &csp_nonce);
-    response
-}
-
-fn generate_csp_nonce() -> String {
-    let mut bytes = [0u8; 32];
-    OsRng.fill_bytes(&mut bytes);
-    URL_SAFE_NO_PAD.encode(bytes)
-}
-
-#[derive(Clone, Debug, Default)]
-struct OriginPolicy {
-    allowed: Arc<[AllowedOrigin]>,
-}
-
-impl OriginPolicy {
-    fn from_allowlist(raw: Vec<String>) -> Result<Self, DescribeError> {
-        if raw.is_empty() {
-            return Ok(Self::default());
-        }
-        let mut seen = HashSet::new();
-        let mut allow = Vec::with_capacity(raw.len());
-        for value in raw {
-            let trimmed = value.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let origin = AllowedOrigin::parse(trimmed)
-                .map_err(|err| DescribeError::Config(format!("origin \"{trimmed}\": {err}")))?;
-            if seen.insert(origin.clone()) {
-                allow.push(origin);
-            }
-        }
-        Ok(Self {
-            allowed: allow.into(),
-        })
-    }
-
-    fn allows(&self, req: &AxumRequest) -> bool {
-        let origin_header = match req.headers().get(ORIGIN) {
-            Some(origin) => origin,
-            None => return true,
-        };
-        let origin_str = match origin_header.to_str() {
-            Ok(value) => value,
-            Err(_) => return false,
-        };
-        if origin_str.eq_ignore_ascii_case("null") {
-            return false;
-        }
-        let origin_uri: Uri = match origin_str.parse() {
-            Ok(uri) => uri,
-            Err(_) => return false,
-        };
-
-        if !self.allowed.is_empty() {
-            return self
-                .allowed
-                .iter()
-                .any(|allowed| allowed.matches(&origin_uri));
-        }
-
-        let host_header = match req.headers().get(header::HOST) {
-            Some(host) => host,
-            None => return false,
-        };
-        let host_str = match host_header.to_str() {
-            Ok(value) => value,
-            Err(_) => return false,
-        };
-        let host_authority: axum::http::uri::Authority = match host_str.parse() {
-            Ok(authority) => authority,
-            Err(_) => return false,
-        };
-        let origin_host = match origin_uri.host() {
-            Some(host) => host,
-            None => return false,
-        };
-
-        if !origin_host.eq_ignore_ascii_case(host_authority.host()) {
-            return false;
-        }
-
-        let origin_port = origin_uri
-            .port_u16()
-            .or_else(|| default_port(origin_uri.scheme_str()));
-        let host_port = host_authority
-            .port_u16()
-            .or_else(|| default_port(origin_uri.scheme_str()));
-
-        origin_port == host_port
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct AllowedOrigin {
-    scheme: OriginScheme,
-    host: String,
-    port: Option<u16>,
-}
-
-impl AllowedOrigin {
-    fn parse(input: &str) -> Result<Self, String> {
-        let uri: Uri = input.parse::<Uri>().map_err(|err| err.to_string())?;
-        let scheme = match uri.scheme_str() {
-            Some(value) => OriginScheme::parse(value)
-                .ok_or_else(|| format!("schéma non supporté: {value} (attendu http ou https)"))?,
-            None => {
-                return Err("origin incomplet: schéma requis (http ou https)".into());
-            }
-        };
-        let host = uri
-            .host()
-            .ok_or_else(|| "origin incomplet: hôte requis".to_string())?
-            .to_owned();
-        let port = uri.port_u16();
-        if uri.path() != "/" && !uri.path().is_empty() {
-            return Err("origin ne doit pas contenir de chemin".into());
-        }
-        if uri.query().is_some() {
-            return Err("origin ne doit pas contenir de query string".into());
-        }
-        Ok(Self { scheme, host, port })
-    }
-
-    fn matches(&self, candidate: &Uri) -> bool {
-        let Some(host) = candidate.host() else {
-            return false;
-        };
-        if !host.eq_ignore_ascii_case(&self.host) {
-            return false;
-        }
-        match candidate.scheme_str() {
-            Some(value) if self.scheme.matches(value) => {}
-            _ => return false,
-        }
-        let candidate_port = candidate
-            .port_u16()
-            .or_else(|| default_port(candidate.scheme_str()));
-        match self.port {
-            Some(port) => candidate_port == Some(port),
-            None => true,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum OriginScheme {
-    Http,
-    Https,
-}
-
-impl OriginScheme {
-    fn parse(value: &str) -> Option<Self> {
-        match value {
-            "http" | "HTTP" => Some(OriginScheme::Http),
-            "https" | "HTTPS" => Some(OriginScheme::Https),
-            _ => None,
-        }
-    }
-
-    fn matches(&self, other: &str) -> bool {
-        match self {
-            OriginScheme::Http => other.eq_ignore_ascii_case("http"),
-            OriginScheme::Https => other.eq_ignore_ascii_case("https"),
-        }
-    }
-}
-
-fn apply_security_headers(headers: &mut HeaderMap, nonce: &CspNonce) {
-    let csp_value = format!(
-        "default-src 'none'; connect-src 'self'; img-src 'self'; font-src 'self'; \
-         style-src 'nonce-{nonce}'; script-src 'nonce-{nonce}'; script-src-attr 'none'; base-uri 'none'; form-action 'none'; \
-         frame-ancestors 'none'; object-src 'none'; block-all-mixed-content; upgrade-insecure-requests",
-        nonce = nonce.as_str()
-    );
-
-    if let Ok(value) = HeaderValue::from_str(&csp_value) {
-        headers.insert(HEADER_CONTENT_SECURITY_POLICY, value);
-    }
-    headers.insert(
-        HEADER_REFERRER_POLICY,
-        HeaderValue::from_static("no-referrer"),
-    );
-    headers.insert(HEADER_X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
-    headers.insert(
-        HEADER_X_CONTENT_TYPE_OPTIONS,
-        HeaderValue::from_static("nosniff"),
-    );
-    headers.insert(
-        HEADER_CROSS_ORIGIN_RESOURCE_POLICY,
-        HeaderValue::from_static("same-origin"),
-    );
-    headers.insert(
-        HEADER_PERMISSIONS_POLICY,
-        HeaderValue::from_static("geolocation=(), camera=(), microphone=()"),
-    );
-    headers.insert(
-        HEADER_STRICT_TRANSPORT_SECURITY,
-        HeaderValue::from_static("max-age=31536000; includeSubDomains"),
-    );
-    headers.insert(
-        HEADER_CROSS_ORIGIN_OPENER_POLICY,
-        HeaderValue::from_static("same-origin"),
-    );
-    headers.insert(
-        HEADER_CROSS_ORIGIN_EMBEDDER_POLICY,
-        HeaderValue::from_static("require-corp"),
-    );
-}
-
 fn mark_response_no_store(headers: &mut HeaderMap) {
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-}
-
-fn is_origin_allowed(req: &AxumRequest, policy: &OriginPolicy) -> bool {
-    policy.allows(req)
-}
-
-fn default_port(scheme: Option<&str>) -> Option<u16> {
-    match scheme {
-        Some("https") => Some(443),
-        Some("http") => Some(80),
-        _ => None,
-    }
 }
 
 pub async fn serve_http<A: Into<SocketAddr>>(
@@ -597,7 +168,7 @@ pub async fn serve_http_with_context<A: Into<SocketAddr>>(
 ) -> Result<(), DescribeError> {
     let origin_policy = OriginPolicy::from_allowlist(access.allow_origins.clone())?;
     let tls_settings = access.tls.clone();
-    let session_cookie_secure = access.session_cookie_secure;
+    let session_cookie_secure = access.session_cookie_secure && tls_settings.is_some();
     #[cfg(feature = "config")]
     let security_config: Option<WebSecurityConfig> = config
         .as_ref()
@@ -644,37 +215,43 @@ pub async fn serve_http_with_context<A: Into<SocketAddr>>(
     #[cfg(not(feature = "config"))]
     let logo = LogoAsset::default();
 
-    let app_state = AppState {
-        ctx: Arc::new(ctx),
+    let static_cfg = StaticWebConfig {
         interval,
         #[cfg(feature = "config")]
         config,
         web_debug,
         security: security.clone(),
         exposure,
+        logo,
+        session_cookie_secure,
+        session_ttl: security.session_ttl(),
+    };
+
+    let runtime = RuntimeState {
         shutdown: shutdown_for_state,
         updates_cache,
         snapshot_cache: snapshot_cache.clone(),
-        logo,
-        session_cookie_secure,
     };
+
+    let app_state = AppState::new(Arc::new(ctx), static_cfg, runtime);
 
     let router = Router::new()
         .route("/", get(index))
+        .route("/auth/login", post(auth::login))
+        .route("/auth/logout", post(auth::logout))
         .route("/assets/logo.svg", get(logo_asset))
         .route("/updates", get(updates_page))
         .route("/container", get(containers_page))
         .route("/logs", get(logs_page))
         .route("/sse", get(sse_stream))
+        .route("/metrics", get(metrics_export))
         .route("/api/containers", get(containers_api))
         .route("/api/history", get(history_series))
         .route("/api/logs", get(host_logs))
         .route("/api/description", post(update_description))
         .route("/api/tags", post(update_tags))
-        .layer(middleware::from_fn_with_state(
-            origin_policy,
-            http_security_layer,
-        ))
+        .layer(OriginCheckLayer::new(origin_policy))
+        .layer(SecurityHeadersLayer::new())
         .with_state(app_state);
 
     let bind_addr: SocketAddr = addr.into();
@@ -812,43 +389,6 @@ async fn build_rustls_config(cfg: &WebTlsConfig) -> Result<RustlsConfig, Describ
     RustlsConfig::from_pem_file(cert, key)
         .await
         .map_err(|err| DescribeError::Config(format!("chargement TLS {cert}/{key}: {err}")))
-}
-
-pub(super) fn set_session_cookie(headers: &mut HeaderMap, value: &str, secure: bool) {
-    if value.is_empty() {
-        return;
-    }
-    use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
-    let encoded = utf8_percent_encode(value, NON_ALPHANUMERIC).to_string();
-    let mut suffix = String::from("; HttpOnly");
-    if secure {
-        suffix.push_str("; Secure");
-    }
-    let cookie = format!(
-        "{name}={value}; Path=/; Max-Age={max_age}; SameSite=Strict{suffix}",
-        name = SESSION_COOKIE_NAME,
-        value = encoded,
-        max_age = TOKEN_COOKIE_MAX_AGE,
-        suffix = suffix
-    );
-    if let Ok(value) = HeaderValue::from_str(&cookie) {
-        headers.append(header::SET_COOKIE, value);
-    }
-}
-
-pub(crate) fn clear_session_cookie(headers: &mut HeaderMap, secure: bool) {
-    let mut suffix = String::from("; HttpOnly");
-    if secure {
-        suffix.push_str("; Secure");
-    }
-    let cookie = format!(
-        "{name}=deleted; Path=/; Max-Age=0; SameSite=Strict{suffix}",
-        name = SESSION_COOKIE_NAME,
-        suffix = suffix
-    );
-    if let Ok(value) = HeaderValue::from_str(&cookie) {
-        headers.append(header::SET_COOKIE, value);
-    }
 }
 
 #[cfg(test)]
