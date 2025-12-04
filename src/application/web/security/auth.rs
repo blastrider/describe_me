@@ -317,19 +317,21 @@ fn extract_credential(
                     remote_ip,
                     TokenKey::Anonymous,
                 );
-                return Err(SecurityRejection::unauthorized(None));
+                String::new()
             }
         };
-        match sessions.lookup(&decoded, now) {
-            Ok(candidate) => {
-                let token_key = candidate.token_key();
-                return Ok((Credential::Session(candidate), token_key));
-            }
-            Err(err) => {
-                log_session_error_raw(&err, route, remote_ip, TokenKey::Anonymous);
-                return Err(SecurityRejection::unauthorized(None));
+        if !decoded.is_empty() {
+            match sessions.lookup(&decoded, now) {
+                Ok(candidate) => {
+                    let token_key = candidate.token_key();
+                    return Ok((Credential::Session(candidate), token_key));
+                }
+                Err(err) => {
+                    log_session_error_raw(&err, route, remote_ip, TokenKey::Anonymous);
+                }
             }
         }
+        // Invalid session cookie: logged above, fall through to other credentials.
     }
 
     if let Some(header_value) = parts.headers.get(AUTHORIZATION) {
