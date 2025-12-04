@@ -197,6 +197,12 @@ impl ExposureBuilder {
     }
 }
 
+impl Default for ExposureBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Overrides explicites d'exposition (flags CLI/Web).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ExposureOverrides {
