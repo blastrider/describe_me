@@ -118,6 +118,13 @@ struct BtrfsUsage {
     unallocated: u64,
 }
 
+/// Tente de lire l'usage logique d'un volume Btrfs via
+/// `btrfs filesystem df -b <mount_point>`.
+///
+/// Best-effort : si le binaire `btrfs` est absent, renvoie un statut
+/// non nul ou produit une sortie inutilisable, la fonction retourne
+/// `None` et l'appelant conserve simplement les métriques issues de
+/// `sysinfo` sans déclencher d'erreur.
 fn read_btrfs_usage(mount_point: &str) -> Option<BtrfsUsage> {
     let output = Command::new("btrfs")
         .args(["filesystem", "df", "-b", mount_point])
@@ -194,6 +201,13 @@ pub(crate) fn usage_percent_from_bytes(total_bytes: u64, available_bytes: u64) -
     let ratio = 1.0 - (available / total);
     (ratio * 100.0).clamp(0.0, 100.0)
 }
+
+/// Collecte l'usage disque via `sysinfo` et affine les volumes Btrfs en
+/// interrogeant `btrfs filesystem df -b`.
+///
+/// La détection Btrfs est facultative : si la commande `btrfs` est absente
+/// ou échoue, les volumes concernés sont conservés avec les métriques
+/// fournies par `sysinfo` (pas de fallback ni d'erreur renvoyée).
 pub(crate) fn gather_disks() -> Result<DiskUsage, DescribeError> {
     let mut disks = Disks::new_with_refreshed_list();
     disks.refresh();

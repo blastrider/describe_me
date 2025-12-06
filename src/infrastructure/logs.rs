@@ -8,6 +8,11 @@ use crate::domain::{DescribeError, HostLogEntry, HostLogsPage};
 const JOURNALCTL_PATH: &str = "/usr/bin/journalctl";
 
 #[cfg(feature = "journald")]
+/// Lit les journaux système via `journalctl --lines <N>`.
+///
+/// La dépendance à `journalctl` est implicite : si le binaire est absent
+/// ou retourne une erreur, l'appel renvoie `DescribeError::External` et
+/// aucun log n'est fourni (pas de fallback automatique).
 pub(crate) fn tail_journald(lines: usize) -> Result<HostLogsPage, DescribeError> {
     if lines == 0 {
         return Ok(HostLogsPage {
