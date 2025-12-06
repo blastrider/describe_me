@@ -1,4 +1,5 @@
 use super::args::{CaptureOpts, CliConfig, ExposureOpts, WebExposureOpts};
+use describe_me_lib::ExposureFlagSource;
 
 #[cfg(feature = "config")]
 pub fn apply_cli_exposure_flags(
@@ -75,42 +76,15 @@ pub fn apply_web_exposure_flags(
 }
 
 fn overrides_from_cli(opts: &ExposureOpts) -> describe_me_lib::ExposureOverrides {
-    describe_me_lib::ExposureOverrides {
-        expose_hostname: opts.expose_hostname,
-        expose_os: opts.expose_os,
-        expose_kernel: opts.expose_kernel,
-        expose_services: opts.expose_services,
-        expose_disk_partitions: opts.expose_disk_partitions,
-        expose_network_traffic: opts.expose_network_traffic,
-        expose_containers_summary: opts.expose_containers_summary,
-        expose_containers_details: opts.expose_containers_details,
-        expose_updates: opts.expose_updates,
-        expose_extensions: opts.expose_extensions,
-        expose_all: opts.expose_all,
-        no_redacted: opts.no_redacted,
-        expose_listening_sockets: false,
-    }
+    describe_me_lib::ExposureOverrides::from_flags(opts)
 }
 
 fn overrides_from_web(
     opts: &WebExposureOpts,
     no_redacted: bool,
 ) -> describe_me_lib::ExposureOverrides {
-    describe_me_lib::ExposureOverrides {
-        expose_hostname: opts.expose_hostname,
-        expose_os: opts.expose_os,
-        expose_kernel: opts.expose_kernel,
-        expose_services: opts.expose_services,
-        expose_disk_partitions: opts.expose_disk_partitions,
-        expose_network_traffic: opts.expose_network_traffic,
-        expose_containers_summary: opts.expose_containers_summary,
-        expose_containers_details: opts.expose_containers_details,
-        expose_updates: opts.expose_updates,
-        expose_extensions: opts.expose_extensions,
-        expose_all: opts.expose_all,
-        no_redacted,
-        expose_listening_sockets: false,
-    }
+    let flags = WebExposureWithRedaction { opts, no_redacted };
+    describe_me_lib::ExposureOverrides::from_flags(&flags)
 }
 
 fn capture_context(capture: &CaptureOpts) -> describe_me_lib::ExposureCaptureContext {
@@ -118,5 +92,110 @@ fn capture_context(capture: &CaptureOpts) -> describe_me_lib::ExposureCaptureCon
         net_listen: capture.net_listen,
         net_traffic: capture.net_traffic,
         containers: capture.containers,
+    }
+}
+
+impl ExposureFlagSource for ExposureOpts {
+    fn expose_hostname(&self) -> bool {
+        self.expose_hostname
+    }
+
+    fn expose_os(&self) -> bool {
+        self.expose_os
+    }
+
+    fn expose_kernel(&self) -> bool {
+        self.expose_kernel
+    }
+
+    fn expose_services(&self) -> bool {
+        self.expose_services
+    }
+
+    fn expose_disk_partitions(&self) -> bool {
+        self.expose_disk_partitions
+    }
+
+    fn expose_network_traffic(&self) -> bool {
+        self.expose_network_traffic
+    }
+
+    fn expose_containers_summary(&self) -> bool {
+        self.expose_containers_summary
+    }
+
+    fn expose_containers_details(&self) -> bool {
+        self.expose_containers_details
+    }
+
+    fn expose_updates(&self) -> bool {
+        self.expose_updates
+    }
+
+    fn expose_extensions(&self) -> bool {
+        self.expose_extensions
+    }
+
+    fn expose_all(&self) -> bool {
+        self.expose_all
+    }
+
+    fn no_redacted(&self) -> bool {
+        self.no_redacted
+    }
+}
+
+struct WebExposureWithRedaction<'a> {
+    opts: &'a WebExposureOpts,
+    no_redacted: bool,
+}
+
+impl ExposureFlagSource for WebExposureWithRedaction<'_> {
+    fn expose_hostname(&self) -> bool {
+        self.opts.expose_hostname
+    }
+
+    fn expose_os(&self) -> bool {
+        self.opts.expose_os
+    }
+
+    fn expose_kernel(&self) -> bool {
+        self.opts.expose_kernel
+    }
+
+    fn expose_services(&self) -> bool {
+        self.opts.expose_services
+    }
+
+    fn expose_disk_partitions(&self) -> bool {
+        self.opts.expose_disk_partitions
+    }
+
+    fn expose_network_traffic(&self) -> bool {
+        self.opts.expose_network_traffic
+    }
+
+    fn expose_containers_summary(&self) -> bool {
+        self.opts.expose_containers_summary
+    }
+
+    fn expose_containers_details(&self) -> bool {
+        self.opts.expose_containers_details
+    }
+
+    fn expose_updates(&self) -> bool {
+        self.opts.expose_updates
+    }
+
+    fn expose_extensions(&self) -> bool {
+        self.opts.expose_extensions
+    }
+
+    fn expose_all(&self) -> bool {
+        self.opts.expose_all
+    }
+
+    fn no_redacted(&self) -> bool {
+        self.no_redacted
     }
 }
