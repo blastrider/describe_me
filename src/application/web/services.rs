@@ -4,41 +4,15 @@ use axum::http::StatusCode;
 
 use crate::{
     application::{
-        history::{self, HistoryQueryError},
+        history::HistoryQueryError,
         logging::LogEvent,
         logs::{self, HOST_LOGS_DEFAULT_LINES, HOST_LOGS_MAX_LINES},
         metrics::render_prometheus_metrics,
     },
-    domain::HostLogsPage,
+    domain::{HistorySeriesDto, HostLogsPage},
 };
 
 use super::{error::WebError, state::AppState};
-
-#[derive(serde::Serialize)]
-pub struct HistoryMetricResponse {
-    pub avg: Option<f32>,
-    pub min: Option<f32>,
-    pub max: Option<f32>,
-}
-
-#[derive(serde::Serialize)]
-pub struct HistoryPointResponse {
-    pub ts: u64,
-    pub span_seconds: u64,
-    pub cpu: HistoryMetricResponse,
-    pub mem: HistoryMetricResponse,
-    pub disk: HistoryMetricResponse,
-}
-
-#[derive(serde::Serialize)]
-pub struct HistoryResponse {
-    pub server_id: String,
-    pub window_seconds: u64,
-    pub bucket_seconds: u64,
-    pub truncated: bool,
-    pub aggregated: bool,
-    pub points: Vec<HistoryPointResponse>,
-}
 
 #[derive(Clone)]
 pub struct HistoryQueryParams {
@@ -57,7 +31,7 @@ pub struct LogsQueryParams {
 pub async fn build_history_series_response(
     state: &AppState,
     params: HistoryQueryParams,
-) -> Result<HistoryResponse, WebError> {
+) -> Result<HistorySeriesDto, WebError> {
     if state.exposure().redacted {
         return Err(WebError::forbidden(
             "L'historique est masqué lorsque l'exposition est redacted.",
@@ -132,36 +106,23 @@ pub async fn build_history_series_response(
     };
 
     let allow_disk = state.exposure().disk_partitions();
-    let points = series
-        .points
-        .into_iter()
-        .map(|point| HistoryPointResponse {
-            ts: point.timestamp,
-            span_seconds: point.span_seconds,
-            cpu: to_metric_response(&point.cpu, true),
-            mem: to_metric_response(&point.mem, true),
-            disk: to_metric_response(&point.disk, allow_disk),
-        })
-        .collect::<Vec<_>>();
+    let point_count = series.points.len() as u32;
+    let server_id = series.server_id.clone();
+    let window_seconds = series.window_seconds;
+    let truncated = series.truncated;
+    let dto = HistorySeriesDto::from_series_with_filter(series, allow_disk);
 
     LogEvent::HistoryQuery {
         ip: Cow::Owned(params.ip.clone()),
         token: Cow::Owned(params.token.clone()),
-        server: Cow::Owned(series.server_id.clone()),
-        points: points.len() as u32,
-        window_seconds: series.window_seconds,
-        truncated: series.truncated,
+        server: Cow::Owned(server_id),
+        points: point_count,
+        window_seconds,
+        truncated,
     }
     .emit();
 
-    Ok(HistoryResponse {
-        server_id: series.server_id,
-        window_seconds: series.window_seconds,
-        bucket_seconds: series.bucket_seconds,
-        truncated: series.truncated,
-        aggregated: series.aggregated,
-        points,
-    })
+    Ok(dto)
 }
 
 pub fn build_metrics_text(
@@ -201,22 +162,6 @@ pub async fn build_host_logs_response(params: LogsQueryParams) -> Result<HostLog
             Err(WebError::internal(
                 "Erreur interne lors de la lecture des logs.",
             ))
-        }
-    }
-}
-
-fn to_metric_response(metric: &history::MetricAggregate, allow: bool) -> HistoryMetricResponse {
-    if allow {
-        HistoryMetricResponse {
-            avg: metric.avg,
-            min: metric.min,
-            max: metric.max,
-        }
-    } else {
-        HistoryMetricResponse {
-            avg: None,
-            min: None,
-            max: None,
         }
     }
 }
