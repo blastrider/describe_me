@@ -8,6 +8,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use axum::http::{header, HeaderMap, HeaderValue};
+
 use crate::application::web::WEB_SESSION_SECONDS;
 
 pub(super) const SESSION_COOKIE_PREFIX: &str = "sess:v1:";
@@ -15,9 +17,10 @@ const SESSION_TTL_DEFAULT: Duration = Duration::from_secs(WEB_SESSION_SECONDS);
 const SESSION_TTL_MIN: Duration = Duration::from_secs(60);
 const SESSION_TTL_MAX: Duration = Duration::from_secs(WEB_SESSION_SECONDS);
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
+pub const SESSION_COOKIE_NAME: &str = "describe_me_session";
 
 #[derive(Debug, Clone)]
-pub(super) struct SessionManager {
+pub(crate) struct SessionManager {
     inner: Arc<Mutex<SessionStore>>,
     session_ttl: Duration,
 }
@@ -109,6 +112,66 @@ impl SessionManager {
     #[cfg(test)]
     pub(super) fn ttl_for_tests(&self) -> Duration {
         self.session_ttl
+    }
+}
+
+pub struct WebSession<'a> {
+    pub manager: &'a SessionManager,
+}
+
+impl<'a> WebSession<'a> {
+    pub fn issue_for(
+        &self,
+        token_key: TokenKey,
+        headers: &mut HeaderMap,
+        now: Instant,
+        secure: bool,
+    ) {
+        let cookie = self.manager.issue(token_key, now);
+        set_session_cookie(headers, &cookie, self.manager.ttl(), secure);
+    }
+
+    pub fn clear(&self, headers: &mut HeaderMap, secure: bool) {
+        clear_session_cookie(headers, secure);
+    }
+}
+
+pub fn set_session_cookie(headers: &mut HeaderMap, value: &str, max_age: Duration, secure: bool) {
+    if value.is_empty() {
+        return;
+    }
+
+    use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+    let encoded = utf8_percent_encode(value, NON_ALPHANUMERIC).to_string();
+    let mut suffix = String::from("; HttpOnly; SameSite=Lax");
+    if secure {
+        suffix.push_str("; Secure");
+    }
+    let max_age_secs = max_age.as_secs().clamp(1, u64::from(u32::MAX));
+    let cookie = format!(
+        "{name}={value}; Path=/; Max-Age={max_age}{suffix}",
+        name = SESSION_COOKIE_NAME,
+        value = encoded,
+        max_age = max_age_secs,
+        suffix = suffix
+    );
+    if let Ok(value) = HeaderValue::from_str(&cookie) {
+        headers.append(header::SET_COOKIE, value);
+    }
+}
+
+pub fn clear_session_cookie(headers: &mut HeaderMap, secure: bool) {
+    let mut suffix = String::from("; HttpOnly; SameSite=Lax");
+    if secure {
+        suffix.push_str("; Secure");
+    }
+    let cookie = format!(
+        "{name}=deleted; Path=/; Max-Age=0{suffix}",
+        name = SESSION_COOKIE_NAME,
+        suffix = suffix
+    );
+    if let Ok(value) = HeaderValue::from_str(&cookie) {
+        headers.append(header::SET_COOKIE, value);
     }
 }
 
