@@ -11,8 +11,9 @@ pub use crate::application::{filter_services, load_config_from_path};
 pub use crate::domain::ListeningSocket;
 pub use crate::domain::{
     CaptureOptions, ContainerInfo, ContainersSnapshot, ContainersSummary, DescribeError,
-    DiskPartition, DiskUsage, HistoryProfile, HostLogEntry, HostLogsPage, NetworkInterfaceTraffic,
-    ServiceInfo, SystemSnapshot, UpdatePackage, UpdatesInfo,
+    DiskPartition, DiskUsage, HistoryProfile, HostLogEntry, HostLogsPage, MetadataValidationError,
+    NetworkInterfaceTraffic, ServerDescription, ServerTag, ServiceInfo, SystemSnapshot, TagsBatch,
+    UpdatePackage, UpdatesInfo,
 };
 #[cfg(feature = "config")]
 pub use crate::domain::{DescribeConfig, ServiceSelection};

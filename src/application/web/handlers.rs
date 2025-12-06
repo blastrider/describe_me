@@ -18,7 +18,7 @@ use crate::{
         add_server_tags_with, clear_server_tags_with, remove_server_tags_with,
         set_server_description_with, set_server_tags_with,
     },
-    domain::{ContainersSnapshot, DescribeError},
+    domain::{ContainersSnapshot, DescribeError, ServerDescription, TagsBatch},
 };
 
 use super::{
@@ -149,12 +149,15 @@ pub(super) async fn update_description(
     Json(payload): Json<DescriptionPayload>,
 ) -> Result<Response, WebError> {
     let session = guard.into_session();
-    let text = normalize_description(&payload.text).map_err(WebError::bad_request)?;
-    match set_server_description_with(&state.ctx(), &text) {
+    let description = ServerDescription::try_from(payload.text.as_str())
+        .map_err(|err| WebError::bad_request(err.to_string()))?;
+    match set_server_description_with(&state.ctx(), description.as_ref()) {
         Ok(()) => {
             let mut response = (
                 StatusCode::OK,
-                Json(DescriptionResponse { description: text }),
+                Json(DescriptionResponse {
+                    description: description.into_inner(),
+                }),
             )
                 .into_response();
             attach_session_cookie(response.headers_mut(), &session, &state);
@@ -179,40 +182,31 @@ pub(super) async fn update_tags(
     Json(payload): Json<TagsPayload>,
 ) -> Result<Response, WebError> {
     let session = guard.into_session();
-    let response = if let Some(error) = validate_tags_payload(&payload) {
-        Err(WebError::bad_request(error))
-    } else {
-        let tags = payload
-            .tags
-            .into_iter()
-            .map(|t| t.trim().to_string())
-            .filter(|t| !t.is_empty())
-            .take(super::TAGS_MAX_PER_REQUEST)
-            .collect::<Vec<_>>();
-
-        let op = payload.op;
-        let result = match op {
-            TagOperation::Set => {
-                set_server_tags_with(&state.ctx(), tags.iter().map(|s| s.as_str()))
+    let result = match payload.op {
+        TagOperation::Clear => clear_server_tags_with(&state.ctx()).map(|_| Vec::new()),
+        op => {
+            let batch = TagsBatch::try_from(payload.tags)
+                .map_err(|err| WebError::bad_request(err.to_string()))?;
+            let tags = batch.into_strings();
+            match op {
+                TagOperation::Set => {
+                    set_server_tags_with(&state.ctx(), tags.iter().map(|t| t.as_str()))
+                }
+                TagOperation::Add => {
+                    add_server_tags_with(&state.ctx(), tags.iter().map(|t| t.as_str()))
+                }
+                TagOperation::Remove => {
+                    remove_server_tags_with(&state.ctx(), tags.iter().map(|t| t.as_str()))
+                }
+                TagOperation::Clear => unreachable!("handled earlier"),
             }
-            TagOperation::Add => {
-                add_server_tags_with(&state.ctx(), tags.iter().map(|s| s.as_str()))
-            }
-            TagOperation::Remove => {
-                remove_server_tags_with(&state.ctx(), tags.iter().map(|s| s.as_str()))
-            }
-            TagOperation::Clear => clear_server_tags_with(&state.ctx()).map(|_| Vec::new()),
-        };
-
-        match result {
-            Ok(list) => {
-                Ok((StatusCode::OK, Json(TagsResponse { tags: list.clone() })).into_response())
-            }
-            Err(DescribeError::System(msg)) => Err(WebError::internal(msg)),
-            Err(err) => Err(WebError::internal(err.to_string())),
         }
     };
-    let mut response = response?;
+    let mut response = match result {
+        Ok(list) => (StatusCode::OK, Json(TagsResponse { tags: list.clone() })).into_response(),
+        Err(DescribeError::System(msg)) => return Err(WebError::internal(msg)),
+        Err(err) => return Err(WebError::internal(err.to_string())),
+    };
     attach_session_cookie(response.headers_mut(), &session, &state);
     Ok(response)
 }
@@ -339,37 +333,4 @@ pub(super) async fn host_logs(
     let mut response = Json(page).into_response();
     attach_session_cookie(response.headers_mut(), &session, &state);
     Ok(response)
-}
-
-pub(super) fn normalize_description(input: &str) -> Result<String, &'static str> {
-    let sanitized = {
-        let crlf_folded = input.replace("\r\n", "\n");
-        crlf_folded.replace('\r', "\n")
-    };
-    if sanitized.len() > super::DESCRIPTION_MAX_BYTES {
-        return Err("La description ne peut pas dépasser 2048 caractères.");
-    }
-    Ok(sanitized)
-}
-
-fn validate_tags_payload(payload: &TagsPayload) -> Option<&'static str> {
-    match payload.op {
-        TagOperation::Clear => None,
-        _ => {
-            if payload.tags.is_empty() {
-                return Some("Merci de fournir au moins un tag.");
-            }
-            if payload.tags.len() > super::TAGS_MAX_PER_REQUEST {
-                return Some("Trop de tags fournis.");
-            }
-            if payload
-                .tags
-                .iter()
-                .any(|tag| tag.chars().count() > super::TAG_LENGTH_LIMIT)
-            {
-                return Some("Un tag dépasse la longueur maximale autorisée.");
-            }
-            None
-        }
-    }
 }

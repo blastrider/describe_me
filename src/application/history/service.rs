@@ -2,24 +2,24 @@ use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 
 use crate::application::logging::LogEvent;
-use crate::domain::{DescribeError, SystemSnapshot};
-use crate::infrastructure::history::{self, HistoryStorage};
+use crate::domain::{DescribeError, HistoryProfile, SystemSnapshot};
+use crate::infrastructure::history::{self, DisabledHistoryBackend, DiskStorage, MemoryStorage};
 
 use super::{
-    build_sample, downsample_points, round_timestamp, HistoryMode, HistoryPoint, HistoryQueryError,
-    HistorySeries, HistorySettings, MetricAggregate, MIN_RETENTION_POINTS,
+    build_sample, downsample_points, round_timestamp, HistoryBackend, HistoryMode, HistoryPoint,
+    HistoryQueryError, HistorySeries, HistorySettings, MetricAggregate, MIN_RETENTION_POINTS,
 };
 
-struct HistoryContext {
-    settings: HistorySettings,
-    storage: Arc<HistoryStorage>,
+pub(crate) struct HistoryContext {
+    pub(crate) settings: HistorySettings,
+    pub(crate) backend: Arc<dyn HistoryBackend>,
 }
 
 impl HistoryContext {
     fn disabled() -> Self {
         Self {
             settings: HistorySettings::disabled(),
-            storage: Arc::new(HistoryStorage::disabled()),
+            backend: Arc::new(DisabledHistoryBackend),
         }
     }
 }
@@ -38,30 +38,42 @@ impl HistoryService {
         }
     }
 
+    pub(crate) fn with_ctx<T>(&self, f: impl FnOnce(&HistoryContext) -> T) -> T {
+        let guard = self.ctx.read().expect("history context poisoned");
+        f(&guard)
+    }
+
     pub fn configure(&self, mut settings: HistorySettings) -> Result<(), DescribeError> {
-        let storage = if settings.is_active() {
+        let backend: Arc<dyn HistoryBackend> = if settings.is_active() {
             match settings.mode {
-                HistoryMode::Persistent => Arc::new(HistoryStorage::persistent()?),
-                HistoryMode::InMemory => Arc::new(HistoryStorage::in_memory()),
-                HistoryMode::Disabled => Arc::new(HistoryStorage::disabled()),
+                HistoryMode::Persistent => Arc::new(DiskStorage::open_or_create()?),
+                HistoryMode::InMemory => Arc::new(MemoryStorage::default()),
+                HistoryMode::Disabled => Arc::new(DisabledHistoryBackend),
             }
         } else {
             settings.disable();
-            Arc::new(HistoryStorage::disabled())
+            Arc::new(DisabledHistoryBackend)
         };
         let mut guard = self.ctx.write().expect("history context poisoned");
         guard.settings = settings;
-        guard.storage = storage;
+        guard.backend = backend;
         Ok(())
     }
 
+    pub fn configure_from_profile(&self, profile: HistoryProfile) -> Result<(), DescribeError> {
+        let settings = HistorySettings::for_profile(profile);
+        self.configure(settings)
+    }
+
     pub fn record_snapshot(&self, snapshot: &SystemSnapshot) {
-        let (settings, storage) = {
-            let guard = self.ctx.read().expect("history context poisoned");
-            if !guard.settings.is_active() {
-                return;
+        let Some((settings, backend)) = self.with_ctx(|ctx| {
+            if ctx.settings.is_active() {
+                Some((ctx.settings.clone(), Arc::clone(&ctx.backend)))
+            } else {
+                None
             }
-            (guard.settings.clone(), Arc::clone(&guard.storage))
+        }) else {
+            return;
         };
 
         let Some(sample) = build_sample(snapshot) else {
@@ -79,7 +91,7 @@ impl HistoryService {
                 return;
             }
         };
-        if let Err(err) = storage.append(&server_id, &sample, settings.retention_points as usize) {
+        if let Err(err) = backend.append(&server_id, &sample, settings.retention_points as usize) {
             LogEvent::SystemError {
                 location: std::borrow::Cow::Borrowed("history_append"),
                 error: std::borrow::Cow::Owned(err.to_string()),
@@ -89,8 +101,7 @@ impl HistoryService {
     }
 
     pub fn settings_snapshot(&self) -> HistorySettings {
-        let guard = self.ctx.read().expect("history context poisoned");
-        guard.settings.clone()
+        self.with_ctx(|ctx| ctx.settings.clone())
     }
 
     pub fn default_server_id(&self) -> Option<String> {
@@ -110,10 +121,8 @@ impl HistoryService {
         if limit == 0 {
             return Err(HistoryQueryError::InvalidLimit);
         }
-        let (settings, storage) = {
-            let guard = self.ctx.read().expect("history context poisoned");
-            (guard.settings.clone(), Arc::clone(&guard.storage))
-        };
+        let (settings, backend) =
+            self.with_ctx(|ctx| (ctx.settings.clone(), Arc::clone(&ctx.backend)));
         if !settings.is_active() {
             return Err(HistoryQueryError::Disabled);
         }
@@ -122,7 +131,7 @@ impl HistoryService {
         let window_secs = window.as_secs();
         let max_limit = settings.retention_points.max(MIN_RETENTION_POINTS) as usize;
         let limit = limit.min(max_limit);
-        let samples = storage
+        let samples = backend
             .read(server_id)
             .map_err(HistoryQueryError::Storage)?;
         if samples.is_empty() {
@@ -187,5 +196,80 @@ impl HistoryService {
 impl Default for HistoryService {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::application::history::profile_config;
+    use crate::domain::DiskUsage;
+    use crate::SharedSlice;
+    use std::time::Duration;
+
+    #[test]
+    fn configure_from_profile_applies_settings() {
+        let service = HistoryService::new();
+        service
+            .configure_from_profile(HistoryProfile::Paranoid)
+            .expect("configure profile");
+
+        let settings = service.settings_snapshot();
+        let profile_cfg = profile_config(HistoryProfile::Paranoid);
+
+        assert_eq!(settings.profile, HistoryProfile::Paranoid);
+        assert!(settings.enabled);
+        assert_eq!(settings.retention_points, profile_cfg.retention_points);
+        assert_eq!(settings.max_window_seconds, profile_cfg.max_window_seconds);
+        assert_eq!(settings.rounding_seconds, profile_cfg.rounding_seconds);
+        assert_eq!(settings.mode, profile_cfg.mode);
+        assert!(settings.paranoid_mode);
+    }
+
+    #[test]
+    fn memory_backend_records_and_queries() {
+        let service = HistoryService::new();
+        let mut settings = HistorySettings::for_profile(HistoryProfile::Default);
+        settings.mode = HistoryMode::InMemory;
+        service.configure(settings).expect("configure");
+
+        let snapshot = dummy_snapshot();
+        service.record_snapshot(&snapshot);
+
+        let server_id = service.default_server_id().expect("server id");
+        let series = service
+            .query_series(&server_id, Duration::from_secs(60), 10, 1)
+            .expect("series");
+        assert!(!series.points.is_empty());
+    }
+
+    fn dummy_snapshot() -> SystemSnapshot {
+        SystemSnapshot {
+            hostname: "host".into(),
+            os: None,
+            kernel: None,
+            uptime_seconds: 0,
+            cpu_count: 2,
+            load_average: (0.5, 0.25, 0.1),
+            total_memory_bytes: 2048,
+            used_memory_bytes: 1024,
+            total_swap_bytes: 0,
+            used_swap_bytes: 0,
+            disk_usage: Some(DiskUsage {
+                total_bytes: 2048,
+                available_bytes: 1024,
+                used_bytes: 1024,
+                partitions: SharedSlice::from_vec(Vec::new()),
+            }),
+            #[cfg(feature = "systemd")]
+            services_running: SharedSlice::from_vec(Vec::new()),
+            #[cfg(feature = "net")]
+            listening_sockets: None,
+            #[cfg(feature = "net")]
+            network_traffic: None,
+            containers: None,
+            updates: None,
+            extensions: None,
+        }
     }
 }

@@ -3,16 +3,17 @@ use std::sync::Arc;
 #[cfg(feature = "serde")]
 use crate::application::containers::ContainersCacheService;
 use crate::application::history::{HistoryMode, HistoryService, HistorySettings};
+use crate::application::metadata::registry::{init_metadata_store, metadata_store};
 use crate::domain::DescribeError;
 use crate::domain::HistoryProfile;
-use crate::infrastructure::storage::{acquire_backend_arc, MetadataBackend, MetadataStore};
+use crate::infrastructure::storage::{MetadataBackend, MetadataStore};
 use std::sync::Mutex;
 
 /// Contexte applicatif injectable (métadonnées, historique, cache conteneurs).
 #[allow(dead_code)]
 #[derive(Clone)]
 pub struct AppContext {
-    metadata_backend: Arc<dyn MetadataBackend>,
+    metadata: MetadataStore,
     history: HistoryService,
     #[cfg(feature = "serde")]
     containers: Arc<ContainersCacheService>,
@@ -20,9 +21,10 @@ pub struct AppContext {
 
 impl AppContext {
     pub fn new_default() -> Result<Self, DescribeError> {
-        let metadata_backend = acquire_backend_arc()?;
+        let default_store = MetadataStore::open_default()?;
+        init_metadata_store(default_store);
         Ok(Self {
-            metadata_backend,
+            metadata: metadata_store(),
             history: HistoryService::new(),
             #[cfg(feature = "serde")]
             containers: Arc::new(ContainersCacheService::default()),
@@ -30,14 +32,15 @@ impl AppContext {
     }
 
     pub fn in_memory() -> Self {
-        let metadata_backend = Arc::new(InMemoryMetadataBackend::default());
+        let metadata =
+            MetadataStore::new_with_backend(Arc::new(InMemoryMetadataBackend::default()));
         let history = HistoryService::new();
         let mut settings = HistorySettings::for_profile(HistoryProfile::Default);
         settings.mode = HistoryMode::InMemory;
         // Ignorer l'erreur éventuelle: le backend in-memory est toujours disponible.
         let _ = history.configure(settings);
         Self {
-            metadata_backend,
+            metadata,
             history,
             #[cfg(feature = "serde")]
             containers: Arc::new(ContainersCacheService::default()),
@@ -47,7 +50,7 @@ impl AppContext {
     #[allow(dead_code)]
     pub(crate) fn with_metadata_backend(metadata_backend: Arc<dyn MetadataBackend>) -> Self {
         Self {
-            metadata_backend,
+            metadata: MetadataStore::new_with_backend(metadata_backend),
             history: HistoryService::new(),
             #[cfg(feature = "serde")]
             containers: Arc::new(ContainersCacheService::default()),
@@ -55,7 +58,7 @@ impl AppContext {
     }
 
     pub(crate) fn metadata_store(&self) -> MetadataStore {
-        MetadataStore::new_with_backend(Arc::clone(&self.metadata_backend))
+        self.metadata.clone()
     }
 
     pub fn history(&self) -> &HistoryService {

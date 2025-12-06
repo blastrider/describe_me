@@ -2,6 +2,7 @@ use super::{csp, handlers, origin, *};
 use crate::application::web::csp::{
     apply_security_headers, CspNonce, HEADER_STRICT_TRANSPORT_SECURITY,
 };
+use crate::domain::{MetadataValidationError, ServerDescription, DESCRIPTION_MAX_BYTES};
 use axum::body::to_bytes;
 use axum::extract::{ConnectInfo, FromRequestParts, State};
 use axum::http::header::{ORIGIN, SET_COOKIE};
@@ -204,15 +205,19 @@ fn hsts_header_is_added() {
 
 #[test]
 fn normalize_description_replaces_carriage_returns() {
-    let normalized = handlers::normalize_description("hello\r\nworld\rgoodbye").expect("ok");
-    assert_eq!(normalized, "hello\nworld\ngoodbye");
+    let normalized =
+        ServerDescription::try_from("hello\r\nworld\rgoodbye").expect("description allowed");
+    assert_eq!(normalized.as_ref(), "hello\nworld\ngoodbye");
 }
 
 #[test]
 fn normalize_description_enforces_limit() {
-    let long = "x".repeat(super::DESCRIPTION_MAX_BYTES + 1);
-    let err = handlers::normalize_description(&long).unwrap_err();
-    assert!(err.contains("2048"), "unexpected message: {err}");
+    let long = "x".repeat(DESCRIPTION_MAX_BYTES + 1);
+    let err = ServerDescription::try_from(long.as_str()).unwrap_err();
+    assert_eq!(
+        err,
+        MetadataValidationError::DescriptionTooLong(DESCRIPTION_MAX_BYTES)
+    );
 }
 
 #[tokio::test]

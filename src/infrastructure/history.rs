@@ -1,3 +1,4 @@
+use crate::application::history::HistoryBackend;
 use crate::domain::DescribeError;
 use crate::infrastructure::storage::metadata_db_path;
 use fastrand;
@@ -20,48 +21,6 @@ pub(crate) struct HistorySample {
     pub cpu_pct: Option<f32>,
     pub mem_pct: Option<f32>,
     pub disk_pct: Option<f32>,
-}
-
-#[derive(Debug)]
-pub(crate) enum HistoryStorage {
-    Disabled,
-    Memory(MemoryStorage),
-    Disk(Box<DiskStorage>),
-}
-
-impl HistoryStorage {
-    pub(crate) fn disabled() -> Self {
-        Self::Disabled
-    }
-
-    pub(crate) fn in_memory() -> Self {
-        Self::Memory(MemoryStorage::default())
-    }
-
-    pub(crate) fn persistent() -> Result<Self, DescribeError> {
-        Ok(Self::Disk(Box::new(DiskStorage::open_or_create()?)))
-    }
-
-    pub(crate) fn append(
-        &self,
-        server_id: &str,
-        sample: &HistorySample,
-        retention: usize,
-    ) -> Result<(), DescribeError> {
-        match self {
-            HistoryStorage::Disabled => Ok(()),
-            HistoryStorage::Memory(mem) => mem.append(server_id, sample, retention),
-            HistoryStorage::Disk(disk) => disk.append(server_id, sample, retention),
-        }
-    }
-
-    pub(crate) fn read(&self, server_id: &str) -> Result<Vec<HistorySample>, DescribeError> {
-        match self {
-            HistoryStorage::Disabled => Ok(Vec::new()),
-            HistoryStorage::Memory(mem) => Ok(mem.read(server_id)),
-            HistoryStorage::Disk(disk) => disk.read(server_id),
-        }
-    }
 }
 
 #[derive(Debug, Default)]
@@ -100,13 +59,28 @@ impl MemoryStorage {
     }
 }
 
+impl HistoryBackend for MemoryStorage {
+    fn append(
+        &self,
+        server_id: &str,
+        sample: &HistorySample,
+        retention: usize,
+    ) -> Result<(), DescribeError> {
+        MemoryStorage::append(self, server_id, sample, retention)
+    }
+
+    fn read(&self, server_id: &str) -> Result<Vec<HistorySample>, DescribeError> {
+        Ok(MemoryStorage::read(self, server_id))
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct DiskStorage {
     db: Database,
 }
 
 impl DiskStorage {
-    fn open_or_create() -> Result<Self, DescribeError> {
+    pub(crate) fn open_or_create() -> Result<Self, DescribeError> {
         let path = history_db_path();
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir).map_err(|err| {
@@ -175,6 +149,39 @@ impl DiskStorage {
             }
             None => Ok(Vec::new()),
         }
+    }
+}
+
+impl HistoryBackend for DiskStorage {
+    fn append(
+        &self,
+        server_id: &str,
+        sample: &HistorySample,
+        retention: usize,
+    ) -> Result<(), DescribeError> {
+        DiskStorage::append(self, server_id, sample, retention)
+    }
+
+    fn read(&self, server_id: &str) -> Result<Vec<HistorySample>, DescribeError> {
+        DiskStorage::read(self, server_id)
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub(crate) struct DisabledHistoryBackend;
+
+impl HistoryBackend for DisabledHistoryBackend {
+    fn append(
+        &self,
+        _server_id: &str,
+        _sample: &HistorySample,
+        _retention: usize,
+    ) -> Result<(), DescribeError> {
+        Ok(())
+    }
+
+    fn read(&self, _server_id: &str) -> Result<Vec<HistorySample>, DescribeError> {
+        Ok(Vec::new())
     }
 }
 

@@ -30,6 +30,7 @@ pub(crate) trait MetadataBackendFactory: Send + Sync {
     fn open_default(&self) -> Result<Box<dyn MetadataBackend>, DescribeError>;
 }
 
+#[derive(Clone)]
 pub(crate) struct MetadataStore {
     backend: Arc<dyn MetadataBackend>,
 }
@@ -100,6 +101,7 @@ impl BackendRegistry {
         Ok(backend)
     }
 
+    #[cfg(test)]
     fn set_factory(&mut self, factory: Box<dyn MetadataBackendFactory>) {
         self.factory = factory;
         self.backend = None;
@@ -116,10 +118,6 @@ fn acquire_backend() -> Result<Arc<dyn MetadataBackend>, DescribeError> {
         .lock()
         .expect("metadata backend registry mutex poisoned");
     guard.acquire_backend()
-}
-
-pub(crate) fn acquire_backend_arc() -> Result<Arc<dyn MetadataBackend>, DescribeError> {
-    acquire_backend()
 }
 
 fn default_backend_factory() -> Box<dyn MetadataBackendFactory> {
@@ -241,7 +239,7 @@ impl MetadataBackend for RedbBackend {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 pub(crate) fn set_metadata_backend_factory(factory: Box<dyn MetadataBackendFactory>) {
     let lock = backend_registry();
     let mut guard = lock
