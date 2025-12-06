@@ -50,7 +50,10 @@ use rustls::{
     pki_types::{CertificateDer, PrivateKeyDer},
     ServerConfig,
 };
-use tokio::{net::TcpStream, sync::Notify};
+use tokio::{
+    net::{TcpListener, TcpStream},
+    sync::Notify,
+};
 use tokio_rustls::{server::TlsStream, TlsAcceptor};
 use tracing::warn;
 
@@ -183,9 +186,7 @@ pub async fn serve_http_with_context<A: Into<SocketAddr>>(
         security_config,
     )?);
 
-    let shutdown_notify = Arc::new(Notify::new());
-    let shutdown_for_state = shutdown_notify.clone();
-    let shutdown_for_task = shutdown_notify.clone();
+    let shutdown = Arc::new(Notify::new());
     #[cfg(feature = "config")]
     let updates_refresh_ttl = config
         .as_ref()
@@ -195,8 +196,6 @@ pub async fn serve_http_with_context<A: Into<SocketAddr>>(
         .unwrap_or(UPDATES_CACHE_SUCCESS_TTL);
     #[cfg(not(feature = "config"))]
     let updates_refresh_ttl = UPDATES_CACHE_SUCCESS_TTL;
-    let updates_cache = UpdatesCache::new(updates_refresh_ttl, UPDATES_CACHE_FAILURE_RETRY);
-    let snapshot_cache = Arc::new(RwLock::new(None));
 
     #[cfg(feature = "config")]
     if let Some(cfg) = config.as_ref() {
@@ -217,27 +216,69 @@ pub async fn serve_http_with_context<A: Into<SocketAddr>>(
     #[cfg(not(feature = "config"))]
     let logo = LogoAsset::default();
 
-    let static_cfg = StaticWebConfig {
+    let static_cfg = build_static_cfg(
         interval,
         #[cfg(feature = "config")]
         config,
         web_debug,
-        security: security.clone(),
+        security.clone(),
         exposure,
         logo,
         session_cookie_secure,
-        session_ttl: security.session_ttl(),
-    };
-
-    let runtime = RuntimeState {
-        shutdown: shutdown_for_state,
-        updates_cache,
-        snapshot_cache: snapshot_cache.clone(),
-    };
-
+    );
+    let runtime = build_runtime_state(shutdown.clone(), updates_refresh_ttl);
     let app_state = AppState::new(Arc::new(ctx), static_cfg, runtime);
+    let router = build_router(app_state, origin_policy);
 
-    let router = Router::new()
+    let bind_addr: SocketAddr = addr.into();
+    let interval_secs = interval.as_secs_f64();
+
+    if let Some(tls) = tls_settings {
+        run_http_tls(router, &tls, bind_addr, interval_secs, shutdown).await?;
+    } else {
+        run_http_plain(router, bind_addr, interval_secs, shutdown).await?;
+    }
+
+    Ok(())
+}
+
+fn build_static_cfg(
+    interval: Duration,
+    #[cfg(feature = "config")] config: Option<DescribeConfig>,
+    web_debug: bool,
+    security: Arc<WebSecurity>,
+    exposure: Exposure,
+    logo: LogoAsset,
+    session_cookie_secure: bool,
+) -> StaticWebConfig {
+    let session_ttl = security.session_ttl();
+
+    StaticWebConfig {
+        interval,
+        #[cfg(feature = "config")]
+        config,
+        web_debug,
+        security,
+        exposure,
+        logo,
+        session_cookie_secure,
+        session_ttl,
+    }
+}
+
+fn build_runtime_state(shutdown: Arc<Notify>, updates_refresh_ttl: Duration) -> RuntimeState {
+    let updates_cache = UpdatesCache::new(updates_refresh_ttl, UPDATES_CACHE_FAILURE_RETRY);
+    let snapshot_cache = Arc::new(RwLock::new(None));
+
+    RuntimeState {
+        shutdown,
+        updates_cache,
+        snapshot_cache,
+    }
+}
+
+fn build_router(app_state: AppState, origin_policy: OriginPolicy) -> Router {
+    Router::new()
         .route("/", get(index))
         .route("/auth/login", post(auth::login))
         .route("/auth/logout", post(auth::logout))
@@ -254,74 +295,82 @@ pub async fn serve_http_with_context<A: Into<SocketAddr>>(
         .route("/api/tags", post(update_tags))
         .layer(OriginCheckLayer::new(origin_policy))
         .layer(SecurityHeadersLayer::new())
-        .with_state(app_state);
+        .with_state(app_state)
+}
 
-    let bind_addr: SocketAddr = addr.into();
-    let interval_secs = interval.as_secs_f64();
-
-    if let Some(tls) = tls_settings {
-        let rustls = build_rustls_config(&tls).await?;
-        LogEvent::HttpServerStarted {
-            addr: Cow::Owned(format!("https://{}", bind_addr)),
-            interval_s: interval_secs,
-            tls: true,
-        }
-        .emit();
-        let handle = Handle::new();
-        let notify = shutdown_for_task.clone();
-        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-        let shutdown_task = tokio::spawn({
-            let handle = handle.clone();
-            async move {
-                tokio::select! {
-                    _ = wait_for_shutdown(notify) => handle.shutdown(),
-                    _ = shutdown_rx => {}
-                }
+async fn run_http_plain(
+    router: Router,
+    bind_addr: SocketAddr,
+    interval_secs: f64,
+    shutdown: Arc<Notify>,
+) -> Result<(), DescribeError> {
+    let listener = match TcpListener::bind(bind_addr).await {
+        Ok(l) => l,
+        Err(err) => {
+            let msg = err.to_string();
+            LogEvent::HttpBindFailed {
+                addr: Cow::Owned(bind_addr.to_string()),
+                error: Cow::Owned(msg),
             }
-        });
-        let tls_acceptor = RustlsAcceptor::new(rustls);
-        let result = axum_server::bind(bind_addr)
-            .acceptor(tls_acceptor)
-            .handle(handle)
-            .serve(
-                router
-                    .clone()
-                    .into_make_service_with_connect_info::<SocketAddr>(),
-            )
-            .await;
-        let _ = shutdown_tx.send(());
-        let _ = shutdown_task.await;
-        result.map_err(map_io)?;
-    } else {
-        let listener = match tokio::net::TcpListener::bind(bind_addr).await {
-            Ok(l) => l,
-            Err(err) => {
-                let msg = err.to_string();
-                LogEvent::HttpBindFailed {
-                    addr: Cow::Owned(bind_addr.to_string()),
-                    error: Cow::Owned(msg),
-                }
-                .emit();
-                return Err(map_io(err));
-            }
-        };
-        let actual = listener.local_addr().unwrap_or(bind_addr);
-        LogEvent::HttpServerStarted {
-            addr: Cow::Owned(format!("http://{}", actual)),
-            interval_s: interval_secs,
-            tls: false,
+            .emit();
+            return Err(map_io(err));
         }
-        .emit();
-        axum::serve(
-            listener,
-            router.into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .with_graceful_shutdown(wait_for_shutdown(shutdown_for_task.clone()))
-        .await
-        .map_err(map_io)?;
+    };
+    let actual = listener.local_addr().unwrap_or(bind_addr);
+    LogEvent::HttpServerStarted {
+        addr: Cow::Owned(format!("http://{}", actual)),
+        interval_s: interval_secs,
+        tls: false,
     }
+    .emit();
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(wait_for_shutdown(shutdown.clone()))
+    .await
+    .map_err(map_io)
+}
 
-    Ok(())
+async fn run_http_tls(
+    router: Router,
+    tls: &WebTlsConfig,
+    bind_addr: SocketAddr,
+    interval_secs: f64,
+    shutdown: Arc<Notify>,
+) -> Result<(), DescribeError> {
+    let rustls = build_rustls_config(tls).await?;
+    LogEvent::HttpServerStarted {
+        addr: Cow::Owned(format!("https://{}", bind_addr)),
+        interval_s: interval_secs,
+        tls: true,
+    }
+    .emit();
+    let handle = Handle::new();
+    let notify = shutdown.clone();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let shutdown_task = tokio::spawn({
+        let handle = handle.clone();
+        async move {
+            tokio::select! {
+                _ = wait_for_shutdown(notify) => handle.shutdown(),
+                _ = shutdown_rx => {}
+            }
+        }
+    });
+    let tls_acceptor = RustlsAcceptor::new(rustls);
+    let result = axum_server::bind(bind_addr)
+        .acceptor(tls_acceptor)
+        .handle(handle)
+        .serve(
+            router
+                .clone()
+                .into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await;
+    let _ = shutdown_tx.send(());
+    let _ = shutdown_task.await;
+    result.map_err(map_io)
 }
 
 async fn wait_for_shutdown(notify: Arc<Notify>) {
