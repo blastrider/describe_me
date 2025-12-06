@@ -22,77 +22,31 @@ use crate::SharedSlice;
 #[cfg(feature = "serde")]
 use describe_me_plugin_sdk::PluginOutput;
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-struct ExposureFlags(u16);
-
-impl ExposureFlags {
-    const HOSTNAME: Self = Self(1 << 0);
-    const OS: Self = Self(1 << 1);
-    const KERNEL: Self = Self(1 << 2);
-    const SERVICES: Self = Self(1 << 3);
-    const DISK: Self = Self(1 << 4);
-    const SOCKETS: Self = Self(1 << 5);
-    const UPDATES: Self = Self(1 << 6);
-    const NETWORK: Self = Self(1 << 7);
-    const EXTENSIONS: Self = Self(1 << 8);
-    const CONTAINERS_SUMMARY: Self = Self(1 << 9);
-    const CONTAINERS_DETAILS: Self = Self(1 << 10);
-    const ALL: Self = Self(
-        Self::HOSTNAME.0
-            | Self::OS.0
-            | Self::KERNEL.0
-            | Self::SERVICES.0
-            | Self::DISK.0
-            | Self::SOCKETS.0
-            | Self::UPDATES.0
-            | Self::NETWORK.0
-            | Self::EXTENSIONS.0
-            | Self::CONTAINERS_SUMMARY.0
-            | Self::CONTAINERS_DETAILS.0,
-    );
-
-    const fn empty() -> Self {
-        Self(0)
-    }
-
-    fn contains(self, other: Self) -> bool {
-        (self.0 & other.0) == other.0
-    }
-
-    fn insert(&mut self, flag: Self) {
-        self.0 |= flag.0;
-    }
-
-    fn remove(&mut self, flag: Self) {
-        self.0 &= !flag.0;
-    }
-
-    fn set(&mut self, flag: Self, value: bool) {
-        if value {
-            self.insert(flag);
-        } else {
-            self.remove(flag);
-        }
-    }
-}
-
-impl Default for ExposureFlags {
-    fn default() -> Self {
-        Self::empty()
-    }
-}
-
-impl std::ops::BitOr for ExposureFlags {
-    type Output = Self;
-
-    fn bitor(self, rhs: Self) -> Self::Output {
-        Self(self.0 | rhs.0)
-    }
-}
-
-impl std::ops::BitOrAssign for ExposureFlags {
-    fn bitor_assign(&mut self, rhs: Self) {
-        self.0 |= rhs.0;
+bitflags::bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    struct ExposureFlags: u16 {
+        const HOSTNAME = 1 << 0;
+        const OS = 1 << 1;
+        const KERNEL = 1 << 2;
+        const SERVICES = 1 << 3;
+        const DISK = 1 << 4;
+        const SOCKETS = 1 << 5;
+        const UPDATES = 1 << 6;
+        const NETWORK = 1 << 7;
+        const EXTENSIONS = 1 << 8;
+        const CONTAINERS_SUMMARY = 1 << 9;
+        const CONTAINERS_DETAILS = 1 << 10;
+        const ALL = Self::HOSTNAME.bits()
+            | Self::OS.bits()
+            | Self::KERNEL.bits()
+            | Self::SERVICES.bits()
+            | Self::DISK.bits()
+            | Self::SOCKETS.bits()
+            | Self::UPDATES.bits()
+            | Self::NETWORK.bits()
+            | Self::EXTENSIONS.bits()
+            | Self::CONTAINERS_SUMMARY.bits()
+            | Self::CONTAINERS_DETAILS.bits();
     }
 }
 
@@ -127,21 +81,7 @@ impl ExposureBuilder {
 
     #[cfg(feature = "config")]
     pub fn apply_config(&mut self, cfg: &crate::domain::ExposureConfig) {
-        let overrides = ExposureOverrides {
-            expose_hostname: cfg.expose_hostname,
-            expose_os: cfg.expose_os,
-            expose_kernel: cfg.expose_kernel,
-            expose_services: cfg.expose_services,
-            expose_disk_partitions: cfg.expose_disk_partitions,
-            expose_network_traffic: cfg.expose_network_traffic,
-            expose_containers_summary: cfg.expose_containers_summary,
-            expose_containers_details: cfg.expose_containers_details,
-            expose_updates: cfg.expose_updates,
-            expose_extensions: cfg.expose_extensions,
-            expose_all: false,
-            no_redacted: !cfg.redacted,
-            expose_listening_sockets: cfg.expose_listening_sockets,
-        };
+        let overrides = ExposureOverrides::from_flags(cfg);
         self.apply_overrides(&overrides);
         self.redacted &= cfg.redacted;
     }
@@ -229,6 +169,103 @@ pub struct ExposureOverrides {
     pub expose_all: bool,
     pub no_redacted: bool,
     pub expose_listening_sockets: bool,
+}
+
+/// Source commune des drapeaux d'exposition (CLI, web, config…).
+pub trait ExposureFlagSource {
+    fn expose_hostname(&self) -> bool;
+    fn expose_os(&self) -> bool;
+    fn expose_kernel(&self) -> bool;
+    fn expose_services(&self) -> bool;
+    fn expose_disk_partitions(&self) -> bool;
+    fn expose_network_traffic(&self) -> bool;
+    fn expose_containers_summary(&self) -> bool;
+    fn expose_containers_details(&self) -> bool;
+    fn expose_updates(&self) -> bool;
+    fn expose_extensions(&self) -> bool;
+    fn expose_all(&self) -> bool;
+    fn no_redacted(&self) -> bool {
+        false
+    }
+    fn expose_listening_sockets(&self) -> bool {
+        false
+    }
+}
+
+impl ExposureOverrides {
+    /// Construit des overrides explicites à partir d'un fournisseur de flags (CLI, web...).
+    pub fn from_flags(flags: &impl ExposureFlagSource) -> Self {
+        Self {
+            expose_hostname: flags.expose_hostname(),
+            expose_os: flags.expose_os(),
+            expose_kernel: flags.expose_kernel(),
+            expose_services: flags.expose_services(),
+            expose_disk_partitions: flags.expose_disk_partitions(),
+            expose_network_traffic: flags.expose_network_traffic(),
+            expose_containers_summary: flags.expose_containers_summary(),
+            expose_containers_details: flags.expose_containers_details(),
+            expose_updates: flags.expose_updates(),
+            expose_extensions: flags.expose_extensions(),
+            expose_all: flags.expose_all(),
+            no_redacted: flags.no_redacted(),
+            expose_listening_sockets: flags.expose_listening_sockets(),
+        }
+    }
+}
+
+#[cfg(feature = "config")]
+impl ExposureFlagSource for crate::domain::ExposureConfig {
+    fn expose_hostname(&self) -> bool {
+        self.expose_hostname
+    }
+
+    fn expose_os(&self) -> bool {
+        self.expose_os
+    }
+
+    fn expose_kernel(&self) -> bool {
+        self.expose_kernel
+    }
+
+    fn expose_services(&self) -> bool {
+        self.expose_services
+    }
+
+    fn expose_disk_partitions(&self) -> bool {
+        self.expose_disk_partitions
+    }
+
+    fn expose_network_traffic(&self) -> bool {
+        self.expose_network_traffic
+    }
+
+    fn expose_containers_summary(&self) -> bool {
+        self.expose_containers_summary
+    }
+
+    fn expose_containers_details(&self) -> bool {
+        self.expose_containers_details
+    }
+
+    fn expose_updates(&self) -> bool {
+        self.expose_updates
+    }
+
+    fn expose_extensions(&self) -> bool {
+        self.expose_extensions
+    }
+
+    fn expose_all(&self) -> bool {
+        false
+    }
+
+    fn no_redacted(&self) -> bool {
+        !self.redacted
+    }
+
+    fn expose_listening_sockets(&self) -> bool {
+        self.expose_listening_sockets
+    }
 }
 
 /// Contexte de capture qui force certains champs (sockets, trafic, conteneurs).
