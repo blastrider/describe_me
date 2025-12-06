@@ -1,8 +1,7 @@
-//! Gestionnaires HTTP pour l'interface Web et les structures de données
-//! associées. Ce module est dédié à la logique par route afin de garder
-//! `mod.rs` centré sur l'initialisation du serveur.
+//! Gestionnaires HTTP pour l'interface Web et les structures de données associées.
+//! Ce module se limite au routage/parsing et délègue la logique métier aux services.
 
-use std::{borrow::Cow, time::Duration};
+use std::borrow::Cow;
 
 use axum::{
     body::Body,
@@ -14,22 +13,22 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    application::{
-        history::{self, HistoryQueryError},
-        logging::LogEvent,
-        logs::{self, HOST_LOGS_DEFAULT_LINES, HOST_LOGS_MAX_LINES},
-        metadata::{
-            add_server_tags_with, clear_server_tags_with, remove_server_tags_with,
-            set_server_description_with, set_server_tags_with,
-        },
-        metrics::render_prometheus_metrics,
+    application::logging::LogEvent,
+    application::metadata::{
+        add_server_tags_with, clear_server_tags_with, remove_server_tags_with,
+        set_server_description_with, set_server_tags_with,
     },
     domain::{ContainersSnapshot, DescribeError},
 };
 
 use super::{
+    error::WebError,
     mark_response_no_store,
     security::{attach_session_cookie, AuthGuard},
+    services::{
+        build_history_series_response, build_host_logs_response, build_metrics_text,
+        HistoryQueryParams, LogsQueryParams,
+    },
     template::{render_containers_page, render_index, render_logs_page, render_updates_page},
     views::{ContainersViewModel, IndexViewModel, LogsViewModel, UpdatesViewModel},
     AppState,
@@ -44,11 +43,6 @@ pub(super) struct DescriptionPayload {
 #[derive(Serialize)]
 struct DescriptionResponse {
     description: String,
-}
-
-#[derive(Serialize)]
-struct ApiErrorResponse {
-    error: String,
 }
 
 #[derive(Deserialize, Default)]
@@ -84,32 +78,6 @@ pub(super) struct HistoryRequestQuery {
 #[derive(Deserialize)]
 pub(super) struct LogsRequestQuery {
     lines: Option<usize>,
-}
-
-#[derive(Serialize)]
-struct HistoryMetricResponse {
-    avg: Option<f32>,
-    min: Option<f32>,
-    max: Option<f32>,
-}
-
-#[derive(Serialize)]
-struct HistoryPointResponse {
-    ts: u64,
-    span_seconds: u64,
-    cpu: HistoryMetricResponse,
-    mem: HistoryMetricResponse,
-    disk: HistoryMetricResponse,
-}
-
-#[derive(Serialize)]
-struct HistoryResponse {
-    server_id: String,
-    window_seconds: u64,
-    bucket_seconds: u64,
-    truncated: bool,
-    aggregated: bool,
-    points: Vec<HistoryPointResponse>,
 }
 
 #[derive(Serialize)]
@@ -179,41 +147,40 @@ pub(super) async fn update_description(
     guard: AuthGuard,
     State(state): State<AppState>,
     Json(payload): Json<DescriptionPayload>,
-) -> Response {
+) -> Result<Response, WebError> {
     let session = guard.into_session();
-    let mut response = match normalize_description(&payload.text) {
-        Ok(text) => match set_server_description_with(&state.ctx(), &text) {
-            Ok(()) => (
+    let text = normalize_description(&payload.text).map_err(WebError::bad_request)?;
+    match set_server_description_with(&state.ctx(), &text) {
+        Ok(()) => {
+            let mut response = (
                 StatusCode::OK,
                 Json(DescriptionResponse { description: text }),
             )
-                .into_response(),
-            Err(err) => {
-                LogEvent::SystemError {
-                    location: Cow::Borrowed("web_description_update"),
-                    error: Cow::Owned(err.to_string()),
-                }
-                .emit();
-                json_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Impossible d'enregistrer la description.",
-                )
+                .into_response();
+            attach_session_cookie(response.headers_mut(), &session, &state);
+            Ok(response)
+        }
+        Err(err) => {
+            LogEvent::SystemError {
+                location: Cow::Borrowed("web_description_update"),
+                error: Cow::Owned(err.to_string()),
             }
-        },
-        Err(msg) => json_error(StatusCode::BAD_REQUEST, msg),
-    };
-    attach_session_cookie(response.headers_mut(), &session, &state);
-    response
+            .emit();
+            Err(WebError::internal(
+                "Impossible d'enregistrer la description.",
+            ))
+        }
+    }
 }
 
 pub(super) async fn update_tags(
     guard: AuthGuard,
     State(state): State<AppState>,
     Json(payload): Json<TagsPayload>,
-) -> Response {
+) -> Result<Response, WebError> {
     let session = guard.into_session();
-    let mut response = if let Some(error) = validate_tags_payload(&payload) {
-        json_error(StatusCode::BAD_REQUEST, error)
+    let response = if let Some(error) = validate_tags_payload(&payload) {
+        Err(WebError::bad_request(error))
     } else {
         let tags = payload
             .tags
@@ -238,148 +205,48 @@ pub(super) async fn update_tags(
         };
 
         match result {
-            Ok(list) => (StatusCode::OK, Json(TagsResponse { tags: list.clone() })).into_response(),
-            Err(DescribeError::System(msg)) => json_error(StatusCode::INTERNAL_SERVER_ERROR, msg),
-            Err(err) => json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+            Ok(list) => {
+                Ok((StatusCode::OK, Json(TagsResponse { tags: list.clone() })).into_response())
+            }
+            Err(DescribeError::System(msg)) => Err(WebError::internal(msg)),
+            Err(err) => Err(WebError::internal(err.to_string())),
         }
     };
+    let mut response = response?;
     attach_session_cookie(response.headers_mut(), &session, &state);
-    response
+    Ok(response)
 }
 
 pub(super) async fn history_series(
     State(state): State<AppState>,
     guard: AuthGuard,
     Query(query): Query<HistoryRequestQuery>,
-) -> impl IntoResponse {
-    if state.exposure().redacted {
-        return json_error(
-            StatusCode::FORBIDDEN,
-            "L'historique est masqué lorsque l'exposition est redacted.",
-        );
-    }
-
-    let settings = state.ctx().history().settings_snapshot();
-    if !settings.is_active() {
-        return json_error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "L'historique n'est pas activé sur cette instance.",
-        );
-    }
-
-    if settings.paranoid_mode {
-        return json_error(
-            StatusCode::FORBIDDEN,
-            "Mode paranoïaque actif : l'historique n'est consultable que depuis la CLI locale.",
-        );
-    }
-
-    let requested_server = if let Some(id) = query.server.clone() {
-        id
-    } else if let Some(default_id) = state.ctx().history().default_server_id() {
-        default_id
-    } else {
-        return json_error(
-            StatusCode::NOT_FOUND,
-            "Aucune donnée historique disponible pour ce serveur.",
-        );
-    };
-
+) -> Result<impl IntoResponse, WebError> {
     let session = guard.into_session();
-
-    let max_window_secs = settings.max_window_seconds.max(1) as u64;
-    let requested_window = query.window.filter(|v| *v > 0).unwrap_or(max_window_secs);
-    let window_secs = requested_window.min(max_window_secs);
-    let retention_cap = settings.retention_points.max(16) as usize;
-    let default_limit = retention_cap.min(256);
-    let limit = query
-        .limit
-        .filter(|v| *v > 0)
-        .unwrap_or(default_limit)
-        .min(retention_cap);
-
-    let rounding = settings.rounding_seconds.max(1);
-    let series = match state.ctx().history().query_series(
-        &requested_server,
-        Duration::from_secs(window_secs),
-        limit,
-        rounding,
-    ) {
-        Ok(series) => series,
-        Err(HistoryQueryError::Disabled) => {
-            return json_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "L'historique n'est pas actif sur cette instance.",
-            )
-        }
-        Err(HistoryQueryError::InvalidLimit | HistoryQueryError::InvalidServer) => {
-            return json_error(StatusCode::BAD_REQUEST, "Paramètres history invalides.")
-        }
-        Err(HistoryQueryError::NotFound) => {
-            return json_error(
-                StatusCode::NOT_FOUND,
-                "Aucune donnée historique disponible pour ce serveur.",
-            )
-        }
-        Err(HistoryQueryError::Storage(err)) => {
-            LogEvent::SystemError {
-                location: Cow::Borrowed("history_query"),
-                error: Cow::Owned(err.to_string()),
-            }
-            .emit();
-            return json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Lecture de l'historique impossible pour le moment.",
-            );
-        }
+    let params = HistoryQueryParams {
+        server: query.server,
+        window: query.window,
+        limit: query.limit,
+        ip: session.ip().to_string(),
+        token: session.token_key().to_string(),
     };
-
-    let allow_disk = state.exposure().disk_partitions();
-    let points = series
-        .points
-        .into_iter()
-        .map(|point| HistoryPointResponse {
-            ts: point.timestamp,
-            span_seconds: point.span_seconds,
-            cpu: to_metric_response(&point.cpu, true),
-            mem: to_metric_response(&point.mem, true),
-            disk: to_metric_response(&point.disk, allow_disk),
-        })
-        .collect::<Vec<_>>();
-
-    LogEvent::HistoryQuery {
-        ip: Cow::Owned(session.ip().to_string()),
-        token: Cow::Owned(session.token_key().to_string()),
-        server: Cow::Owned(series.server_id.clone()),
-        points: points.len() as u32,
-        window_seconds: series.window_seconds,
-        truncated: series.truncated,
-    }
-    .emit();
-
-    let payload = HistoryResponse {
-        server_id: series.server_id,
-        window_seconds: series.window_seconds,
-        bucket_seconds: series.bucket_seconds,
-        truncated: series.truncated,
-        aggregated: series.aggregated,
-        points,
-    };
-
+    let payload = build_history_series_response(&state, params).await?;
     let mut response = Json(payload).into_response();
     attach_session_cookie(response.headers_mut(), &session, &state);
-    response
+    Ok(response)
 }
 
-pub(super) async fn containers_api(State(state): State<AppState>, guard: AuthGuard) -> Response {
+pub(super) async fn containers_api(
+    State(state): State<AppState>,
+    guard: AuthGuard,
+) -> Result<Response, WebError> {
     let session = guard.into_session();
     let mut response = match state.latest_snapshot() {
         Some(value) => {
             let Some(containers) = value.view.containers else {
-                return json_error(
-                    StatusCode::FORBIDDEN,
+                return Err(WebError::forbidden(
                     "Les conteneurs ne sont pas exposés ou non capturés.",
-                );
+                ));
             };
 
             let age_ms = value
@@ -394,13 +261,12 @@ pub(super) async fn containers_api(State(state): State<AppState>, guard: AuthGua
             )
                 .into_response()
         }
-        None => json_error(
-            StatusCode::SERVICE_UNAVAILABLE,
+        None => Err(WebError::service_unavailable(
             "Aucun snapshot disponible pour le moment.",
-        ),
+        ))?,
     };
     attach_session_cookie(response.headers_mut(), &session, &state);
-    response
+    Ok(response)
 }
 
 pub(super) async fn metrics_export(State(state): State<AppState>, guard: AuthGuard) -> Response {
@@ -415,7 +281,7 @@ describe_me_up 0
     let mut response = match state.latest_snapshot() {
         Some(cached) => {
             let age_secs = cached.captured_at.elapsed().as_secs();
-            let payload = render_prometheus_metrics(&cached.view, age_secs);
+            let payload = build_metrics_text(&cached.view, age_secs);
 
             Response::builder()
                 .status(StatusCode::OK)
@@ -467,44 +333,12 @@ pub(super) async fn host_logs(
     State(state): State<AppState>,
     guard: AuthGuard,
     Query(query): Query<LogsRequestQuery>,
-) -> impl IntoResponse {
-    let requested = query
-        .lines
-        .unwrap_or(HOST_LOGS_DEFAULT_LINES)
-        .clamp(1, HOST_LOGS_MAX_LINES);
-
-    let logs = tokio::task::spawn_blocking(move || logs::tail_host_logs(requested)).await;
-
-    match logs {
-        Ok(Ok(page)) => {
-            let session = guard.into_session();
-            let mut response = Json(page).into_response();
-            attach_session_cookie(response.headers_mut(), &session, &state);
-            response
-        }
-        Ok(Err(err)) => {
-            LogEvent::SystemError {
-                location: Cow::Borrowed("logs_read"),
-                error: Cow::Owned(err.to_string()),
-            }
-            .emit();
-            json_error(
-                StatusCode::BAD_GATEWAY,
-                format!("Impossible de lire les logs journald: {err}"),
-            )
-        }
-        Err(err) => {
-            LogEvent::SystemError {
-                location: Cow::Borrowed("logs_join"),
-                error: Cow::Owned(err.to_string()),
-            }
-            .emit();
-            json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Erreur interne lors de la lecture des logs.",
-            )
-        }
-    }
+) -> Result<impl IntoResponse, WebError> {
+    let page = build_host_logs_response(LogsQueryParams { lines: query.lines }).await?;
+    let session = guard.into_session();
+    let mut response = Json(page).into_response();
+    attach_session_cookie(response.headers_mut(), &session, &state);
+    Ok(response)
 }
 
 pub(super) fn normalize_description(input: &str) -> Result<String, &'static str> {
@@ -516,16 +350,6 @@ pub(super) fn normalize_description(input: &str) -> Result<String, &'static str>
         return Err("La description ne peut pas dépasser 2048 caractères.");
     }
     Ok(sanitized)
-}
-
-fn json_error(status: StatusCode, message: impl Into<String>) -> Response {
-    (
-        status,
-        Json(ApiErrorResponse {
-            error: message.into(),
-        }),
-    )
-        .into_response()
 }
 
 fn validate_tags_payload(payload: &TagsPayload) -> Option<&'static str> {
@@ -546,22 +370,6 @@ fn validate_tags_payload(payload: &TagsPayload) -> Option<&'static str> {
                 return Some("Un tag dépasse la longueur maximale autorisée.");
             }
             None
-        }
-    }
-}
-
-fn to_metric_response(metric: &history::MetricAggregate, allow: bool) -> HistoryMetricResponse {
-    if allow {
-        HistoryMetricResponse {
-            avg: metric.avg,
-            min: metric.min,
-            max: metric.max,
-        }
-    } else {
-        HistoryMetricResponse {
-            avg: None,
-            min: None,
-            max: None,
         }
     }
 }

@@ -16,25 +16,29 @@
 mod assets;
 mod auth;
 mod csp;
+mod error;
 mod handlers;
 mod origin;
 mod security;
+mod services;
 mod sse;
 mod state;
 mod template;
+mod tls;
 mod updates_cache;
 mod views;
 
 pub(crate) use csp::SecurityHeadersLayer;
+#[allow(unused_imports)]
+pub(crate) use error::{json_error, WebError};
 pub(crate) use origin::{OriginCheckLayer, OriginPolicy};
+#[allow(unused_imports)]
+pub(crate) use security::{clear_session_cookie, set_session_cookie, SESSION_COOKIE_NAME};
 pub(crate) use state::{AppState, LogoAsset, RuntimeState, StaticWebConfig};
+use tls::{build_tls_config, serve};
 
 use std::{
-    borrow::Cow,
-    future::Future,
-    io,
     net::SocketAddr,
-    pin::Pin,
     sync::{Arc, RwLock},
     time::Duration,
 };
@@ -44,19 +48,10 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use axum_server::{accept::Accept, Handle};
-use pem::parse_many;
-use rustls::{
-    pki_types::{CertificateDer, PrivateKeyDer},
-    ServerConfig,
-};
-use tokio::{net::TcpStream, sync::Notify};
-use tokio_rustls::{server::TlsStream, TlsAcceptor};
-use tracing::warn;
+use tokio::sync::Notify;
 
 use crate::application::context::AppContext;
 use crate::application::exposure::Exposure;
-use crate::application::logging::LogEvent;
 #[cfg(feature = "config")]
 use crate::application::metadata::override_state_directory;
 use crate::domain::DescribeError;
@@ -71,12 +66,6 @@ use security::WebSecurity;
 use sse::sse_stream;
 use updates_cache::UpdatesCache;
 
-#[cfg(unix)]
-use std::future::pending;
-#[cfg(unix)]
-use tokio::signal::unix::{signal as unix_signal, SignalKind};
-
-pub(crate) use auth::{clear_session_cookie, set_session_cookie, SESSION_COOKIE_NAME};
 const UPDATES_CACHE_SUCCESS_TTL: Duration = Duration::from_secs(300);
 const UPDATES_CACHE_FAILURE_RETRY: Duration = Duration::from_secs(60);
 const DESCRIPTION_MAX_BYTES: usize = 2048;
@@ -183,9 +172,7 @@ pub async fn serve_http_with_context<A: Into<SocketAddr>>(
         security_config,
     )?);
 
-    let shutdown_notify = Arc::new(Notify::new());
-    let shutdown_for_state = shutdown_notify.clone();
-    let shutdown_for_task = shutdown_notify.clone();
+    let shutdown = Arc::new(Notify::new());
     #[cfg(feature = "config")]
     let updates_refresh_ttl = config
         .as_ref()
@@ -195,8 +182,6 @@ pub async fn serve_http_with_context<A: Into<SocketAddr>>(
         .unwrap_or(UPDATES_CACHE_SUCCESS_TTL);
     #[cfg(not(feature = "config"))]
     let updates_refresh_ttl = UPDATES_CACHE_SUCCESS_TTL;
-    let updates_cache = UpdatesCache::new(updates_refresh_ttl, UPDATES_CACHE_FAILURE_RETRY);
-    let snapshot_cache = Arc::new(RwLock::new(None));
 
     #[cfg(feature = "config")]
     if let Some(cfg) = config.as_ref() {
@@ -217,27 +202,65 @@ pub async fn serve_http_with_context<A: Into<SocketAddr>>(
     #[cfg(not(feature = "config"))]
     let logo = LogoAsset::default();
 
-    let static_cfg = StaticWebConfig {
+    let static_cfg = build_static_cfg(
         interval,
         #[cfg(feature = "config")]
         config,
         web_debug,
-        security: security.clone(),
+        security.clone(),
         exposure,
         logo,
         session_cookie_secure,
-        session_ttl: security.session_ttl(),
-    };
-
-    let runtime = RuntimeState {
-        shutdown: shutdown_for_state,
-        updates_cache,
-        snapshot_cache: snapshot_cache.clone(),
-    };
-
+    );
+    let runtime = build_runtime_state(shutdown.clone(), updates_refresh_ttl);
     let app_state = AppState::new(Arc::new(ctx), static_cfg, runtime);
+    let router = build_router(app_state, origin_policy);
 
-    let router = Router::new()
+    let bind_addr: SocketAddr = addr.into();
+    let interval_secs = interval.as_secs_f64();
+    let tls_cfg = build_tls_config(bind_addr, tls_settings.as_ref()).await?;
+    serve(router, tls_cfg, interval_secs, shutdown).await?;
+
+    Ok(())
+}
+
+fn build_static_cfg(
+    interval: Duration,
+    #[cfg(feature = "config")] config: Option<DescribeConfig>,
+    web_debug: bool,
+    security: Arc<WebSecurity>,
+    exposure: Exposure,
+    logo: LogoAsset,
+    session_cookie_secure: bool,
+) -> StaticWebConfig {
+    let session_ttl = security.session_ttl();
+
+    StaticWebConfig {
+        interval,
+        #[cfg(feature = "config")]
+        config,
+        web_debug,
+        security,
+        exposure,
+        logo,
+        session_cookie_secure,
+        session_ttl,
+    }
+}
+
+fn build_runtime_state(shutdown: Arc<Notify>, updates_refresh_ttl: Duration) -> RuntimeState {
+    let updates_cache = UpdatesCache::new(updates_refresh_ttl, UPDATES_CACHE_FAILURE_RETRY);
+    let snapshot_cache = Arc::new(RwLock::new(None));
+
+    RuntimeState {
+        shutdown,
+        updates_cache,
+        snapshot_cache,
+    }
+}
+
+fn build_router(app_state: AppState, origin_policy: OriginPolicy) -> Router {
+    Router::new()
         .route("/", get(index))
         .route("/auth/login", post(auth::login))
         .route("/auth/logout", post(auth::logout))
@@ -254,234 +277,7 @@ pub async fn serve_http_with_context<A: Into<SocketAddr>>(
         .route("/api/tags", post(update_tags))
         .layer(OriginCheckLayer::new(origin_policy))
         .layer(SecurityHeadersLayer::new())
-        .with_state(app_state);
-
-    let bind_addr: SocketAddr = addr.into();
-    let interval_secs = interval.as_secs_f64();
-
-    if let Some(tls) = tls_settings {
-        let rustls = build_rustls_config(&tls).await?;
-        LogEvent::HttpServerStarted {
-            addr: Cow::Owned(format!("https://{}", bind_addr)),
-            interval_s: interval_secs,
-            tls: true,
-        }
-        .emit();
-        let handle = Handle::new();
-        let notify = shutdown_for_task.clone();
-        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-        let shutdown_task = tokio::spawn({
-            let handle = handle.clone();
-            async move {
-                tokio::select! {
-                    _ = wait_for_shutdown(notify) => handle.shutdown(),
-                    _ = shutdown_rx => {}
-                }
-            }
-        });
-        let tls_acceptor = RustlsAcceptor::new(rustls);
-        let result = axum_server::bind(bind_addr)
-            .acceptor(tls_acceptor)
-            .handle(handle)
-            .serve(
-                router
-                    .clone()
-                    .into_make_service_with_connect_info::<SocketAddr>(),
-            )
-            .await;
-        let _ = shutdown_tx.send(());
-        let _ = shutdown_task.await;
-        result.map_err(map_io)?;
-    } else {
-        let listener = match tokio::net::TcpListener::bind(bind_addr).await {
-            Ok(l) => l,
-            Err(err) => {
-                let msg = err.to_string();
-                LogEvent::HttpBindFailed {
-                    addr: Cow::Owned(bind_addr.to_string()),
-                    error: Cow::Owned(msg),
-                }
-                .emit();
-                return Err(map_io(err));
-            }
-        };
-        let actual = listener.local_addr().unwrap_or(bind_addr);
-        LogEvent::HttpServerStarted {
-            addr: Cow::Owned(format!("http://{}", actual)),
-            interval_s: interval_secs,
-            tls: false,
-        }
-        .emit();
-        axum::serve(
-            listener,
-            router.into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .with_graceful_shutdown(wait_for_shutdown(shutdown_for_task.clone()))
-        .await
-        .map_err(map_io)?;
-    }
-
-    Ok(())
-}
-
-async fn wait_for_shutdown(notify: Arc<Notify>) {
-    let signal = wait_for_shutdown_signal().await;
-    LogEvent::HttpServerShutdown {
-        signal: Cow::Owned(signal.to_string()),
-    }
-    .emit();
-    notify.notify_waiters();
-}
-
-#[cfg(unix)]
-async fn wait_for_shutdown_signal() -> &'static str {
-    let mut sigterm = unix_signal(SignalKind::terminate()).ok();
-    let mut sighup = unix_signal(SignalKind::hangup()).ok();
-
-    tokio::select! {
-        res = tokio::signal::ctrl_c() => {
-            match res {
-                Ok(()) => "ctrl_c",
-                Err(err) => {
-                    warn!(error = ?err, "ctrl_c_wait_failed");
-                    "ctrl_c_error"
-                }
-            }
-        }
-        _ = async {
-            if let Some(signal) = sigterm.as_mut() {
-                signal.recv().await;
-            } else {
-                pending::<()>().await;
-            }
-        } => "sigterm",
-        _ = async {
-            if let Some(signal) = sighup.as_mut() {
-                signal.recv().await;
-            } else {
-                pending::<()>().await;
-            }
-        } => "sighup",
-    }
-}
-
-#[cfg(not(unix))]
-async fn wait_for_shutdown_signal() -> &'static str {
-    match tokio::signal::ctrl_c().await {
-        Ok(()) => "ctrl_c",
-        Err(err) => {
-            warn!(error = ?err, "ctrl_c_wait_failed");
-            "ctrl_c_error"
-        }
-    }
-}
-
-fn map_io(e: impl std::error::Error + Send + Sync + 'static) -> DescribeError {
-    DescribeError::System(format!("I/O/Serve error: {e}"))
-}
-
-async fn build_rustls_config(cfg: &WebTlsConfig) -> Result<Arc<ServerConfig>, DescribeError> {
-    let cert = cfg.cert_path.trim();
-    let key = cfg.key_path.trim();
-    if cert.is_empty() || key.is_empty() {
-        return Err(DescribeError::Config(
-            "web.tls nécessite cert_path et key_path".into(),
-        ));
-    }
-    let cert_bytes = tokio::fs::read(cert)
-        .await
-        .map_err(|err| DescribeError::Config(format!("lecture certificat {cert}: {err}")))?;
-    let cert_chain = load_cert_chain(&cert_bytes, cert)?;
-    let key_bytes = tokio::fs::read(key)
-        .await
-        .map_err(|err| DescribeError::Config(format!("lecture clé {key}: {err}")))?;
-    let private_key = load_private_key(&key_bytes, key)?;
-    let mut config = ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(cert_chain, private_key)
-        .map_err(|err| DescribeError::Config(format!("config TLS {cert}/{key}: {err}")))?;
-    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-    Ok(Arc::new(config))
-}
-
-fn load_cert_chain(
-    bytes: &[u8],
-    path: &str,
-) -> Result<Vec<CertificateDer<'static>>, DescribeError> {
-    let blocks = parse_many(bytes)
-        .map_err(|err| DescribeError::Config(format!("certificat PEM {path}: {err}")))?;
-    let certs: Vec<_> = blocks
-        .into_iter()
-        .filter(|block| block.tag() == "CERTIFICATE")
-        .map(|block| CertificateDer::from(block.into_contents()))
-        .collect();
-    if certs.is_empty() {
-        return Err(DescribeError::Config(format!(
-            "certificat PEM {path}: aucun bloc CERTIFICATE détecté"
-        )));
-    }
-    Ok(certs)
-}
-
-fn load_private_key(bytes: &[u8], path: &str) -> Result<PrivateKeyDer<'static>, DescribeError> {
-    let blocks =
-        parse_many(bytes).map_err(|err| DescribeError::Config(format!("clé PEM {path}: {err}")))?;
-    for block in blocks {
-        match block.tag() {
-            "PRIVATE KEY" | "RSA PRIVATE KEY" | "EC PRIVATE KEY" => {
-                match PrivateKeyDer::try_from(block.into_contents()) {
-                    Ok(key) => return Ok(key),
-                    Err(err) => {
-                        warn!(error = %err, "tls_private_key_parse_failed");
-                    }
-                }
-            }
-            _ => continue,
-        }
-    }
-    Err(DescribeError::Config(format!(
-        "clé PEM {path}: aucune clé privée reconnue (PRIVATE KEY / RSA PRIVATE KEY / EC PRIVATE KEY attendue)"
-    )))
-}
-
-#[derive(Clone)]
-struct RustlsAcceptor {
-    tls: TlsAcceptor,
-}
-
-impl RustlsAcceptor {
-    fn new(config: Arc<ServerConfig>) -> Self {
-        Self {
-            tls: TlsAcceptor::from(config),
-        }
-    }
-}
-
-impl<S> Accept<TcpStream, S> for RustlsAcceptor
-where
-    S: Send + 'static,
-{
-    type Stream = TlsStream<TcpStream>;
-    type Service = S;
-    type Future = Pin<Box<dyn Future<Output = io::Result<(Self::Stream, Self::Service)>> + Send>>;
-
-    fn accept(&self, stream: TcpStream, service: S) -> Self::Future {
-        let tls = self.tls.clone();
-        let peer_addr = stream.peer_addr().ok();
-        Box::pin(async move {
-            match tls.accept(stream).await {
-                Ok(stream) => Ok((stream, service)),
-                Err(err) => {
-                    if let Some(addr) = peer_addr {
-                        warn!(error = ?err, %addr, "tls_handshake_failed");
-                    } else {
-                        warn!(error = ?err, "tls_handshake_failed");
-                    }
-                    Err(err)
-                }
-            }
-        })
-    }
+        .with_state(app_state)
 }
 
 #[cfg(test)]
