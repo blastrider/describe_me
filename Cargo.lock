@@ -558,6 +558,7 @@ dependencies = [
  "axum-server",
  "base64",
  "bcrypt",
+ "bitflags",
  "clap",
  "criterion",
  "describe_me_plugin_sdk",
