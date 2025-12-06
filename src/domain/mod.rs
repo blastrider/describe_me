@@ -1,8 +1,10 @@
 #[cfg(feature = "config")]
 pub mod config;
 pub mod error;
+pub mod history_dto;
 pub mod history_profile;
 pub mod model;
+pub mod server_metadata;
 
 #[cfg(feature = "config")]
 pub use config::{
@@ -11,11 +13,16 @@ pub use config::{
     WebAccessConfig, WebSecurityConfig,
 };
 pub use error::DescribeError;
+pub use history_dto::{HistoryMetricDto, HistoryPointDto, HistorySeriesDto};
 pub use history_profile::HistoryProfile;
 pub use model::{
     CaptureOptions, ContainerInfo, ContainersSnapshot, ContainersSummary, DiskPartition, DiskUsage,
     HostLogEntry, HostLogsPage, NetworkInterfaceTraffic, ServiceInfo, SystemSnapshot,
     UpdatePackage, UpdatesInfo,
+};
+pub use server_metadata::{
+    MetadataValidationError, ServerDescription, ServerTag, TagsBatch, DESCRIPTION_MAX_BYTES,
+    TAGS_MAX_PER_REQUEST, TAG_LENGTH_LIMIT,
 };
 
 #[cfg(feature = "serde")]
