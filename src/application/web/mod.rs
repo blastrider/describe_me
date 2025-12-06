@@ -31,7 +31,10 @@ pub(crate) use state::{AppState, LogoAsset, RuntimeState, StaticWebConfig};
 
 use std::{
     borrow::Cow,
+    future::Future,
+    io,
     net::SocketAddr,
+    pin::Pin,
     sync::{Arc, RwLock},
     time::Duration,
 };
@@ -41,8 +44,14 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use axum_server::tls_rustls::RustlsConfig;
-use tokio::sync::Notify;
+use axum_server::{accept::Accept, Handle};
+use pem::parse_many;
+use rustls::{
+    pki_types::{CertificateDer, PrivateKeyDer},
+    ServerConfig,
+};
+use tokio::{net::TcpStream, sync::Notify};
+use tokio_rustls::{server::TlsStream, TlsAcceptor};
 use tracing::warn;
 
 use crate::application::context::AppContext;
@@ -258,21 +267,21 @@ pub async fn serve_http_with_context<A: Into<SocketAddr>>(
             tls: true,
         }
         .emit();
-        let handle = axum_server::Handle::new();
+        let handle = Handle::new();
         let notify = shutdown_for_task.clone();
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         let shutdown_task = tokio::spawn({
             let handle = handle.clone();
             async move {
                 tokio::select! {
-                    _ = wait_for_shutdown(notify) => {
-                        handle.shutdown();
-                    }
+                    _ = wait_for_shutdown(notify) => handle.shutdown(),
                     _ = shutdown_rx => {}
                 }
             }
         });
-        let result = axum_server::bind_rustls(bind_addr, rustls)
+        let tls_acceptor = RustlsAcceptor::new(rustls);
+        let result = axum_server::bind(bind_addr)
+            .acceptor(tls_acceptor)
             .handle(handle)
             .serve(
                 router
@@ -371,7 +380,7 @@ fn map_io(e: impl std::error::Error + Send + Sync + 'static) -> DescribeError {
     DescribeError::System(format!("I/O/Serve error: {e}"))
 }
 
-async fn build_rustls_config(cfg: &WebTlsConfig) -> Result<RustlsConfig, DescribeError> {
+async fn build_rustls_config(cfg: &WebTlsConfig) -> Result<Arc<ServerConfig>, DescribeError> {
     let cert = cfg.cert_path.trim();
     let key = cfg.key_path.trim();
     if cert.is_empty() || key.is_empty() {
@@ -379,9 +388,100 @@ async fn build_rustls_config(cfg: &WebTlsConfig) -> Result<RustlsConfig, Describ
             "web.tls nécessite cert_path et key_path".into(),
         ));
     }
-    RustlsConfig::from_pem_file(cert, key)
+    let cert_bytes = tokio::fs::read(cert)
         .await
-        .map_err(|err| DescribeError::Config(format!("chargement TLS {cert}/{key}: {err}")))
+        .map_err(|err| DescribeError::Config(format!("lecture certificat {cert}: {err}")))?;
+    let cert_chain = load_cert_chain(&cert_bytes, cert)?;
+    let key_bytes = tokio::fs::read(key)
+        .await
+        .map_err(|err| DescribeError::Config(format!("lecture clé {key}: {err}")))?;
+    let private_key = load_private_key(&key_bytes, key)?;
+    let mut config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(cert_chain, private_key)
+        .map_err(|err| DescribeError::Config(format!("config TLS {cert}/{key}: {err}")))?;
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    Ok(Arc::new(config))
+}
+
+fn load_cert_chain(
+    bytes: &[u8],
+    path: &str,
+) -> Result<Vec<CertificateDer<'static>>, DescribeError> {
+    let blocks = parse_many(bytes)
+        .map_err(|err| DescribeError::Config(format!("certificat PEM {path}: {err}")))?;
+    let certs: Vec<_> = blocks
+        .into_iter()
+        .filter(|block| block.tag() == "CERTIFICATE")
+        .map(|block| CertificateDer::from(block.into_contents()))
+        .collect();
+    if certs.is_empty() {
+        return Err(DescribeError::Config(format!(
+            "certificat PEM {path}: aucun bloc CERTIFICATE détecté"
+        )));
+    }
+    Ok(certs)
+}
+
+fn load_private_key(bytes: &[u8], path: &str) -> Result<PrivateKeyDer<'static>, DescribeError> {
+    let blocks =
+        parse_many(bytes).map_err(|err| DescribeError::Config(format!("clé PEM {path}: {err}")))?;
+    for block in blocks {
+        match block.tag() {
+            "PRIVATE KEY" | "RSA PRIVATE KEY" | "EC PRIVATE KEY" => {
+                match PrivateKeyDer::try_from(block.into_contents()) {
+                    Ok(key) => return Ok(key),
+                    Err(err) => {
+                        warn!(error = %err, "tls_private_key_parse_failed");
+                    }
+                }
+            }
+            _ => continue,
+        }
+    }
+    Err(DescribeError::Config(format!(
+        "clé PEM {path}: aucune clé privée reconnue (PRIVATE KEY / RSA PRIVATE KEY / EC PRIVATE KEY attendue)"
+    )))
+}
+
+#[derive(Clone)]
+struct RustlsAcceptor {
+    tls: TlsAcceptor,
+}
+
+impl RustlsAcceptor {
+    fn new(config: Arc<ServerConfig>) -> Self {
+        Self {
+            tls: TlsAcceptor::from(config),
+        }
+    }
+}
+
+impl<S> Accept<TcpStream, S> for RustlsAcceptor
+where
+    S: Send + 'static,
+{
+    type Stream = TlsStream<TcpStream>;
+    type Service = S;
+    type Future = Pin<Box<dyn Future<Output = io::Result<(Self::Stream, Self::Service)>> + Send>>;
+
+    fn accept(&self, stream: TcpStream, service: S) -> Self::Future {
+        let tls = self.tls.clone();
+        let peer_addr = stream.peer_addr().ok();
+        Box::pin(async move {
+            match tls.accept(stream).await {
+                Ok(stream) => Ok((stream, service)),
+                Err(err) => {
+                    if let Some(addr) = peer_addr {
+                        warn!(error = ?err, %addr, "tls_handshake_failed");
+                    } else {
+                        warn!(error = ?err, "tls_handshake_failed");
+                    }
+                    Err(err)
+                }
+            }
+        })
+    }
 }
 
 #[cfg(test)]
