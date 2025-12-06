@@ -1,24 +1,17 @@
-//! Module web: sert une page HTML avec mise à jour temps réel via SSE.
+//! Couche web Axum (pages HTML + SSE) branchée sur l'`AppContext`.
 //!
-//! Endpoints :
-//!   GET /         -> page HTML (CSS + JS vanilla)
-//!   GET /sse      -> flux SSE (JSON) envoyant SystemSnapshot périodiquement
-//!
-//! Usage (ex. depuis un binaire) :
-//!   describe_me::serve_http(
-//!       ([0,0,0,0], 8080),
-//!       std::time::Duration::from_secs(2),
-//!       #[cfg(feature = "config")]
-//!       None,
-//!       false,
-//!       describe_me::WebAccess {
-//!           token: Some("$argon2id$v=19$m=19456,t=2,p=1$MFDNn+4xkNMOFXaKzJLXmw$8cHenB/55bhNt1vZoGILR6F0yaEtKrnArXwdQhU8cBA".into()),
-//!           allow_ips: vec!["127.0.0.1".into()],
-//!           allow_origins: vec![],
-//!           trusted_proxies: vec![],
-//!       },
-//!       describe_me::Exposure::all(),
-//!   ).await?;
+//! - Entrées principales : `serve_http`/`serve_http_with_context` démarrent le serveur
+//!   avec un `AppState` qui encapsule le contexte applicatif, la config statique (intervalle,
+//!   exposition) et l'état runtime (cache snapshots, updates, shutdown).
+//! - Routage : pages HTML (`/`, `/logs`, `/container`, `/updates`), API/SSE (`/sse`,
+//!   `/api/*` pour history/logs/containers/description/tags, `/metrics`).
+//! - Sécurité : couches `OriginCheckLayer` + `SecurityHeadersLayer` et moteur `WebSecurity`
+//!   (token Argon2/bcrypt, affinité, rate limiting, brute force guard, session cookies).
+//! - Sous-modules notables : `handlers` (routes), `sse` (stream des snapshots), `state`
+//!   (AppState et caches), `auth`, `csp`, `origin`, `security`, `updates_cache`.
+//! - Mode web vs CLI : la logique métier reste dans les services applicatifs (collecte,
+//!   historique, exposable via `Exposure`) tandis que cette couche ne gère que HTTP/SSE
+//!   et les garde-fous liés.
 
 mod assets;
 mod auth;
