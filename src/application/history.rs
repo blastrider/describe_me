@@ -1,7 +1,9 @@
+mod backend;
 mod service;
 
 use crate::domain::{DescribeError, HistoryProfile, SystemSnapshot};
 use crate::infrastructure::history::HistorySample;
+pub(crate) use backend::HistoryBackend;
 pub use service::HistoryService;
 use std::time::{SystemTime, UNIX_EPOCH};
 
