@@ -68,9 +68,6 @@ use updates_cache::UpdatesCache;
 
 const UPDATES_CACHE_SUCCESS_TTL: Duration = Duration::from_secs(300);
 const UPDATES_CACHE_FAILURE_RETRY: Duration = Duration::from_secs(60);
-const DESCRIPTION_MAX_BYTES: usize = 2048;
-const TAGS_MAX_PER_REQUEST: usize = 64;
-const TAG_LENGTH_LIMIT: usize = 48;
 pub(crate) const WEB_SESSION_SECONDS: u64 = 7 * 24 * 3600;
 
 #[cfg(feature = "config")]
