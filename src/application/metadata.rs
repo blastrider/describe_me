@@ -1,8 +1,10 @@
 use crate::application::context::AppContext;
-use crate::domain::DescribeError;
+use crate::domain::{server_metadata, DescribeError};
 use crate::infrastructure::storage;
 use std::collections::BTreeSet;
 use std::path::Path;
+
+pub mod registry;
 
 pub fn set_server_description_with(ctx: &AppContext, text: &str) -> Result<(), DescribeError> {
     ctx.metadata_store().set_description(text)
@@ -124,42 +126,18 @@ fn unique_sorted(mut tags: Vec<String>) -> Vec<String> {
 }
 
 fn normalize_tag(raw: &str) -> Option<String> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let mut out = String::new();
-    let mut last_dash = false;
-    for mut ch in trimmed.chars() {
-        if ch.is_ascii_uppercase() {
-            ch = ch.to_ascii_lowercase();
-        }
-        if ch.is_ascii_alphanumeric() {
-            out.push(ch);
-            last_dash = false;
-        } else if matches!(ch, '-' | '_' | ' ' | '.' | '/' | '\\') && !last_dash && !out.is_empty()
-        {
-            out.push('-');
-            last_dash = true;
-        }
-    }
-    while out.ends_with('-') {
-        out.pop();
-    }
-    if out.is_empty() {
-        None
-    } else {
-        Some(out)
-    }
+    server_metadata::normalize_tag(raw)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infrastructure::storage::MetadataStore;
     use tempfile::tempdir;
 
     fn with_temp_state_dir<F: FnOnce()>(f: F) {
         let _guard = crate::infrastructure::storage::state_dir_test_lock();
+        registry::reset_metadata_store_for_tests();
         crate::infrastructure::storage::clear_state_dir_override_for_tests();
         std::env::remove_var("DESCRIBE_ME_STATE_DIR");
         std::env::remove_var("STATE_DIRECTORY");
@@ -173,6 +151,7 @@ mod tests {
             dir.path()
         );
         f();
+        registry::reset_metadata_store_for_tests();
         crate::infrastructure::storage::clear_state_dir_override_for_tests();
         // tempdir drops here
     }
@@ -220,6 +199,18 @@ mod tests {
             assert_eq!(after_remove, vec!["debian", "prod"]);
             clear_server_tags_with(&ctx).expect("clear tags");
             assert!(load_server_tags_with(&ctx).expect("load").is_empty());
+        });
+    }
+
+    #[test]
+    fn registry_returns_initialized_store() {
+        with_temp_state_dir(|| {
+            let store = MetadataStore::open_default().expect("store");
+            registry::init_metadata_store(store);
+            let handle = registry::metadata_store();
+            handle.set_description("registry desc").expect("set");
+            let stored = handle.get_description().expect("load");
+            assert_eq!(stored.as_deref(), Some("registry desc"));
         });
     }
 }
