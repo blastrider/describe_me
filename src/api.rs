@@ -30,7 +30,7 @@ pub use crate::application::capture_snapshot_with_view;
 #[cfg(feature = "serde")]
 pub use crate::application::exposure::SnapshotView;
 pub use crate::application::exposure::{
-    Exposure, ExposureBuilder, ExposureCaptureContext, ExposureOverrides,
+    Exposure, ExposureBuilder, ExposureCaptureContext, ExposureFlagSource, ExposureOverrides,
 };
 
 pub use crate::application::metadata::{
