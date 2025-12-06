@@ -19,8 +19,11 @@ mod session;
 mod sse;
 
 pub(crate) use limits::GlobalPermit;
+pub(crate) use session::{
+    clear_session_cookie, set_session_cookie, WebSession, SESSION_COOKIE_NAME,
+};
 
-use super::{clear_session_cookie, set_session_cookie, template, AppState, WebAccess};
+use super::{template, AppState, WebAccess};
 use crate::application::web::csp::CspNonce;
 use auth::{build_request, verify_token, AuthRequest, CredentialOverride, TokenVerifier};
 use limits::{enforce_rate_limits, ensure_not_blocked, SecurityPolicy, SecurityState};
@@ -257,6 +260,10 @@ impl WebSecurity {
 
     pub fn session_ttl(&self) -> Duration {
         self.sessions.ttl()
+    }
+
+    pub fn session_manager(&self) -> &SessionManager {
+        &self.sessions
     }
 
     fn log_incident(&self, category: &'static str, request: &AuthRequest, detail: Option<String>) {
