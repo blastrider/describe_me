@@ -8,6 +8,57 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const MIN_RETENTION_POINTS: u32 = 16;
 const MAX_RETENTION_POINTS: u32 = 4096;
 
+/// Configuration complète d'un profil d'historique (points, fenêtre, granularité, mode).
+#[derive(Debug, Clone, Copy)]
+pub struct HistoryProfileConfig {
+    pub retention_points: u32,
+    pub max_window_seconds: u32,
+    pub rounding_seconds: u64,
+    pub mode: HistoryMode,
+}
+
+const DEFAULT_RETENTION_POINTS: u32 = 120;
+const DEFAULT_MAX_WINDOW_SECONDS: u32 = 3600;
+const DEFAULT_ROUNDING_SECONDS: u64 = 60;
+const OPS_RETENTION_POINTS: u32 = 720;
+const PARANOID_RETENTION_POINTS: u32 = 60;
+const PARANOID_MAX_WINDOW_SECONDS: u32 = 900;
+const PARANOID_ROUNDING_SECONDS: u64 = 120;
+
+/// Source unique des paramètres par profil :
+/// - `Default` : 120 points sur 1h, stockage persistant.
+/// - `Ops` : 720 points sur 1h, stockage persistant.
+/// - `Paranoid` : 60 points sur 15 min, stockage mémoire uniquement.
+pub fn profile_config(profile: HistoryProfile) -> HistoryProfileConfig {
+    let (retention_points, max_window_seconds, rounding_seconds, mode) = match profile {
+        HistoryProfile::Default => (
+            DEFAULT_RETENTION_POINTS,
+            DEFAULT_MAX_WINDOW_SECONDS,
+            DEFAULT_ROUNDING_SECONDS,
+            HistoryMode::Persistent,
+        ),
+        HistoryProfile::Ops => (
+            OPS_RETENTION_POINTS,
+            DEFAULT_MAX_WINDOW_SECONDS,
+            DEFAULT_ROUNDING_SECONDS,
+            HistoryMode::Persistent,
+        ),
+        HistoryProfile::Paranoid => (
+            PARANOID_RETENTION_POINTS,
+            PARANOID_MAX_WINDOW_SECONDS,
+            PARANOID_ROUNDING_SECONDS,
+            HistoryMode::InMemory,
+        ),
+    };
+
+    HistoryProfileConfig {
+        retention_points: retention_points.clamp(MIN_RETENTION_POINTS, MAX_RETENTION_POINTS),
+        max_window_seconds,
+        rounding_seconds,
+        mode,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct HistorySettings {
     pub enabled: bool,
@@ -25,8 +76,8 @@ impl HistorySettings {
             enabled: false,
             profile: HistoryProfile::Default,
             retention_points: 0,
-            max_window_seconds: 900,
-            rounding_seconds: 60,
+            max_window_seconds: PARANOID_MAX_WINDOW_SECONDS,
+            rounding_seconds: DEFAULT_ROUNDING_SECONDS,
             mode: HistoryMode::Disabled,
             paranoid_mode: false,
         }
@@ -34,34 +85,15 @@ impl HistorySettings {
 
     pub fn for_profile(profile: HistoryProfile) -> Self {
         let paranoid_mode = matches!(profile, HistoryProfile::Paranoid);
-        match profile {
-            HistoryProfile::Default => Self {
-                enabled: true,
-                profile,
-                retention_points: 120,
-                max_window_seconds: 3600,
-                rounding_seconds: 60,
-                mode: HistoryMode::Persistent,
-                paranoid_mode,
-            },
-            HistoryProfile::Ops => Self {
-                enabled: true,
-                profile,
-                retention_points: 720,
-                max_window_seconds: 3600,
-                rounding_seconds: 60,
-                mode: HistoryMode::Persistent,
-                paranoid_mode,
-            },
-            HistoryProfile::Paranoid => Self {
-                enabled: true,
-                profile,
-                retention_points: 60,
-                max_window_seconds: 900,
-                rounding_seconds: 120,
-                mode: HistoryMode::InMemory,
-                paranoid_mode,
-            },
+        let cfg = profile_config(profile);
+        Self {
+            enabled: true,
+            profile,
+            retention_points: cfg.retention_points,
+            max_window_seconds: cfg.max_window_seconds,
+            rounding_seconds: cfg.rounding_seconds,
+            mode: cfg.mode,
+            paranoid_mode,
         }
     }
 

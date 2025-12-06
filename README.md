@@ -149,7 +149,7 @@ Pour les tests, utilisez `AppContext::in_memory()` afin d’éviter l’IO disqu
 
 ## Support & contributions
 
-Questions / PRs bienvenues via GitHub. Merci de respecter la MSRV (1.90) et d’exécuter `cargo fmt && cargo clippy -- -D warnings` avant toute contribution.
+Questions / PRs bienvenues via GitHub. Voir `CONTRIBUTING.md` pour la vue d’architecture et les points d’entrée dev. Merci de respecter la MSRV (1.90) et d’exécuter `cargo fmt && cargo clippy -- -D warnings` avant toute contribution.
 
 ### Workflow de release & intégration
 
