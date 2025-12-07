@@ -1,6 +1,8 @@
 // src/application/health.rs
 #![allow(clippy::upper_case_acronyms)]
 
+use std::borrow::Cow;
+
 use crate::domain::{DescribeError, SystemSnapshot};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -55,7 +57,7 @@ pub enum Cmp {
 pub struct CheckResult {
     pub ok: bool,
     pub severity: Severity, // si ok=false ⇒ severity=OK
-    pub message: String,
+    pub message: Cow<'static, str>,
 }
 
 fn parse_sev(s: &str) -> Option<Severity> {
@@ -185,7 +187,7 @@ pub fn eval_check(s: &SystemSnapshot, c: &Check) -> Result<CheckResult, Describe
             Ok(CheckResult {
                 ok: !trig,
                 severity: if trig { *sev } else { Severity::OK },
-                message: msg,
+                message: msg.into(),
             })
         }
 
@@ -219,7 +221,7 @@ pub fn eval_check(s: &SystemSnapshot, c: &Check) -> Result<CheckResult, Describe
                 Ok(CheckResult {
                     ok: !trig,
                     severity: if trig { *sev } else { Severity::OK },
-                    message: msg,
+                    message: msg.into(),
                 })
             } else {
                 Err(DescribeError::Parse(format!(
@@ -253,13 +255,13 @@ pub fn eval_check(s: &SystemSnapshot, c: &Check) -> Result<CheckResult, Describe
                         Ok(CheckResult {
                             ok: ok_state,
                             severity: if ok_state { Severity::OK } else { *sev },
-                            message: msg,
+                            message: msg.into(),
                         })
                     }
                     None => Ok(CheckResult {
                         ok: false,
                         severity: *sev,
-                        message: format!("service={}: introuvable -> TRIGGER", name),
+                        message: format!("service={}: introuvable -> TRIGGER", name).into(),
                     }),
                 }
             }
