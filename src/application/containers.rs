@@ -16,6 +16,8 @@ use tracing::warn;
 
 #[cfg(feature = "serde")]
 use crate::application::extensions::{run_ad_hoc_plugin, PluginExecutionError};
+#[cfg(feature = "serde")]
+use crate::application::sync::lock_expect;
 
 /// Chemin par défaut du binaire plugin conteneurs.
 pub const CONTAINERS_PLUGIN_BINARY: &str =
@@ -198,11 +200,7 @@ static NO_RUNTIME_LOGGED: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "serde")]
 impl Clone for ContainersCacheService {
     fn clone(&self) -> Self {
-        let snapshot = self
-            .cache
-            .lock()
-            .expect("containers cache mutex poisoned")
-            .clone();
+        let snapshot = lock_expect(self.cache.lock(), "ContainersCacheService").clone();
         Self {
             cache: std::sync::Mutex::new(snapshot),
         }
@@ -223,7 +221,7 @@ impl ContainersCacheService {
     pub fn capture(&self) -> Result<ContainersSnapshot, ContainersCaptureError> {
         let now = Instant::now();
         {
-            let guard = self.cache.lock().expect("containers cache mutex poisoned");
+            let guard = lock_expect(self.cache.lock(), "ContainersCacheService");
             if let Some(snapshot) = guard.fresh_snapshot(now) {
                 return Ok(snapshot);
             }
@@ -231,7 +229,7 @@ impl ContainersCacheService {
 
         match collect_from_plugin() {
             Ok(snapshot) => {
-                let mut guard = self.cache.lock().expect("containers cache mutex poisoned");
+                let mut guard = lock_expect(self.cache.lock(), "ContainersCacheService");
                 guard.store(snapshot.clone(), now);
                 Ok(snapshot)
             }
@@ -239,14 +237,14 @@ impl ContainersCacheService {
                 if is_no_runtime(&err) {
                     let snapshot = placeholder_snapshot();
                     {
-                        let mut guard = self.cache.lock().expect("containers cache mutex poisoned");
+                        let mut guard = lock_expect(self.cache.lock(), "ContainersCacheService");
                         guard.store(snapshot.clone(), now);
                     }
                     log_no_runtime_once(&err);
                     return Ok(snapshot);
                 }
                 let cached = {
-                    let guard = self.cache.lock().expect("containers cache mutex poisoned");
+                    let guard = lock_expect(self.cache.lock(), "ContainersCacheService");
                     guard.reuse_stale()
                 };
                 if let Some(snapshot) = cached {
@@ -264,7 +262,7 @@ impl ContainersCacheService {
 
     #[cfg(test)]
     pub fn inject(&self, snapshot: ContainersSnapshot) {
-        let mut guard = self.cache.lock().expect("containers cache mutex poisoned");
+        let mut guard = lock_expect(self.cache.lock(), "ContainersCacheService");
         guard.store(snapshot, Instant::now());
     }
 }

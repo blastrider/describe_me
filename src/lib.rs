@@ -22,7 +22,9 @@ mod shared;
 pub mod api;
 
 #[doc(hidden)]
-// TODO: retirer ce réexport à la prochaine version majeure ; préférez `describe_me::api`.
+// Maintenu pour compatibilité : le réexport global disparaîtra lors d'une prochaine version
+// majeure. Préférez dès maintenant importer via les modules explicites
+// (`describe_me::api::history::*`, `describe_me::api::web::*`, etc.).
 pub use crate::api::*;
 
 // Outils de test/fuzz internes

@@ -10,6 +10,7 @@ use std::{
 
 use axum::http::{header, HeaderMap, HeaderValue};
 
+use crate::application::sync::lock_expect;
 use crate::application::web::WEB_SESSION_SECONDS;
 
 pub(super) const SESSION_COOKIE_PREFIX: &str = "sess:v1:";
@@ -39,7 +40,7 @@ impl SessionManager {
     }
 
     pub(super) fn issue(&self, token: TokenKey, now: Instant) -> String {
-        let mut store = self.inner.lock().expect("session store poisoned");
+        let mut store = lock_expect(self.inner.lock(), "SessionManager");
         store.cleanup(now);
 
         let mut raw = [0u8; 24];
@@ -71,7 +72,7 @@ impl SessionManager {
             return Err(SessionError::InvalidFormat);
         };
 
-        let mut store = self.inner.lock().expect("session store poisoned");
+        let mut store = lock_expect(self.inner.lock(), "SessionManager");
         store.cleanup(now);
 
         match store.entries.get(id) {
@@ -90,7 +91,7 @@ impl SessionManager {
     }
 
     pub(super) fn consume(&self, id: &str, now: Instant) -> Result<(), SessionError> {
-        let mut store = self.inner.lock().expect("session store poisoned");
+        let mut store = lock_expect(self.inner.lock(), "SessionManager");
         store.cleanup(now);
         match store.entries.get_mut(id) {
             Some(entry) => {

@@ -2,6 +2,7 @@ use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 
 use crate::application::logging::LogEvent;
+use crate::application::sync::lock_expect;
 use crate::domain::{DescribeError, HistoryProfile, SystemSnapshot};
 use crate::infrastructure::history::{self, DisabledHistoryBackend, DiskStorage, MemoryStorage};
 
@@ -39,7 +40,7 @@ impl HistoryService {
     }
 
     pub(crate) fn with_ctx<T>(&self, f: impl FnOnce(&HistoryContext) -> T) -> T {
-        let guard = self.ctx.read().expect("history context poisoned");
+        let guard = lock_expect(self.ctx.read(), "HistoryService");
         f(&guard)
     }
 
@@ -54,7 +55,7 @@ impl HistoryService {
             settings.disable();
             Arc::new(DisabledHistoryBackend)
         };
-        let mut guard = self.ctx.write().expect("history context poisoned");
+        let mut guard = lock_expect(self.ctx.write(), "HistoryService");
         guard.settings = settings;
         guard.backend = backend;
         Ok(())

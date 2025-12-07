@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use redb::{Database, ReadableTable, TableDefinition, TableError};
 
+use crate::application::sync::lock_expect;
 use crate::domain::DescribeError;
 
 const METADATA_TABLE: TableDefinition<&str, &str> = TableDefinition::new("server_metadata");
@@ -114,9 +115,7 @@ fn backend_registry() -> &'static Mutex<BackendRegistry> {
 }
 
 fn acquire_backend() -> Result<Arc<dyn MetadataBackend>, DescribeError> {
-    let mut guard = backend_registry()
-        .lock()
-        .expect("metadata backend registry mutex poisoned");
+    let mut guard = lock_expect(backend_registry().lock(), "MetadataBackendRegistry");
     guard.acquire_backend()
 }
 
@@ -242,9 +241,7 @@ impl MetadataBackend for RedbBackend {
 #[cfg(test)]
 pub(crate) fn set_metadata_backend_factory(factory: Box<dyn MetadataBackendFactory>) {
     let lock = backend_registry();
-    let mut guard = lock
-        .lock()
-        .expect("metadata backend registry mutex poisoned");
+    let mut guard = lock_expect(lock.lock(), "MetadataBackendRegistry");
     guard.set_factory(factory);
 }
 
@@ -308,14 +305,14 @@ fn resolve_db_path(base: PathBuf) -> PathBuf {
 
 fn state_dir_override() -> Option<PathBuf> {
     let lock = STATE_DIR_OVERRIDE.get()?;
-    let guard = lock.lock().ok()?;
+    let guard = lock_expect(lock.lock(), "StateDirOverride");
     guard.as_ref().cloned()
 }
 
 pub(crate) fn set_state_dir_override(path: impl Into<PathBuf>) {
     let path = path.into();
     let lock = STATE_DIR_OVERRIDE.get_or_init(|| Mutex::new(None));
-    let mut guard = lock.lock().expect("state dir mutex poisoned");
+    let mut guard = lock_expect(lock.lock(), "StateDirOverride");
     if path.as_os_str().is_empty() {
         *guard = None;
     } else {
@@ -326,7 +323,7 @@ pub(crate) fn set_state_dir_override(path: impl Into<PathBuf>) {
 #[cfg(test)]
 pub(crate) fn clear_state_dir_override_for_tests() {
     if let Some(lock) = STATE_DIR_OVERRIDE.get() {
-        *lock.lock().expect("state dir mutex poisoned") = None;
+        *lock_expect(lock.lock(), "StateDirOverride") = None;
     }
 }
 
@@ -337,10 +334,10 @@ pub(crate) fn metadata_db_path_for_tests() -> PathBuf {
 
 #[cfg(test)]
 pub(crate) fn state_dir_test_lock() -> std::sync::MutexGuard<'static, ()> {
-    STATE_DIR_TEST_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .expect("state dir test mutex")
+    lock_expect(
+        STATE_DIR_TEST_LOCK.get_or_init(|| Mutex::new(())).lock(),
+        "StateDirTest",
+    )
 }
 
 fn take_first_path(value: OsString) -> Option<PathBuf> {

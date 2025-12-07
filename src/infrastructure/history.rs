@@ -1,4 +1,5 @@
 use crate::application::history::HistoryBackend;
+use crate::application::sync::lock_expect;
 use crate::domain::DescribeError;
 use crate::infrastructure::storage::metadata_db_path;
 use fastrand;
@@ -38,20 +39,14 @@ impl MemoryStorage {
         if retention == 0 {
             return Ok(());
         }
-        let mut guard = self
-            .buffers
-            .lock()
-            .expect("history memory storage poisoned");
+        let mut guard = lock_expect(self.buffers.lock(), "HistoryMemoryStorage");
         let buffer = guard.entry(server_id.to_owned()).or_default();
         buffer.push(sample.clone(), retention);
         Ok(())
     }
 
     fn read(&self, server_id: &str) -> Vec<HistorySample> {
-        let guard = self
-            .buffers
-            .lock()
-            .expect("history memory storage poisoned");
+        let guard = lock_expect(self.buffers.lock(), "HistoryMemoryStorage");
         guard
             .get(server_id)
             .map(|buffer| buffer.points.clone())

@@ -24,6 +24,7 @@ CLI ↔ AppContext ↔ Collectors ↔ History / Extensions ↔ Web (Axum + SSE) 
 ## Bonnes pratiques
 
 - Respecter la separation **domaine** (types, erreurs) / **application** (services, orchestrateurs) / **infrastructure** (sysinfo, systemd, net, stockage). La CLI et l'UI ne doivent que piloter ces couches.
+- Imports publics : privilégier les chemins explicites (`describe_me::api::<capacité>::*`) plutôt que le réexport global `describe_me::api::*`, qui sera retiré lors d'une prochaine version majeure.
 - Tests : placer les tests unitaires a proximite du code (`mod tests`), utiliser `AppContext::in_memory()` pour eviter l'IO disque; preferer des tests d'integration dans `tests/` pour les parcours complets CLI/web.
 - Conserver les commentaires de module (`//!`) pour decrire roles/responsabilites; ajouter une note si vous creez un nouveau sous-module ou une nouvelle policy.
 - Avant de pousser : `cargo fmt`, `cargo clippy -- -D warnings`, `cargo test --all-features` (ou au minimum les features concernees).
