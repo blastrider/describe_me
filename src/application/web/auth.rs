@@ -7,6 +7,8 @@ use axum::{
 };
 use serde::Deserialize;
 
+use crate::application::error::ErrorBody;
+
 use super::{
     security::{SecurityRejection, WebRoute, WebSession},
     AppState, AxumRequest,
@@ -24,7 +26,9 @@ pub(super) async fn login(State(state): State<AppState>, request: AxumRequest) -
         Err(_) => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "Requête invalide." })),
+                Json(ErrorBody {
+                    error: "Requête invalide.".into(),
+                }),
             )
                 .into_response();
         }
@@ -35,7 +39,9 @@ pub(super) async fn login(State(state): State<AppState>, request: AxumRequest) -
         _ => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "Merci de fournir un jeton." })),
+                Json(ErrorBody {
+                    error: "Merci de fournir un jeton.".into(),
+                }),
             )
                 .into_response();
         }
