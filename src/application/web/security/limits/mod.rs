@@ -24,7 +24,7 @@ pub(crate) use engine::WebSecurityEngine;
 pub(crate) use global_slots::GlobalSlots;
 pub(crate) use policy::{SecurityPolicy, SsePolicy};
 #[allow(unused_imports)]
-pub(crate) use rate_limiter::{RateLimitDecision, RateLimitScope, RateLimiter};
+pub(crate) use rate_limiter::{RateLimitDecision, RateLimiter};
 #[allow(unused_imports)]
 pub(crate) use sse_admission::SseAdmission;
 pub(crate) use state::{enforce_rate_limits, ensure_not_blocked, GlobalPermit, SecurityState};
