@@ -4,6 +4,7 @@
 - Web UI : login modal en JSON vers `/auth/login` (same-origin), SSE basculé sur `EventSource('/sse')` avec re-auth propre sur 401, fetch APIs (`history`, `logs`, `containers`, tags) utilisant uniquement le cookie HttpOnly.
 - Sécurité : cookie Max-Age synchronisé avec le TTL serveur, suppression du stockage client de jeton, 401 nettoie le cookie côté backend.
 - Docs : ajout de `docs/web-auth.md` décrivant le flux d'auth web (serveur + frontend) et les points de vigilance.
+- API : le réexport global `pub use crate::api::*;` reste provisoire et sera supprimé lors d'une prochaine version majeure ; utilisez les modules explicites (`describe_me::api::history::*`, etc.).
 
 ## v0.5.0 - 2025-12-01
 
