@@ -42,6 +42,11 @@ pub mod exposure {
     };
 }
 
+pub mod errors {
+    //! Structures d'erreur JSON communes (HTTP, plugins, SSE).
+    pub use crate::application::error::{serialize_error_body, ErrorBody};
+}
+
 pub mod health {
     //! Parsing et évaluation des checks de santé.
     pub use crate::application::health::{eval_checks, parse_check, Severity};
@@ -82,7 +87,9 @@ pub mod containers {
 
 pub mod plugins {
     //! Extensions/plug-ins ad hoc.
-    pub use crate::application::extensions::{run_ad_hoc_plugin, PluginExecutionError};
+    pub use crate::application::extensions::{
+        run_ad_hoc_plugin, run_ad_hoc_plugin_with_policy, PluginExecutionError, PluginPolicy,
+    };
     pub use describe_me_plugin_sdk::PluginOutput;
 }
 
@@ -108,6 +115,7 @@ pub mod config {
 // TODO: retirer ces réexports plats à la prochaine version majeure ; préférez les sous-modules.
 pub use config::*;
 pub use containers::*;
+pub use errors::*;
 pub use exposure::*;
 pub use health::*;
 pub use history::*;
