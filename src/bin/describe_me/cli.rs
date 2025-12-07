@@ -3,7 +3,7 @@ use anyhow::{bail, Result};
 #[cfg(feature = "net")]
 use describe_me_lib::domain::{ListeningSocket, NetworkInterfaceTraffic};
 use describe_me_lib::{
-    paginate_slice, AppContext, HistoryMode, HistoryProfile, HistorySettings, LogEvent, PageRequest,
+    paginate_slice, AppContext, HistoryProfile, HistorySettings, LogEvent, PageRequest,
 };
 #[cfg(all(unix, feature = "cli"))]
 use nix::unistd::Uid;
@@ -19,6 +19,8 @@ use super::args::{
 use super::exposure::apply_cli_exposure_flags;
 #[cfg(feature = "web")]
 use super::exposure::apply_web_exposure_flags;
+#[cfg(feature = "config")]
+use describe_me_lib::api::config::runtime::HistoryConfigExt;
 
 const SERVICES_PAGE_MAX: usize = 500;
 const SOCKETS_PAGE_MAX: usize = 500;
@@ -395,25 +397,7 @@ pub fn run(mut cli: Cli) -> Result<()> {
     #[cfg(feature = "config")]
     if let Some(cfg) = cfg.as_ref() {
         if let Some(history_cfg) = cfg.history.as_ref() {
-            if history_cfg.enabled {
-                let mut profile = history_cfg.profile.unwrap_or(HistoryProfile::Default);
-                if history_cfg.paranoid {
-                    profile = HistoryProfile::Paranoid;
-                }
-                history_settings = HistorySettings::for_profile(profile);
-                if let Some(retention) = history_cfg.retention_points {
-                    history_settings.set_retention_points(retention);
-                }
-                if let Some(max_window) = history_cfg.max_window_seconds {
-                    history_settings.max_window_seconds = max_window;
-                }
-                if let Some(rounding) = history_cfg.rounding_seconds {
-                    history_settings.rounding_seconds = rounding;
-                }
-                if history_cfg.in_memory_only {
-                    history_settings.set_mode(HistoryMode::InMemory);
-                }
-            }
+            history_settings = history_cfg.to_settings();
         }
     }
 
@@ -548,12 +532,12 @@ pub fn run(mut cli: Cli) -> Result<()> {
 
     #[cfg(feature = "web")]
     if let Some(bind) = &cli.web.bind {
-        use std::{net::SocketAddr, time::Duration};
+        use std::net::SocketAddr;
 
         let addr: SocketAddr = bind
             .parse()
             .map_err(|e| anyhow::anyhow!("Adresse invalide pour --web: {bind} ({e})"))?;
-        let tick = Duration::from_secs(cli.web.interval_secs);
+        let tick = std::time::Duration::from_secs(cli.web.interval_secs);
 
         if web_access.token.is_none() && web_access.allow_ips.is_empty() {
             bail!(
