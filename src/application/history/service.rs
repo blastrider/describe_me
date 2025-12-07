@@ -203,8 +203,7 @@ impl Default for HistoryService {
 mod tests {
     use super::*;
     use crate::application::history::profile_config;
-    use crate::domain::DiskUsage;
-    use crate::SharedSlice;
+    use crate::application::test_support::dummy_snapshot;
     use std::time::Duration;
 
     #[test]
@@ -241,35 +240,5 @@ mod tests {
             .query_series(&server_id, Duration::from_secs(60), 10, 1)
             .expect("series");
         assert!(!series.points.is_empty());
-    }
-
-    fn dummy_snapshot() -> SystemSnapshot {
-        SystemSnapshot {
-            hostname: "host".into(),
-            os: None,
-            kernel: None,
-            uptime_seconds: 0,
-            cpu_count: 2,
-            load_average: (0.5, 0.25, 0.1),
-            total_memory_bytes: 2048,
-            used_memory_bytes: 1024,
-            total_swap_bytes: 0,
-            used_swap_bytes: 0,
-            disk_usage: Some(DiskUsage {
-                total_bytes: 2048,
-                available_bytes: 1024,
-                used_bytes: 1024,
-                partitions: SharedSlice::from_vec(Vec::new()),
-            }),
-            #[cfg(feature = "systemd")]
-            services_running: SharedSlice::from_vec(Vec::new()),
-            #[cfg(feature = "net")]
-            listening_sockets: None,
-            #[cfg(feature = "net")]
-            network_traffic: None,
-            containers: None,
-            updates: None,
-            extensions: None,
-        }
     }
 }

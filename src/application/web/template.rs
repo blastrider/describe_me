@@ -1,4 +1,4 @@
-use super::assets::{BACKGROUND_CANVAS_JS, CONTAINERS_JS, LOGS_JS, MAIN_JS};
+use super::assets::{bundle, BACKGROUND_CANVAS_JS, CONTAINERS_JS, LOGS_JS};
 use super::views::{ContainersViewModel, IndexViewModel, LogsViewModel, UpdatesViewModel};
 use crate::domain::{UpdatePackage, UpdatesInfo};
 
@@ -107,7 +107,7 @@ pub(super) fn render_auth_required(message: &str, csp_nonce: &str) -> String {
 
 pub(super) fn render_index(vm: &IndexViewModel) -> String {
     let debug_flag = if vm.web_debug { "true" } else { "false" };
-    let main_js = MAIN_JS.replace("__WEB_DEBUG__", debug_flag);
+    let main_js = bundle::main_js().replace("__WEB_DEBUG__", debug_flag);
     let main_content = fill_template(
         MAIN_LAYOUT_TEMPLATE,
         PRIMARY_GRID.len() + SERVICES_SECTION.len() + SOCKETS_SECTION.len() + RAW_SECTION.len(),

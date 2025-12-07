@@ -1,6 +1,8 @@
 mod collectors;
 pub mod config;
 mod context;
+#[cfg(test)]
+pub mod test_support;
 
 use crate::application::collectors::{default_collectors, CoreCollector};
 #[cfg(feature = "serde")]
