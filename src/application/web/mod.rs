@@ -13,7 +13,7 @@
 //!   historique, exposable via `Exposure`) tandis que cette couche ne gère que HTTP/SSE
 //!   et les garde-fous liés.
 
-mod assets;
+pub mod assets;
 mod auth;
 mod csp;
 mod error;
@@ -22,10 +22,10 @@ mod origin;
 mod security;
 mod services;
 mod sse;
-mod state;
+pub mod state;
 mod template;
 mod tls;
-mod updates_cache;
+pub mod updates_cache;
 mod views;
 
 pub(crate) use csp::SecurityHeadersLayer;
