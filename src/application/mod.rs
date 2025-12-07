@@ -1,4 +1,5 @@
 mod collectors;
+pub mod config;
 mod context;
 
 use crate::application::collectors::{default_collectors, CoreCollector};
