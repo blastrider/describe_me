@@ -135,11 +135,8 @@ mod tests {
         load_server_description_with, load_server_tags_with, set_server_description_with,
         set_server_tags_with,
     };
-    #[cfg(feature = "systemd")]
-    use crate::domain::ServiceInfo;
-    use crate::domain::{DiskUsage, SystemSnapshot};
+    use crate::application::test_support::dummy_snapshot;
     use crate::ContainersSnapshot;
-    use crate::SharedSlice;
     use std::time::Duration;
 
     #[test]
@@ -228,35 +225,5 @@ mod tests {
             .ok();
         // ctx2 n'a pas de snapshot enregistré, donc aucun point
         assert!(series2.is_none() || series2.unwrap().points.is_empty());
-    }
-
-    fn dummy_snapshot() -> SystemSnapshot {
-        SystemSnapshot {
-            hostname: "host".into(),
-            os: None,
-            kernel: None,
-            uptime_seconds: 0,
-            cpu_count: 1,
-            load_average: (0.0, 0.0, 0.0),
-            total_memory_bytes: 1024,
-            used_memory_bytes: 512,
-            total_swap_bytes: 0,
-            used_swap_bytes: 0,
-            disk_usage: Some(DiskUsage {
-                total_bytes: 1024,
-                available_bytes: 512,
-                used_bytes: 512,
-                partitions: SharedSlice::from_vec(Vec::new()),
-            }),
-            #[cfg(feature = "systemd")]
-            services_running: SharedSlice::from_vec(Vec::<ServiceInfo>::new()),
-            #[cfg(feature = "net")]
-            listening_sockets: None,
-            #[cfg(feature = "net")]
-            network_traffic: None,
-            containers: None,
-            updates: None,
-            extensions: None,
-        }
     }
 }
