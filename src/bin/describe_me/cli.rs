@@ -1,3 +1,4 @@
+use super::{cmd_history, cmd_logs, cmd_metadata, cmd_plugin};
 use anyhow::{bail, Result};
 #[cfg(feature = "net")]
 use describe_me_lib::domain::{ListeningSocket, NetworkInterfaceTraffic};
@@ -8,21 +9,17 @@ use describe_me_lib::{
 use nix::unistd::Uid;
 #[cfg(feature = "cli")]
 use serde::Serialize;
-use std::time::Duration;
 
 #[cfg(feature = "web")]
 use super::allowlists::{resolve_web_list, CliListOrigin};
 use super::args::{
-    self, hash_web_token, read_token_from_stdin, CliCommand, CliConfig, DescriptionCommand,
-    HistoryCommand, HistoryProfileArg, HistorySelection, LogsCommand, MetadataCommand,
-    OutputFormat, PluginCommand, PluginRunCommand, TagsCommand, WebTokenSource,
+    self, hash_web_token, read_token_from_stdin, CliCommand, CliConfig, HistoryProfileArg,
+    HistorySelection, OutputFormat, WebTokenSource,
 };
 use super::exposure::apply_cli_exposure_flags;
 #[cfg(feature = "web")]
 use super::exposure::apply_web_exposure_flags;
 
-const PLUGIN_DIR: &str = "/usr/lib/describe_me/plugins/";
-const PLUGIN_BINARY_PREFIX: &str = "describe-me-plugin-";
 const SERVICES_PAGE_MAX: usize = 500;
 const SOCKETS_PAGE_MAX: usize = 500;
 
@@ -68,219 +65,11 @@ fn summary_line(view: &describe_me_lib::SnapshotView) -> String {
 
 fn handle_command(cmd: CliCommand, ctx: &AppContext) -> Result<()> {
     match cmd {
-        CliCommand::Metadata(metadata) => handle_metadata_command(metadata, ctx),
-        CliCommand::Plugin(plugin) => handle_plugin_command(plugin),
-        CliCommand::History(history) => handle_history_command(history, ctx),
-        CliCommand::Logs(logs) => handle_logs_command(logs),
+        CliCommand::Metadata(metadata) => cmd_metadata::handle_metadata_command(metadata, ctx),
+        CliCommand::Plugin(plugin) => cmd_plugin::handle_plugin_command(plugin),
+        CliCommand::History(history) => cmd_history::handle_history_command(history, ctx),
+        CliCommand::Logs(logs) => cmd_logs::handle_logs_command(logs),
     }
-}
-
-fn handle_metadata_command(cmd: MetadataCommand, ctx: &AppContext) -> Result<()> {
-    match cmd {
-        MetadataCommand::Description(action) => handle_description_command(action, ctx),
-        MetadataCommand::Tags(action) => handle_tags_command(action, ctx),
-    }
-}
-
-fn handle_plugin_command(cmd: PluginCommand) -> Result<()> {
-    match cmd {
-        PluginCommand::Run(run) => run_plugin(run),
-    }
-}
-
-fn handle_description_command(cmd: DescriptionCommand, ctx: &AppContext) -> Result<()> {
-    match cmd {
-        DescriptionCommand::Show => {
-            if let Some(desc) = describe_me_lib::load_server_description_with(ctx)? {
-                println!("{desc}");
-            } else {
-                println!("(aucune description stockée)");
-            }
-        }
-        DescriptionCommand::Set { text } => {
-            describe_me_lib::set_server_description_with(ctx, &text)?;
-            println!("Description enregistrée.");
-        }
-        DescriptionCommand::Clear => {
-            describe_me_lib::clear_server_description_with(ctx)?;
-            println!("Description supprimée.");
-        }
-    }
-    Ok(())
-}
-
-fn handle_tags_command(cmd: TagsCommand, ctx: &AppContext) -> Result<()> {
-    match cmd {
-        TagsCommand::Show => {
-            let tags = describe_me_lib::load_server_tags_with(ctx)?;
-            if tags.is_empty() {
-                println!("(aucun tag configuré)");
-            } else {
-                println!("{}", tags.join(", "));
-            }
-        }
-        TagsCommand::Set { tags } => {
-            let normalized = describe_me_lib::set_server_tags_with(ctx, &tags)?;
-            if normalized.is_empty() {
-                println!("Aucun tag valide fourni, liste nettoyée.");
-            } else {
-                println!("Tags définis: {}", normalized.join(", "));
-            }
-        }
-        TagsCommand::Add { tags } => {
-            let normalized = describe_me_lib::add_server_tags_with(ctx, &tags)?;
-            println!("Tags actuels: {}", normalized.join(", "));
-        }
-        TagsCommand::Remove { tags } => {
-            let normalized = describe_me_lib::remove_server_tags_with(ctx, &tags)?;
-            if normalized.is_empty() {
-                println!("Plus aucun tag défini.");
-            } else {
-                println!("Tags restants: {}", normalized.join(", "));
-            }
-        }
-        TagsCommand::Clear => {
-            describe_me_lib::clear_server_tags_with(ctx)?;
-            println!("Tags supprimés.");
-        }
-    }
-    Ok(())
-}
-
-fn handle_history_command(cmd: HistoryCommand, ctx: &AppContext) -> Result<()> {
-    let settings = ctx.history().settings_snapshot();
-    if !settings.is_active() {
-        bail!("L'historique n'est pas activé sur cette instance.");
-    }
-
-    let server_id = if let Some(id) = cmd.server {
-        id
-    } else if let Some(default_id) = ctx.history().default_server_id() {
-        default_id
-    } else {
-        bail!("Aucun identifiant serveur n'est disponible (aucun snapshot capturé ?).");
-    };
-
-    let window_secs = cmd.window.max(1);
-    let rounding = settings.rounding_seconds.max(1);
-    let retention_cap = settings.retention_points.max(16) as usize;
-    let default_limit = retention_cap.min(256);
-    let limit = cmd
-        .limit
-        .filter(|v| *v > 0)
-        .unwrap_or(default_limit)
-        .min(retention_cap)
-        .max(1);
-
-    let series = match ctx.history().query_series(
-        &server_id,
-        Duration::from_secs(window_secs),
-        limit,
-        rounding,
-    ) {
-        Ok(series) => series,
-        Err(describe_me_lib::HistoryQueryError::Disabled) => {
-            bail!("L'historique n'est plus actif ou a été désactivé.");
-        }
-        Err(describe_me_lib::HistoryQueryError::InvalidLimit) => {
-            bail!("La limite demandée n'est pas valide.");
-        }
-        Err(describe_me_lib::HistoryQueryError::InvalidServer) => {
-            bail!("Identifiant de serveur invalide.");
-        }
-        Err(describe_me_lib::HistoryQueryError::NotFound) => {
-            println!("Aucune donnée historique disponible pour ce serveur.");
-            return Ok(());
-        }
-        Err(describe_me_lib::HistoryQueryError::Storage(err)) => {
-            bail!("Lecture de l'historique impossible: {err}");
-        }
-    };
-
-    print_history_series(&series);
-    Ok(())
-}
-
-fn handle_logs_command(cmd: LogsCommand) -> Result<()> {
-    let requested = cmd.lines.max(1);
-    let cap = describe_me_lib::HOST_LOGS_MAX_LINES;
-    let lines = requested.min(cap);
-
-    #[cfg(feature = "journald")]
-    {
-        let page = describe_me_lib::tail_host_logs(lines)?;
-        if page.entries.is_empty() {
-            println!("(aucune entrée journald disponible)");
-            return Ok(());
-        }
-
-        for entry in page.entries {
-            if let Some(source) = entry.source.as_deref() {
-                println!("{} [{}] {}", entry.timestamp, source, entry.message);
-            } else {
-                println!("{} {}", entry.timestamp, entry.message);
-            }
-        }
-
-        if page.truncated || requested > cap {
-            println!(
-                "\n(affiche les {} dernières lignes — borne max: {})",
-                lines, cap
-            );
-        }
-    }
-
-    #[cfg(not(feature = "journald"))]
-    {
-        let _ = lines;
-        bail!("La lecture des logs journald requiert la feature `journald`.");
-    }
-
-    Ok(())
-}
-
-fn print_history_series(series: &describe_me_lib::HistorySeries) {
-    println!(
-        "Serveur: {}\nFenêtre: {}s | Points: {} | Bucket: {}s | Agrégé: {} | Tronqué: {}",
-        series.server_id,
-        series.window_seconds,
-        series.points.len(),
-        series.bucket_seconds,
-        if series.aggregated { "oui" } else { "non" },
-        if series.truncated { "oui" } else { "non" }
-    );
-    println!(
-        "{:>20}  {:>18}  {:>18}  {:>18}",
-        "timestamp", "cpu avg/min/max", "mem avg/min/max", "disk avg/min/max"
-    );
-    for point in &series.points {
-        println!(
-            "{:>20}  {:>18}  {:>18}  {:>18}",
-            point.timestamp,
-            format_metric(&point.cpu),
-            format_metric(&point.mem),
-            format_metric(&point.disk),
-        );
-    }
-}
-
-fn format_metric(metric: &describe_me_lib::MetricAggregate) -> String {
-    match metric.avg {
-        Some(avg) => {
-            let min = metric.min.unwrap_or(avg);
-            let max = metric.max.unwrap_or(avg);
-            if approx_equal(min, avg) && approx_equal(max, avg) {
-                format!("{avg:>6.1}%")
-            } else {
-                format!("{avg:>5.1}% ({min:>4.1}-{max:>4.1})")
-            }
-        }
-        None => String::from("    --"),
-    }
-}
-
-fn approx_equal(a: f32, b: f32) -> bool {
-    (a - b).abs() < 0.05
 }
 
 fn print_page_hint(total: usize, offset: usize, limit: usize, displayed: usize) {
@@ -436,29 +225,6 @@ fn print_sockets_cli(
     }
     print_page_hint(page.total, page.offset, page.limit, page.items.len());
     println!();
-}
-
-fn run_plugin(cmd: PluginRunCommand) -> Result<()> {
-    validate_plugin_name(&cmd.name)?;
-    let timeout = Duration::from_secs(cmd.timeout_secs.max(1));
-    let binary = format!("{PLUGIN_DIR}{PLUGIN_BINARY_PREFIX}{}", cmd.name);
-    let output = describe_me_lib::run_ad_hoc_plugin(&binary, &cmd.name, &cmd.args, timeout)?;
-    println!("{}", serde_json::to_string_pretty(&output)?);
-    Ok(())
-}
-
-fn validate_plugin_name(name: &str) -> Result<()> {
-    if name.trim().is_empty() {
-        bail!("Le nom du plugin ne peut pas être vide.");
-    }
-    if name
-        .chars()
-        .all(|c| matches!(c, 'a'..='z' | '0'..='9' | '-' | '_'))
-    {
-        Ok(())
-    } else {
-        bail!("Le nom du plugin doit uniquement contenir [a-z0-9_-].");
-    }
 }
 
 fn print_description_block(desc: &str) {
@@ -1148,18 +914,5 @@ mod tests {
             super::summary_line(&view),
             "updates=0 reboot=no containers=2/3"
         );
-    }
-
-    #[test]
-    fn validates_plugin_name_rules() {
-        super::validate_plugin_name("certificates").unwrap();
-        super::validate_plugin_name("inventory_v2").unwrap();
-    }
-
-    #[test]
-    fn rejects_invalid_plugin_names() {
-        assert!(super::validate_plugin_name("").is_err());
-        assert!(super::validate_plugin_name("Bad/Name").is_err());
-        assert!(super::validate_plugin_name("UPPERCASE").is_err());
     }
 }
