@@ -32,6 +32,7 @@ pub(crate) use csp::SecurityHeadersLayer;
 #[allow(unused_imports)]
 pub(crate) use error::{json_error, WebError};
 pub(crate) use origin::{OriginCheckLayer, OriginPolicy};
+pub(crate) use security::WebSecurity;
 #[allow(unused_imports)]
 pub(crate) use security::{clear_session_cookie, set_session_cookie, SESSION_COOKIE_NAME};
 pub(crate) use state::{AppState, LogoAsset, RuntimeState, StaticWebConfig};
@@ -50,37 +51,29 @@ use axum::{
 };
 use tokio::sync::Notify;
 
+#[cfg(feature = "config")]
+use crate::application::config::runtime::WebAccessConfigExt;
 use crate::application::context::AppContext;
 use crate::application::exposure::Exposure;
 #[cfg(feature = "config")]
 use crate::application::metadata::override_state_directory;
-use crate::domain::DescribeError;
 #[cfg(feature = "config")]
-use crate::domain::{DescribeConfig, WebSecurityConfig};
+use crate::domain::DescribeConfig;
+use crate::domain::DescribeError;
 
 use handlers::{
     containers_api, containers_page, history_series, host_logs, index, logo_asset, logs_page,
     metrics_export, update_description, update_tags, updates_page,
 };
-use security::WebSecurity;
 use sse::sse_stream;
 use updates_cache::UpdatesCache;
 
-const UPDATES_CACHE_SUCCESS_TTL: Duration = Duration::from_secs(300);
+pub(crate) const UPDATES_CACHE_SUCCESS_TTL: Duration = Duration::from_secs(300);
 const UPDATES_CACHE_FAILURE_RETRY: Duration = Duration::from_secs(60);
 pub(crate) const WEB_SESSION_SECONDS: u64 = 7 * 24 * 3600;
 
 #[cfg(feature = "config")]
 const LOGO_MAX_BYTES: u64 = 128 * 1024;
-
-#[cfg(feature = "config")]
-fn duration_from_secs_or_default(value: u64, default: Duration) -> Duration {
-    if value == 0 {
-        default
-    } else {
-        Duration::from_secs(value)
-    }
-}
 
 type AxumRequest = axum::extract::Request;
 
@@ -123,6 +116,31 @@ fn mark_response_no_store(headers: &mut HeaderMap) {
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
 }
 
+fn build_default_web_runtime(
+    access: WebAccess,
+    exposure: Exposure,
+    interval: Duration,
+    web_debug: bool,
+    session_cookie_secure: bool,
+) -> Result<(StaticWebConfig, Arc<WebSecurity>, LogoAsset), DescribeError> {
+    let security = WebSecurity::build(access, None)?;
+    let security_arc = Arc::new(security);
+    let logo = LogoAsset::default();
+    let static_cfg = StaticWebConfig {
+        interval,
+        #[cfg(feature = "config")]
+        config: None,
+        web_debug,
+        security: security_arc.clone(),
+        exposure,
+        logo: logo.clone(),
+        session_cookie_secure,
+        session_ttl: security_arc.session_ttl(),
+        updates_refresh_ttl: UPDATES_CACHE_SUCCESS_TTL,
+    };
+    Ok((static_cfg, security_arc, logo))
+}
+
 pub async fn serve_http<A: Into<SocketAddr>>(
     addr: A,
     interval: Duration,
@@ -157,29 +175,8 @@ pub async fn serve_http_with_context<A: Into<SocketAddr>>(
     let origin_policy = OriginPolicy::from_allowlist(access.allow_origins.clone())?;
     let tls_settings = access.tls.clone();
     let session_cookie_secure = access.session_cookie_secure && tls_settings.is_some();
-    #[cfg(feature = "config")]
-    let security_config: Option<WebSecurityConfig> = config
-        .as_ref()
-        .and_then(|cfg| cfg.web.as_ref())
-        .and_then(|web| web.security.clone());
-
-    let security = Arc::new(WebSecurity::build(
-        access,
-        #[cfg(feature = "config")]
-        security_config,
-    )?);
 
     let shutdown = Arc::new(Notify::new());
-    #[cfg(feature = "config")]
-    let updates_refresh_ttl = config
-        .as_ref()
-        .and_then(|cfg| cfg.web.as_ref())
-        .and_then(|web| web.updates_refresh_seconds)
-        .map(|secs| duration_from_secs_or_default(secs, UPDATES_CACHE_SUCCESS_TTL))
-        .unwrap_or(UPDATES_CACHE_SUCCESS_TTL);
-    #[cfg(not(feature = "config"))]
-    let updates_refresh_ttl = UPDATES_CACHE_SUCCESS_TTL;
-
     #[cfg(feature = "config")]
     if let Some(cfg) = config.as_ref() {
         if let Some(runtime) = cfg.runtime.as_ref() {
@@ -190,25 +187,36 @@ pub async fn serve_http_with_context<A: Into<SocketAddr>>(
     }
 
     #[cfg(feature = "config")]
-    let logo = LogoAsset::from_optional_path(
-        config
-            .as_ref()
-            .and_then(|cfg| cfg.web.as_ref())
-            .and_then(|web| web.logo_path.as_deref()),
-    )?;
+    let (static_cfg, _security, _logo) = if let Some(cfg) = config.as_ref() {
+        if let Some(web_cfg) = cfg.web.as_ref() {
+            web_cfg.to_runtime(&ctx, &access, exposure, interval, config.clone(), web_debug)?
+        } else {
+            build_default_web_runtime(
+                access.clone(),
+                exposure,
+                interval,
+                web_debug,
+                session_cookie_secure,
+            )?
+        }
+    } else {
+        build_default_web_runtime(
+            access.clone(),
+            exposure,
+            interval,
+            web_debug,
+            session_cookie_secure,
+        )?
+    };
     #[cfg(not(feature = "config"))]
-    let logo = LogoAsset::default();
-
-    let static_cfg = build_static_cfg(
-        interval,
-        #[cfg(feature = "config")]
-        config,
-        web_debug,
-        security.clone(),
+    let (static_cfg, _security, _logo) = build_default_web_runtime(
+        access.clone(),
         exposure,
-        logo,
+        interval,
+        web_debug,
         session_cookie_secure,
-    );
+    )?;
+    let updates_refresh_ttl = static_cfg.updates_refresh_ttl;
     let runtime = build_runtime_state(shutdown.clone(), updates_refresh_ttl);
     let app_state = AppState::new(Arc::new(ctx), static_cfg, runtime);
     let router = build_router(app_state, origin_policy);
@@ -219,30 +227,6 @@ pub async fn serve_http_with_context<A: Into<SocketAddr>>(
     serve(router, tls_cfg, interval_secs, shutdown).await?;
 
     Ok(())
-}
-
-fn build_static_cfg(
-    interval: Duration,
-    #[cfg(feature = "config")] config: Option<DescribeConfig>,
-    web_debug: bool,
-    security: Arc<WebSecurity>,
-    exposure: Exposure,
-    logo: LogoAsset,
-    session_cookie_secure: bool,
-) -> StaticWebConfig {
-    let session_ttl = security.session_ttl();
-
-    StaticWebConfig {
-        interval,
-        #[cfg(feature = "config")]
-        config,
-        web_debug,
-        security,
-        exposure,
-        logo,
-        session_cookie_secure,
-        session_ttl,
-    }
 }
 
 fn build_runtime_state(shutdown: Arc<Notify>, updates_refresh_ttl: Duration) -> RuntimeState {

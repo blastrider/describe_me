@@ -8,7 +8,8 @@ pub fn tail_host_logs(lines: usize) -> Result<HostLogsPage, DescribeError> {
 
     #[cfg(feature = "journald")]
     {
-        let mut page = crate::infrastructure::logs::tail_journald(bounded)?;
+        let mut page =
+            crate::infrastructure::logs::JournalctlRunner::new_from_env().tail(bounded)?;
         // Considère qu'on pourrait avoir plus d'entrées si on atteint la borne.
         page.truncated = page.truncated || page.entries.len() >= bounded;
         Ok(page)
@@ -21,4 +22,10 @@ pub fn tail_host_logs(lines: usize) -> Result<HostLogsPage, DescribeError> {
             "journald indisponible (feature `journald` désactivée)",
         ))
     }
+}
+
+#[cfg(feature = "journald")]
+#[allow(dead_code)]
+pub(crate) fn tail_journald(lines: usize) -> Result<HostLogsPage, DescribeError> {
+    crate::infrastructure::logs::JournalctlRunner::new_from_env().tail(lines)
 }

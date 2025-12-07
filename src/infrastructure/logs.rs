@@ -1,67 +1,84 @@
 #[cfg(feature = "journald")]
+use std::path::PathBuf;
+#[cfg(feature = "journald")]
 use std::process::{Command, Stdio};
 
 #[cfg(feature = "journald")]
 use crate::domain::{DescribeError, HostLogEntry, HostLogsPage};
 
+/// Exécuteur dédié à `journalctl`, configurable via l'environnement.
 #[cfg(feature = "journald")]
-const JOURNALCTL_PATH: &str = "/usr/bin/journalctl";
+pub struct JournalctlRunner {
+    path: PathBuf,
+    base_env: Vec<(String, String)>,
+}
 
 #[cfg(feature = "journald")]
-/// Lit les journaux système via `journalctl --lines <N>`.
-///
-/// La dépendance à `journalctl` est implicite : si le binaire est absent
-/// ou retourne une erreur, l'appel renvoie `DescribeError::External` et
-/// aucun log n'est fourni (pas de fallback automatique).
-pub(crate) fn tail_journald(lines: usize) -> Result<HostLogsPage, DescribeError> {
-    if lines == 0 {
-        return Ok(HostLogsPage {
-            entries: Vec::new(),
-            truncated: false,
-        });
+impl JournalctlRunner {
+    /// Construit un runner en lisant éventuellement `DESCRIBE_ME_JOURNALCTL`, sinon `journalctl`.
+    pub fn new_from_env() -> Self {
+        let path = std::env::var("DESCRIBE_ME_JOURNALCTL")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("journalctl"));
+        let base_env = vec![
+            ("SYSTEMD_COLORS".into(), "0".into()),
+            ("LANG".into(), "C".into()),
+            ("PATH".into(), "/usr/bin:/bin".into()),
+        ];
+        Self { path, base_env }
     }
 
-    let journalctl = std::env::var("DESCRIBE_ME_JOURNALCTL")
-        .ok()
-        .filter(|p| !p.trim().is_empty())
-        .unwrap_or_else(|| JOURNALCTL_PATH.to_string());
+    /// Lit les dernières `lines` entrées journald et les parse en `HostLogsPage`.
+    pub fn tail(&self, lines: usize) -> Result<HostLogsPage, DescribeError> {
+        if lines == 0 {
+            return Ok(HostLogsPage {
+                entries: Vec::new(),
+                truncated: false,
+            });
+        }
 
-    if !std::path::Path::new(&journalctl).exists() {
-        return Err(DescribeError::External(format!(
-            "journalctl introuvable ({journalctl})"
-        )));
-    }
+        if !self.path.exists() {
+            return Err(DescribeError::External(format!(
+                "journalctl introuvable ({})",
+                self.path.display()
+            )));
+        }
 
-    let output = Command::new(&journalctl)
-        .args([
+        let mut cmd = Command::new(&self.path);
+        cmd.args([
             "--no-pager",
             "--output=short-iso-precise",
             "--lines",
             &lines.to_string(),
         ])
-        .env_clear()
-        .env("PATH", "/usr/bin:/bin")
-        .env("SYSTEMD_COLORS", "0")
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|err| DescribeError::External(format!("journalctl: {err}")))?;
+        .stdin(Stdio::null());
 
-    if !output.status.success() {
-        return Err(DescribeError::External(format!(
-            "journalctl a renvoyé {status}",
-            status = output.status
-        )));
+        cmd.env_clear();
+        for (k, v) in &self.base_env {
+            cmd.env(k, v);
+        }
+
+        let output = cmd
+            .output()
+            .map_err(|err| DescribeError::External(format!("journalctl: {err}")))?;
+
+        if !output.status.success() {
+            return Err(DescribeError::External(format!(
+                "journalctl a renvoyé {status}",
+                status = output.status
+            )));
+        }
+
+        let stdout = String::from_utf8(output.stdout)
+            .map_err(|err| DescribeError::Parse(format!("journalctl utf8: {err}")))?;
+
+        let entries = stdout.lines().filter_map(parse_line).collect::<Vec<_>>();
+
+        Ok(HostLogsPage {
+            truncated: entries.len() >= lines,
+            entries,
+        })
     }
-
-    let stdout = String::from_utf8(output.stdout)
-        .map_err(|err| DescribeError::Parse(format!("journalctl utf8: {err}")))?;
-
-    let entries = stdout.lines().filter_map(parse_line).collect::<Vec<_>>();
-
-    Ok(HostLogsPage {
-        truncated: entries.len() >= lines,
-        entries,
-    })
 }
 
 #[cfg(feature = "journald")]
@@ -86,4 +103,17 @@ fn parse_line(line: &str) -> Option<HostLogEntry> {
         source,
         message,
     })
+}
+
+#[cfg(all(test, feature = "journald"))]
+mod tests {
+    use super::JournalctlRunner;
+
+    #[test]
+    fn runner_uses_env_override() {
+        std::env::set_var("DESCRIBE_ME_JOURNALCTL", "/tmp/custom-journalctl");
+        let runner = JournalctlRunner::new_from_env();
+        assert_eq!(runner.path.display().to_string(), "/tmp/custom-journalctl");
+        std::env::remove_var("DESCRIBE_ME_JOURNALCTL");
+    }
 }

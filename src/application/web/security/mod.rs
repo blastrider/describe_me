@@ -162,7 +162,7 @@ impl FromRequestParts<AppState> for AuthGuard {
 }
 
 #[derive(Debug)]
-pub(super) struct WebSecurity {
+pub struct WebSecurity {
     token: Option<TokenVerifier>,
     allow: Vec<IpMatcher>,
     trusted_proxies: Vec<IpMatcher>,
@@ -254,7 +254,7 @@ impl WebSecurity {
         })
     }
 
-    pub fn policy(&self) -> &SecurityPolicy {
+    pub(super) fn policy(&self) -> &SecurityPolicy {
         &self.policy
     }
 
@@ -262,7 +262,7 @@ impl WebSecurity {
         self.sessions.ttl()
     }
 
-    pub fn session_manager(&self) -> &SessionManager {
+    pub(super) fn session_manager(&self) -> &SessionManager {
         &self.sessions
     }
 
@@ -290,7 +290,7 @@ impl WebSecurity {
         self.log_incident(category, request, Some(parts.join(" ")));
     }
 
-    pub async fn authorize(
+    pub(super) async fn authorize(
         &self,
         parts: &Parts,
         route: WebRoute,
@@ -391,7 +391,7 @@ impl WebSecurity {
         })
     }
 
-    pub async fn login(
+    pub(super) async fn login(
         &self,
         parts: &Parts,
         token: &str,
@@ -533,7 +533,7 @@ impl WebSecurity {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum WebRoute {
+pub(crate) enum WebRoute {
     Html,
     Sse,
     History,

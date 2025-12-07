@@ -21,7 +21,7 @@ pub(crate) struct CachedSnapshot {
 
 /// Ressource statique (ou personnalisée) représentant le logo exposé par l'UI.
 #[derive(Clone)]
-pub(crate) struct LogoAsset {
+pub struct LogoAsset {
     pub(crate) bytes: Bytes,
 }
 
@@ -133,16 +133,17 @@ fn validate_logo_bytes(bytes: &[u8]) -> Result<(), String> {
 }
 
 #[derive(Clone)]
-pub(crate) struct StaticWebConfig {
+pub struct StaticWebConfig {
     pub interval: Duration,
     #[cfg(feature = "config")]
     pub config: Option<DescribeConfig>,
     pub web_debug: bool,
-    pub(super) security: Arc<WebSecurity>,
+    pub(crate) security: Arc<WebSecurity>,
     pub exposure: Exposure,
     pub logo: LogoAsset,
     pub session_cookie_secure: bool,
     pub session_ttl: Duration,
+    pub updates_refresh_ttl: Duration,
 }
 
 #[derive(Clone)]
