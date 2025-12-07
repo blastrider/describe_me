@@ -2,6 +2,7 @@ use super::security::WebSecurity;
 use super::updates_cache::UpdatesCache;
 use crate::application::context::AppContext;
 use crate::application::exposure::{Exposure, SnapshotView};
+use crate::application::sync::lock_expect;
 use crate::domain::DescribeError;
 use axum::body::{Body, Bytes};
 use axum::http::{header, HeaderValue, StatusCode};
@@ -170,11 +171,10 @@ impl AppState {
     }
 
     pub fn cache_snapshot(&self, view: SnapshotView) {
-        let mut guard = self
-            .runtime
-            .snapshot_cache
-            .write()
-            .expect("snapshot cache poisoned");
+        let mut guard = lock_expect(
+            self.runtime.snapshot_cache.write(),
+            "AppState.snapshot_cache",
+        );
         *guard = Some(CachedSnapshot {
             view,
             captured_at: Instant::now(),
@@ -182,11 +182,10 @@ impl AppState {
     }
 
     pub fn latest_snapshot(&self) -> Option<CachedSnapshot> {
-        let guard = self
-            .runtime
-            .snapshot_cache
-            .read()
-            .expect("snapshot cache poisoned");
+        let guard = lock_expect(
+            self.runtime.snapshot_cache.read(),
+            "AppState.snapshot_cache",
+        );
         guard.clone()
     }
 
