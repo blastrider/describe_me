@@ -1,5 +1,6 @@
-pub const BACKGROUND_CANVAS_JS: &str = include_str!("js/background-grid.js");
+pub mod bundle;
 
+pub const BACKGROUND_CANVAS_JS: &str = include_str!("js/background-grid.js");
 pub const LOGS_JS: &str = include_str!("js/logs.js");
 
 pub const MAIN_JS: &str = concat!(
