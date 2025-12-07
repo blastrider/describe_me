@@ -6,13 +6,10 @@ use axum::{
     Json,
 };
 
-#[derive(serde::Serialize)]
-pub struct ApiErrorResponse {
-    pub error: Cow<'static, str>,
-}
+use crate::application::error::ErrorBody;
 
 pub fn json_error(status: StatusCode, msg: impl Into<Cow<'static, str>>) -> Response {
-    (status, Json(ApiErrorResponse { error: msg.into() })).into_response()
+    (status, Json(ErrorBody { error: msg.into() })).into_response()
 }
 
 #[derive(Debug, Clone)]

@@ -1,11 +1,9 @@
 use std::time::Duration;
 
 use anyhow::{bail, Result};
+use describe_me_lib::plugins::PluginPolicy;
 
 use crate::describe_me::args::{PluginCommand, PluginRunCommand};
-
-const PLUGIN_DIR: &str = "/usr/lib/describe_me/plugins/";
-const PLUGIN_BINARY_PREFIX: &str = "describe-me-plugin-";
 
 pub fn handle_plugin_command(cmd: PluginCommand) -> Result<()> {
     match cmd {
@@ -16,8 +14,16 @@ pub fn handle_plugin_command(cmd: PluginCommand) -> Result<()> {
 pub fn run_plugin(cmd: PluginRunCommand) -> Result<()> {
     validate_plugin_name(&cmd.name)?;
     let timeout = Duration::from_secs(cmd.timeout_secs.max(1));
-    let binary = format!("{PLUGIN_DIR}{PLUGIN_BINARY_PREFIX}{}", cmd.name);
-    let output = describe_me_lib::run_ad_hoc_plugin(&binary, &cmd.name, &cmd.args, timeout)?;
+    let policy = PluginPolicy::default();
+    let binary = policy.binary_path_for(&cmd.name);
+    let binary_str = binary.to_string_lossy();
+    let output = describe_me_lib::run_ad_hoc_plugin_with_policy(
+        binary_str.as_ref(),
+        &cmd.name,
+        &cmd.args,
+        timeout,
+        &policy,
+    )?;
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
 }

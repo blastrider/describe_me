@@ -15,11 +15,13 @@ use thiserror::Error;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-const PLUGIN_ROOT: &str = "/usr/lib/describe_me/plugins/";
+mod policy;
 
+use crate::application::error::{serialize_error_body, ErrorBody};
 use crate::application::logging::LogEvent;
 #[cfg(feature = "config")]
-use crate::domain::{DescribeConfig, ExtensionsConfig};
+use crate::domain::{DescribeConfig, ExtensionsConfig, PluginDefinition};
+pub use policy::PluginPolicy;
 
 #[derive(Debug)]
 pub struct PluginProcess<'a> {
@@ -205,27 +207,33 @@ fn bytes_to_string(bytes: Vec<u8>) -> String {
 pub fn execute_configured_plugins(
     cfg: &DescribeConfig,
 ) -> (BTreeMap<String, PluginOutput>, Vec<PluginFailure>) {
+    execute_configured_plugins_with_policy(cfg, &PluginPolicy::default())
+}
+
+#[cfg(feature = "config")]
+pub fn execute_configured_plugins_with_policy(
+    cfg: &DescribeConfig,
+    policy: &PluginPolicy,
+) -> (BTreeMap<String, PluginOutput>, Vec<PluginFailure>) {
     let Some(extensions) = cfg.extensions.as_ref() else {
         return (BTreeMap::new(), Vec::new());
     };
 
-    run_extensions(extensions)
+    run_extensions(extensions, policy)
 }
 
 #[cfg(feature = "config")]
-fn run_extensions(cfg: &ExtensionsConfig) -> (BTreeMap<String, PluginOutput>, Vec<PluginFailure>) {
+fn run_extensions(
+    cfg: &ExtensionsConfig,
+    policy: &PluginPolicy,
+) -> (BTreeMap<String, PluginOutput>, Vec<PluginFailure>) {
     let mut outputs = BTreeMap::new();
     let mut failures = Vec::new();
 
     for plugin in &cfg.plugins {
         let timeout = Duration::from_secs(plugin.timeout_secs.unwrap_or(10).max(1));
-        match prepare_plugin_process(
-            &plugin.path,
-            &plugin.name,
-            &plugin.args,
-            timeout,
-            Some(plugin.sha256.as_str()),
-        ) {
+        let policy = plugin_policy_for_definition(policy, plugin);
+        match prepare_plugin_process(&plugin.path, &plugin.name, &plugin.args, timeout, &policy) {
             Ok(spec) => match execute_process(&spec) {
                 Ok(output) => {
                     outputs.insert(plugin.name.clone(), output);
@@ -234,7 +242,9 @@ fn run_extensions(cfg: &ExtensionsConfig) -> (BTreeMap<String, PluginOutput>, Ve
                     failures.push(PluginFailure {
                         name: plugin.name.clone(),
                         command: plugin.path.clone(),
-                        error: err.to_string(),
+                        error: serialize_error_body(ErrorBody {
+                            error: Cow::Owned(err.to_string()),
+                        }),
                         logged: false,
                     });
                 }
@@ -243,7 +253,9 @@ fn run_extensions(cfg: &ExtensionsConfig) -> (BTreeMap<String, PluginOutput>, Ve
                 let mut failure = PluginFailure {
                     name: plugin.name.clone(),
                     command: plugin.path.clone(),
-                    error: err.to_string(),
+                    error: serialize_error_body(ErrorBody {
+                        error: Cow::Owned(err.to_string()),
+                    }),
                     logged: false,
                 };
                 if is_prelaunch_error(&err) {
@@ -257,6 +269,13 @@ fn run_extensions(cfg: &ExtensionsConfig) -> (BTreeMap<String, PluginOutput>, Ve
     }
 
     (outputs, failures)
+}
+
+#[cfg(feature = "config")]
+fn plugin_policy_for_definition(base: &PluginPolicy, plugin: &PluginDefinition) -> PluginPolicy {
+    let mut policy = base.clone();
+    policy.expected_sha256 = Some(plugin.sha256.clone());
+    policy
 }
 
 pub fn log_failures(failures: &[PluginFailure]) {
@@ -283,7 +302,23 @@ pub fn run_ad_hoc_plugin(
     args: &[String],
     timeout: Duration,
 ) -> Result<PluginOutput, PluginExecutionError> {
-    match prepare_plugin_process(binary_path, plugin_name, args, timeout, None) {
+    run_ad_hoc_plugin_with_policy(
+        binary_path,
+        plugin_name,
+        args,
+        timeout,
+        &PluginPolicy::default(),
+    )
+}
+
+pub fn run_ad_hoc_plugin_with_policy(
+    binary_path: &str,
+    plugin_name: &str,
+    args: &[String],
+    timeout: Duration,
+    policy: &PluginPolicy,
+) -> Result<PluginOutput, PluginExecutionError> {
+    match prepare_plugin_process(binary_path, plugin_name, args, timeout, policy) {
         Ok(spec) => execute_process(&spec),
         Err(err) => {
             if is_prelaunch_error(&err) {
@@ -299,12 +334,12 @@ fn prepare_plugin_process<'a>(
     plugin_name: &'a str,
     args: &'a [String],
     timeout: Duration,
-    expected_sha256: Option<&'a str>,
+    policy: &PluginPolicy,
 ) -> Result<PluginProcess<'a>, PluginExecutionError> {
     let path = Path::new(binary_path);
-    ensure_plugin_path_allowed(path)?;
-    ensure_plugin_file_allowed(path)?;
-    if let Some(expected) = expected_sha256 {
+    ensure_plugin_path_allowed(path, policy)?;
+    ensure_plugin_file_allowed(path, policy)?;
+    if let Some(expected) = policy.expected_sha256.as_deref() {
         verify_plugin_signature(path, expected)?;
     }
     Ok(PluginProcess {
@@ -315,7 +350,10 @@ fn prepare_plugin_process<'a>(
     })
 }
 
-fn ensure_plugin_path_allowed(path: &Path) -> Result<(), PluginExecutionError> {
+fn ensure_plugin_path_allowed(
+    path: &Path,
+    policy: &PluginPolicy,
+) -> Result<(), PluginExecutionError> {
     let path_str = path.display().to_string();
     if !path.is_absolute() {
         return Err(PluginExecutionError::Validation {
@@ -323,16 +361,20 @@ fn ensure_plugin_path_allowed(path: &Path) -> Result<(), PluginExecutionError> {
             message: "le chemin doit être absolu".into(),
         });
     }
-    if !path.starts_with(PLUGIN_ROOT) {
+    let root = policy.root();
+    if !path.starts_with(root) {
         return Err(PluginExecutionError::Validation {
             path: path_str,
-            message: format!("le chemin doit commencer par {PLUGIN_ROOT}"),
+            message: format!("le chemin doit commencer par {}", root.display()),
         });
     }
     Ok(())
 }
 
-fn ensure_plugin_file_allowed(path: &Path) -> Result<(), PluginExecutionError> {
+fn ensure_plugin_file_allowed(
+    path: &Path,
+    policy: &PluginPolicy,
+) -> Result<(), PluginExecutionError> {
     let path_str = path.display().to_string();
     let metadata = std::fs::metadata(path).map_err(|source| PluginExecutionError::BinaryIo {
         path: path_str.clone(),
@@ -347,7 +389,7 @@ fn ensure_plugin_file_allowed(path: &Path) -> Result<(), PluginExecutionError> {
     #[cfg(unix)]
     {
         let mode = metadata.permissions().mode();
-        if mode & 0o111 == 0 {
+        if policy.require_exec && mode & 0o111 == 0 {
             return Err(PluginExecutionError::Validation {
                 path: path_str,
                 message: "permis d'exécution manquants".into(),
@@ -493,5 +535,51 @@ mod tests {
 
         let err = verify_plugin_signature(&path, "aaaaaaaa").unwrap_err();
         assert!(matches!(err, PluginExecutionError::ValidationFailed { .. }));
+    }
+
+    #[test]
+    fn prepare_plugin_process_accepts_custom_root_and_sha() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("bin");
+        let mut file = File::create(&path).unwrap();
+        file.write_all(b"ok").unwrap();
+        drop(file);
+        #[cfg(unix)]
+        {
+            let mut perms = std::fs::metadata(&path).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&path, perms).unwrap();
+        }
+
+        let mut hasher = Sha256::new();
+        hasher.update(b"ok");
+        let expected = hex::encode(hasher.finalize());
+
+        let policy = PluginPolicy::with_root(dir.path()).with_expected_sha256(Some(expected));
+        let path_str = path.to_string_lossy().to_string();
+        prepare_plugin_process(&path_str, "demo", &[], Duration::from_secs(1), &policy).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepare_plugin_process_honors_exec_requirement_flag() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("bin");
+        let mut file = File::create(&path).unwrap();
+        file.write_all(b"exec-flag").unwrap();
+        drop(file);
+
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        perms.set_mode(0o644);
+        std::fs::set_permissions(&path, perms).unwrap();
+
+        let policy = PluginPolicy::with_root(dir.path());
+        let path_str = path.to_string_lossy().to_string();
+        let err = prepare_plugin_process(&path_str, "demo", &[], Duration::from_secs(1), &policy)
+            .unwrap_err();
+        assert!(matches!(err, PluginExecutionError::Validation { .. }));
+
+        let relaxed = policy.with_exec_check(false);
+        prepare_plugin_process(&path_str, "demo", &[], Duration::from_secs(1), &relaxed).unwrap();
     }
 }
