@@ -463,6 +463,7 @@ fn test_app_state(exposure: Exposure) -> AppState {
         logo: LogoAsset::default(),
         session_cookie_secure: true,
         session_ttl,
+        updates_refresh_ttl: Duration::from_secs(1),
     };
     let runtime = RuntimeState {
         shutdown: Arc::new(tokio::sync::Notify::new()),
@@ -500,6 +501,7 @@ fn test_secured_app_state(exposure: Exposure) -> AppState {
         logo: LogoAsset::default(),
         session_cookie_secure: false,
         session_ttl,
+        updates_refresh_ttl: Duration::from_secs(1),
     };
     let runtime = RuntimeState {
         shutdown: Arc::new(tokio::sync::Notify::new()),
