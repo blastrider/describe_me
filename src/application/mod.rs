@@ -197,6 +197,7 @@ pub mod web;
 pub mod health;
 
 pub mod containers;
+pub mod error;
 pub mod exposure;
 pub mod extensions;
 pub mod history;
