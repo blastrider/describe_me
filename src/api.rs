@@ -109,6 +109,11 @@ pub mod config {
     pub use crate::application::{filter_services, load_config_from_path};
     #[cfg(feature = "config")]
     pub use crate::domain::{DescribeConfig, ServiceSelection};
+    pub mod runtime {
+        pub use crate::application::config::runtime::{
+            ExposureConfigExt, HistoryConfigExt, WebAccessConfigExt,
+        };
+    }
 }
 
 #[doc(hidden)]
