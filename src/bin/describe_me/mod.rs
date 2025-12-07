@@ -1,6 +1,10 @@
 pub mod allowlists;
 pub mod args;
 mod cli;
+mod cmd_history;
+mod cmd_logs;
+mod cmd_metadata;
+mod cmd_plugin;
 pub mod exposure;
 
 pub use cli::{parse, run};
