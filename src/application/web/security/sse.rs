@@ -3,6 +3,7 @@ use super::{
     limits::{SecurityPolicy, SecurityState, SsePolicy},
     SecurityRejection, TokenKey, WebRoute,
 };
+use crate::application::sync::lock_expect;
 use std::{
     collections::HashMap,
     net::IpAddr,
@@ -64,7 +65,7 @@ impl ActiveSseState {
             return Ok(None);
         }
 
-        let mut inner = self.inner.lock().expect("SSE mutex poisoned");
+        let mut inner = lock_expect(self.inner.lock(), "ActiveSseState");
 
         if limits.max_active_per_ip() > 0 {
             let current = inner.per_ip.get(&ip).copied().unwrap_or(0);
@@ -104,7 +105,7 @@ impl ActiveSseState {
     }
 
     pub(super) fn release(&self, ip: IpAddr, token: TokenKey, track_ip: bool, track_token: bool) {
-        let mut inner = self.inner.lock().expect("SSE mutex poisoned");
+        let mut inner = lock_expect(self.inner.lock(), "ActiveSseState");
         if track_ip {
             if let Some(count) = inner.per_ip.get_mut(&ip) {
                 *count = count.saturating_sub(1);
