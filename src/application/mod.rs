@@ -1,6 +1,7 @@
 mod collectors;
 pub mod config;
 mod context;
+pub mod sync;
 #[cfg(test)]
 pub mod test_support;
 
