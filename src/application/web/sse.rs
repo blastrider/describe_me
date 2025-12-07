@@ -24,6 +24,7 @@ use tokio::time::{self, MissedTickBehavior};
 use tokio_stream::wrappers::IntervalStream;
 
 use crate::application::capture_snapshot_with_view;
+use crate::application::error::{serialize_error_body, ErrorBody};
 use crate::application::logging::LogEvent;
 use crate::domain::CaptureOptions;
 
@@ -418,10 +419,6 @@ pub(super) async fn sse_stream(
     response
 }
 
-fn escape_json(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
-fn json_err(msg: impl AsRef<str>) -> String {
-    format!(r#"{{"error":"{}"}}"#, escape_json(msg.as_ref()))
+fn json_err(msg: impl Into<Cow<'static, str>>) -> String {
+    serialize_error_body(ErrorBody { error: msg.into() })
 }
