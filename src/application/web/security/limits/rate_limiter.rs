@@ -66,7 +66,7 @@ impl RateLimiter {
         let window = limits.window();
         let delay = self.ip_counters.register(route, ip, now, window, cap).await;
         match delay {
-            Some(wait) => RateLimitDecision::denied(RateLimitScope::Ip, wait),
+            Some(wait) => RateLimitDecision::denied(wait),
             None => RateLimitDecision::allowed(),
         }
     }
@@ -89,25 +89,16 @@ impl RateLimiter {
             .register(route, token, now, window, cap)
             .await;
         match delay {
-            Some(wait) => RateLimitDecision::denied(RateLimitScope::Token, wait),
+            Some(wait) => RateLimitDecision::denied(wait),
             None => RateLimitDecision::allowed(),
         }
     }
 }
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RateLimitScope {
-    Ip,
-    Token,
-}
-
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RateLimitDecision {
     allowed: bool,
     retry_after: Option<Duration>,
-    scope: Option<RateLimitScope>,
 }
 
 impl RateLimitDecision {
@@ -115,15 +106,13 @@ impl RateLimitDecision {
         Self {
             allowed: true,
             retry_after: None,
-            scope: None,
         }
     }
 
-    pub(crate) fn denied(scope: RateLimitScope, retry_after: Duration) -> Self {
+    pub(crate) fn denied(retry_after: Duration) -> Self {
         Self {
             allowed: false,
             retry_after: Some(retry_after),
-            scope: Some(scope),
         }
     }
 
@@ -133,11 +122,6 @@ impl RateLimitDecision {
 
     pub(crate) fn retry_after(&self) -> Option<Duration> {
         self.retry_after
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn scope(&self) -> Option<RateLimitScope> {
-        self.scope
     }
 }
 
