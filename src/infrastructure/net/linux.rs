@@ -1,3 +1,5 @@
+use crate::application::net::{NetBackend, NetCollectionParams};
+use crate::application::AppContext;
 use crate::domain::{DescribeError, ListeningSocket, NetworkInterfaceTraffic};
 use std::{
     collections::HashMap,
@@ -5,7 +7,30 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub fn collect_listening_sockets(
+/// Linux backend for network collection (procfs-based).
+///
+/// Linux-only: relies on `/proc/net/*` tables and `/proc/<pid>/fd` inode resolution.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct LinuxNetBackend;
+
+impl NetBackend for LinuxNetBackend {
+    fn collect_listening_sockets(
+        &self,
+        _ctx: &AppContext,
+        params: NetCollectionParams,
+    ) -> Result<Vec<ListeningSocket>, DescribeError> {
+        collect_listening_sockets_linux(params.resolve_processes)
+    }
+
+    fn collect_network_traffic(
+        &self,
+        _ctx: &AppContext,
+    ) -> Result<Vec<NetworkInterfaceTraffic>, DescribeError> {
+        collect_network_traffic_linux()
+    }
+}
+
+pub(crate) fn collect_listening_sockets_linux(
     resolve_processes: bool,
 ) -> Result<Vec<ListeningSocket>, DescribeError> {
     // Map inode -> pid (meilleur-effort)
@@ -53,6 +78,7 @@ fn parse_table(
     pid_cache: &mut HashMap<u32, Option<String>>,
     resolve_processes: bool,
 ) -> io::Result<Vec<ListeningSocket>> {
+    // Linux-only: procfs socket tables (/proc/net/{tcp,udp}).
     let content = fs::read_to_string(path)?;
     Ok(parse_table_content(
         &content,
@@ -159,6 +185,7 @@ fn parse_ipv4_host_port(spec: &str) -> Option<(String, u16)> {
 }
 
 fn build_inode_pid_map() -> io::Result<HashMap<u64, u32>> {
+    // Linux-only: scans /proc/<pid>/fd to map socket inodes to owning PIDs.
     let mut map = HashMap::new();
     let proc = Path::new("/proc");
     for entry in fs::read_dir(proc)? {
@@ -223,7 +250,8 @@ fn read_process_name(pid: u32) -> Option<String> {
         .filter(|name| !name.is_empty())
 }
 
-pub fn collect_network_traffic() -> Result<Vec<NetworkInterfaceTraffic>, DescribeError> {
+pub(crate) fn collect_network_traffic_linux() -> Result<Vec<NetworkInterfaceTraffic>, DescribeError>
+{
     let content = fs::read_to_string("/proc/net/dev")
         .map_err(|err| DescribeError::System(format!("read /proc/net/dev: {err}")))?;
 
