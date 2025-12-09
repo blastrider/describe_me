@@ -59,6 +59,8 @@ use std::{
     fs,
     process::Command,
 };
+
+// Linux-only: parses procfs mount tables to deduplicate devices.
 /// Parse /proc/self/mountinfo → map: mount_point -> (maj:min, source)
 fn parse_mountinfo() -> HashMap<String, (String, String)> {
     let Ok(txt) = fs::read_to_string("/proc/self/mountinfo") else {
