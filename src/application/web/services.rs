@@ -150,7 +150,7 @@ pub async fn build_host_logs_response(params: LogsQueryParams) -> Result<HostLog
             .emit();
             Err(WebError::new(
                 StatusCode::BAD_GATEWAY,
-                format!("Impossible de lire les logs journald: {err}"),
+                format!("Impossible de lire les logs hôte: {err}"),
             ))
         }
         Err(err) => {
