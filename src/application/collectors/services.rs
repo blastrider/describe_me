@@ -1,5 +1,6 @@
 use crate::application::collectors::{log_system_error, SnapshotCollector};
 use crate::application::context::AppContext;
+use crate::application::services::{default_service_backend, ServiceBackend};
 use crate::domain::{CaptureOptions, DescribeError, SystemSnapshot};
 use crate::SharedSlice;
 
@@ -10,14 +11,21 @@ impl SnapshotCollector for ServicesCollector {
         &self,
         snapshot: &mut SystemSnapshot,
         opts: &CaptureOptions,
-        _ctx: &AppContext,
+        ctx: &AppContext,
     ) -> Result<(), DescribeError> {
         if !opts.with_services {
             snapshot.services_running = SharedSlice::from_vec(Vec::new());
             return Ok(());
         }
 
-        let list = crate::infrastructure::systemd::list_systemd_services().inspect_err(|err| {
+        let Some(backend) = default_service_backend() else {
+            snapshot.services_running = SharedSlice::from_vec(Vec::new());
+            return Err(DescribeError::Unsupported(
+                "service backend not available on this platform",
+            ));
+        };
+
+        let list = backend.list_services(ctx).inspect_err(|err| {
             log_system_error("systemctl", err);
         })?;
 
