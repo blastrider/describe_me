@@ -6,6 +6,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+Environment=DESCRIBE_ME_STATE_DIR=/var/lib/describe-me
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=DESCRIBE_ME_JOURNALCTL=/usr/bin/journalctl
 ExecStart=/usr/bin/describe-me --web 0.0.0.0:8080 --with-services --web-expose-all
 Restart=on-failure
 RestartSec=2s
