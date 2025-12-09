@@ -371,6 +371,15 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
             adduser --system --no-create-home --shell /usr/sbin/nologin "${SERVICE_USER}" || true
           fi
         fi
+        # grant access to docker runtime (if present) and journald logs
+        if getent group docker >/dev/null 2>&1; then
+          usermod -a -G docker "${SERVICE_USER}" || true
+        fi
+        if getent group systemd-journal >/dev/null 2>&1; then
+          usermod -a -G systemd-journal "${SERVICE_USER}" || true
+        elif getent group adm >/dev/null 2>&1; then
+          usermod -a -G adm "${SERVICE_USER}" || true
+        fi
 
         # deploy binary (may be replaced later if incompatible)
         mkdir -p "${DEST_DIR}"
@@ -635,6 +644,8 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
         Group=${SERVICE_USER}
         StateDirectory=describe_me
         Environment=DESCRIBE_ME_STATE_DIR=${STATE_DIR}
+        Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        Environment=DESCRIBE_ME_JOURNALCTL=/usr/bin/journalctl
         ExecStart=${BIN_PATH} --config ${CONFIG_FILE}
         WorkingDirectory=${DEST_DIR}
         Restart=on-failure

@@ -89,6 +89,7 @@ Et pour toutes les variantes, le helper reste accessible directement :
 ```
 
 Le paquet embarque l’unité systemd durcie fournie dans `packaging/systemd/describe-me.service` et gère automatiquement le rechargement/preset du service lors de l’installation.
+L’unité définit `DESCRIBE_ME_JOURNALCTL=/usr/bin/journalctl` par défaut; surchargez cette variable si `journalctl` vit ailleurs sur votre distribution.
 
 ## Image Docker & compose
 
