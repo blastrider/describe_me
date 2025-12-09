@@ -391,6 +391,7 @@ fn parse_inspect_output(output: &str) -> HashMap<String, String> {
 fn ensure_non_root() -> Result<(), CollectError> {
     #[cfg(target_os = "linux")]
     {
+        // Linux-only: procfs Uid detection to avoid running containers probe as root.
         if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
             for line in status.lines() {
                 if let Some(rest) = line.strip_prefix("Uid:") {
