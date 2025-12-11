@@ -3,51 +3,50 @@ use crate::application::context::AppContext;
 #[cfg(feature = "systemd")]
 use crate::domain::{DescribeError, ServiceInfo};
 
-/// Backend abstraction for service listing (systemd or platform-specific).
+/// Alias pour faciliter la lecture des résultats de backend services.
+#[cfg(feature = "systemd")]
+pub type ServicesSnapshot = Vec<ServiceInfo>;
+
+/// Backend abstraction for service listing (systemd ou spécifique plateforme).
 #[cfg(feature = "systemd")]
 pub trait ServiceBackend: Send + Sync {
-    fn list_services(&self, ctx: &AppContext) -> Result<Vec<ServiceInfo>, DescribeError>;
+    fn collect_services(&self, ctx: &AppContext) -> Result<ServicesSnapshot, DescribeError>;
 }
 
-#[cfg(all(feature = "systemd", target_os = "linux"))]
-type DefaultServiceBackend = crate::infrastructure::services::systemd::SystemdBackend;
-#[cfg(all(feature = "systemd", target_os = "freebsd"))]
-type DefaultServiceBackend = crate::infrastructure::services::freebsd::RcServiceBackend;
-#[cfg(all(
-    feature = "systemd",
-    not(any(target_os = "linux", target_os = "freebsd"))
-))]
-type DefaultServiceBackend = UnsupportedServiceBackend;
-
-#[cfg(all(
-    feature = "systemd",
-    not(any(target_os = "linux", target_os = "freebsd"))
-))]
-#[derive(Default, Debug, Clone, Copy)]
-struct UnsupportedServiceBackend;
-
-#[cfg(all(
-    feature = "systemd",
-    not(any(target_os = "linux", target_os = "freebsd"))
-))]
-impl ServiceBackend for UnsupportedServiceBackend {
-    fn list_services(&self, ctx: &AppContext) -> Result<Vec<ServiceInfo>, DescribeError> {
-        let _ = ctx;
-        Err(DescribeError::Unsupported(
-            "service backend not available on this platform",
-        ))
-    }
-}
+#[cfg(feature = "systemd")]
+type DefaultServiceBackend = crate::infrastructure::services::PlatformServiceBackend;
 
 /// Selects the default service backend for the current platform.
 #[cfg(feature = "systemd")]
-pub fn default_service_backend() -> Option<DefaultServiceBackend> {
-    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-    {
-        Some(DefaultServiceBackend::default())
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
-    {
-        None
+pub fn default_service_backend() -> DefaultServiceBackend {
+    crate::infrastructure::services::default_service_backend()
+}
+
+#[cfg(all(test, feature = "systemd"))]
+mod tests {
+    use super::*;
+    use std::any::type_name;
+
+    #[test]
+    fn default_backend_matches_target_os() {
+        let name = type_name::<DefaultServiceBackend>();
+
+        #[cfg(target_os = "linux")]
+        assert!(
+            name.contains("SystemdBackend"),
+            "expected systemd backend, got {name}"
+        );
+
+        #[cfg(target_os = "freebsd")]
+        assert!(
+            name.contains("RcServiceBackend"),
+            "expected rc.d backend, got {name}"
+        );
+
+        #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+        assert!(
+            name.contains("UnsupportedServiceBackend"),
+            "expected noop backend, got {name}"
+        );
     }
 }
