@@ -220,6 +220,95 @@ fn normalize_description_enforces_limit() {
     );
 }
 
+#[cfg(target_os = "freebsd")]
+#[test]
+fn freebsd_builds_secured_app_state() {
+    let state = make_secured_app_state(Exposure::all());
+    assert!(state.session_ttl().as_secs() > 0);
+    assert!(!state.session_cookie_secure());
+    let security = state.security();
+    assert!(security.session_ttl().as_secs() > 0);
+}
+
+#[cfg(target_os = "freebsd")]
+#[tokio::test]
+async fn freebsd_login_and_reads_logs() {
+    use axum::extract::State;
+    use tempfile::NamedTempFile;
+
+    let tmp = NamedTempFile::new().expect("temp syslog");
+    std::fs::write(
+        tmp.path(),
+        "Jan  1 00:00:01 host describe_me: started\nJan  1 00:00:02 host sshd[1]: ok\n",
+    )
+    .expect("write syslog sample");
+
+    let prev = std::env::var("DESCRIBE_ME_SYSLOG_PATH").ok();
+    std::env::set_var("DESCRIBE_ME_SYSLOG_PATH", tmp.path());
+
+    let exposure = Exposure::all();
+    let state = make_secured_app_state(exposure);
+    let mut request = axum::http::Request::builder()
+        .method("POST")
+        .uri("/auth/login")
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .body(axum::body::Body::from(r#"{"token":"secret"}"#))
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(ConnectInfo(std::net::SocketAddr::from((
+            std::net::Ipv4Addr::LOCALHOST,
+            8080,
+        ))));
+
+    let response = auth::login(State(state.clone()), request).await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let cookie = response
+        .headers()
+        .get(SET_COOKIE)
+        .cloned()
+        .expect("session cookie");
+
+    let mut logs_req = axum::http::Request::builder()
+        .uri("/logs?lines=4")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    logs_req
+        .headers_mut()
+        .insert(axum::http::header::COOKIE, cookie);
+    logs_req
+        .extensions_mut()
+        .insert(ConnectInfo(std::net::SocketAddr::from((
+            std::net::Ipv4Addr::LOCALHOST,
+            8080,
+        ))));
+
+    let (mut parts, body) = logs_req.into_parts();
+    let guard = security::AuthGuard::from_request_parts(&mut parts, &state)
+        .await
+        .expect("cookie auth");
+    let query =
+        axum::extract::Query::<handlers::LogsRequestQuery>::from_request_parts(&mut parts, &state)
+            .await
+            .expect("query");
+    let response = handlers::host_logs(State(state.clone()), guard, query)
+        .await
+        .expect("logs handler")
+        .into_response();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body bytes");
+    let page: crate::domain::HostLogsPage = serde_json::from_slice(&body).expect("logs payload");
+    assert!(!page.entries.is_empty());
+
+    if let Some(prev) = prev {
+        std::env::set_var("DESCRIBE_ME_SYSLOG_PATH", prev);
+    } else {
+        std::env::remove_var("DESCRIBE_ME_SYSLOG_PATH");
+    }
+}
+
 #[tokio::test]
 async fn login_endpoint_sets_cookie_and_redirects() {
     let exposure = Exposure::all();
