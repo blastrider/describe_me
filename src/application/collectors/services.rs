@@ -18,16 +18,10 @@ impl SnapshotCollector for ServicesCollector {
             return Ok(());
         }
 
-        let Some(backend) = default_service_backend() else {
-            snapshot.services_running = SharedSlice::from_vec(Vec::new());
-            return Err(DescribeError::Unsupported(
-                "service backend not available on this platform",
-            ));
-        };
-
-        let list = backend.list_services(ctx).inspect_err(|err| {
-            log_system_error("systemctl", err);
-        })?;
+        let backend = default_service_backend();
+        let list = backend
+            .collect_services(ctx)
+            .inspect_err(|err| log_system_error("services_collect", err))?;
 
         snapshot.services_running = SharedSlice::from_vec(list);
         Ok(())
