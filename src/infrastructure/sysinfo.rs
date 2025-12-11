@@ -64,6 +64,7 @@ use std::{
 /// Parse /proc/self/mountinfo → map: mount_point -> (maj:min, source)
 fn parse_mountinfo() -> HashMap<String, (String, String)> {
     let Ok(txt) = fs::read_to_string("/proc/self/mountinfo") else {
+        debug!("/proc/self/mountinfo unavailable; returning empty mount table");
         return HashMap::new();
     };
     parse_mountinfo_from_str(&txt)
