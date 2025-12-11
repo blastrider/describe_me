@@ -15,7 +15,7 @@ const SYSTEMCTL_SAFE_PATH: &str = "/usr/bin:/bin";
 pub struct SystemdBackend;
 
 impl ServiceBackend for SystemdBackend {
-    fn list_services(&self, ctx: &AppContext) -> Result<Vec<ServiceInfo>, DescribeError> {
+    fn collect_services(&self, ctx: &AppContext) -> Result<Vec<ServiceInfo>, DescribeError> {
         let _ = ctx;
         list_systemd_services()
     }
