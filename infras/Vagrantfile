@@ -906,35 +906,62 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
 # PROVIDE: describe_me
 # REQUIRE: NETWORKING
 # KEYWORD: shutdown
+#
+# test max
+#
+# Service describe_me pour FreeBSD.
+# Ajoute dans /etc/rc.conf.local :
+#   describe_me_enable="YES"
+
 . /etc/rc.subr
+
 name="describe_me"
 rcvar="${name}_enable"
+
 : ${describe_me_enable:="NO"}
 : ${describe_me_user:="describe_me"}
 : ${describe_me_group:="${describe_me_user}"}
 : ${describe_me_bin:="/usr/local/bin/describe-me"}
 : ${describe_me_config:="/usr/local/etc/describe_me/config.toml"}
 : ${describe_me_home:="/var/db/describe_me"}
-: ${describe_me_bin_flags:="--config ${describe_me_config} --web"}
 : ${describe_me_data_dir:="/var/db/describe_me"}
 : ${describe_me_pid_dir:="/var/run/describe_me"}
 : ${describe_me_pidfile:="${describe_me_pid_dir}/${name}.pid"}
-load_rc_config $name
-required_files="${describe_me_bin}"
+# Flags passés au binaire describe-me
+: ${describe_me_bin_flags:="--config ${describe_me_config} --web"}
+
+pidfile="${describe_me_pidfile}"
+
+load_rc_config "${name}"
+
 start_precmd="describe_me_precmd"
-command="/usr/sbin/daemon"
-command_args="-p ${describe_me_pidfile} /usr/bin/env HOME=${describe_me_home} PATH=/usr/local/bin:/usr/bin:/bin su -m ${describe_me_user} -c \"${describe_me_bin} ${describe_me_bin_flags}\""
-describe_me_precmd() {
-	if [ ! -d "${describe_me_data_dir}" ]; then
-		install -d -o "${describe_me_user}" -g "${describe_me_group}" -m 0750 "${describe_me_data_dir}"
-	fi
-	if [ ! -d "${describe_me_pid_dir}" ]; then
-		install -d -o "${describe_me_user}" -g "${describe_me_group}" -m 0755 "${describe_me_pid_dir}"
-	fi
-	if [ -d "${describe_me_home}" ]; then
-		chown "${describe_me_user}:${describe_me_group}" "${describe_me_home}" || true
-	fi
+start_cmd="describe_me_start"
+
+describe_me_precmd()
+{
+    if [ ! -d "${describe_me_data_dir}" ]; then
+        install -d -o "${describe_me_user}" -g "${describe_me_group}" -m 0750 \
+            "${describe_me_data_dir}"
+    fi
+
+    if [ ! -d "${describe_me_pid_dir}" ]; then
+        install -d -o "${describe_me_user}" -g "${describe_me_group}" -m 0755 \
+            "${describe_me_pid_dir}"
+    fi
+
+    if [ -d "${describe_me_home}" ]; then
+        chown "${describe_me_user}:${describe_me_group}" "${describe_me_home}" || true
+    fi
 }
+
+describe_me_start()
+{
+    echo "Starting ${name}."
+    /usr/sbin/daemon -f -p "${describe_me_pidfile}" -u "${describe_me_user}" \
+        /usr/bin/env HOME="${describe_me_home}" PATH="/usr/local/bin:/usr/bin:/bin" \
+        "${describe_me_bin}" ${describe_me_bin_flags}
+}
+
 run_rc_command "$1"
 EOF
           RC_SRC="${RC_FALLBACK}"
