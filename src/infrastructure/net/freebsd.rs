@@ -4,7 +4,7 @@ use crate::domain::{DescribeError, ListeningSocket, NetworkInterfaceTraffic};
 use std::collections::HashMap;
 use std::process::{Command, Stdio};
 
-const NET_COMMAND_PATH: &str = "/usr/sbin:/usr/bin:/sbin:/bin";
+const NET_COMMAND_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
 /// FreeBSD backend relying on `sockstat` and `netstat`.
 #[derive(Debug, Default, Clone, Copy)]
