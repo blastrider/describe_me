@@ -1,5 +1,5 @@
 use describe_me::{
-    ContainersPluginExitCode, CONTAINERS_CONTRACT_VERSION, CONTAINERS_PLUGIN_TIMEOUT,
+    security, ContainersPluginExitCode, CONTAINERS_CONTRACT_VERSION, CONTAINERS_PLUGIN_TIMEOUT,
 };
 use describe_me_plugin_sdk::{
     run_plugin, PluginConfig, PluginErrorReport, PluginOutput, PluginResult,
@@ -389,24 +389,10 @@ fn parse_inspect_output(output: &str) -> HashMap<String, String> {
 }
 
 fn ensure_non_root() -> Result<(), CollectError> {
-    #[cfg(target_os = "linux")]
-    {
-        // Linux-only: procfs Uid detection to avoid running containers probe as root.
-        if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
-            for line in status.lines() {
-                if let Some(rest) = line.strip_prefix("Uid:") {
-                    let mut parts = rest.split_whitespace();
-                    if let Some(euid) = parts.next() {
-                        if euid == "0" {
-                            return Err(CollectError::Permission(
-                                "exécution en root interdite".to_string(),
-                            ));
-                        }
-                    }
-                    break;
-                }
-            }
-        }
+    if security::running_as_root() {
+        return Err(CollectError::Permission(
+            security::NON_ROOT_MESSAGE.to_string(),
+        ));
     }
     Ok(())
 }
