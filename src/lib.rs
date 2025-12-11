@@ -17,6 +17,7 @@
 mod application;
 pub mod domain;
 mod infrastructure;
+pub mod security;
 mod shared;
 
 pub mod api;
