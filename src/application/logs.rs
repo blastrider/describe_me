@@ -15,30 +15,11 @@ pub trait HostLogBackend: Send + Sync {
     fn tail(&self, ctx: &AppContext, params: TailParams) -> Result<HostLogsPage, DescribeError>;
 }
 
-#[cfg(all(feature = "journald", target_os = "linux"))]
-type DefaultLogsBackend = crate::infrastructure::logs::linux::JournaldBackend;
-#[cfg(target_os = "freebsd")]
-type DefaultLogsBackend = crate::infrastructure::logs::freebsd::FreebsdSyslogBackend;
-#[cfg(not(any(all(feature = "journald", target_os = "linux"), target_os = "freebsd")))]
-type DefaultLogsBackend = UnsupportedLogsBackend;
-
-#[cfg(not(any(all(feature = "journald", target_os = "linux"), target_os = "freebsd")))]
-#[derive(Default, Debug)]
-struct UnsupportedLogsBackend;
-
-#[cfg(not(any(all(feature = "journald", target_os = "linux"), target_os = "freebsd")))]
-impl HostLogBackend for UnsupportedLogsBackend {
-    fn tail(&self, ctx: &AppContext, params: TailParams) -> Result<HostLogsPage, DescribeError> {
-        let _ = (ctx, params);
-        Err(DescribeError::Unsupported(
-            "host logs backend unavailable on this platform",
-        ))
-    }
-}
+type DefaultLogsBackend = crate::infrastructure::logs::PlatformLogsBackend;
 
 /// Selects the default host logs backend for the current platform.
 pub fn default_logs_backend() -> DefaultLogsBackend {
-    DefaultLogsBackend::default()
+    crate::infrastructure::logs::default_logs_backend()
 }
 
 pub fn tail_host_logs(lines: usize) -> Result<HostLogsPage, DescribeError> {
@@ -56,4 +37,30 @@ pub fn tail_host_logs_with_ctx(
     // Considère qu'on pourrait avoir plus d'entrées si on atteint la borne.
     page.truncated = page.truncated || page.entries.len() >= bounded;
     Ok(page)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::any::type_name;
+
+    #[cfg(all(feature = "journald", target_os = "linux"))]
+    #[test]
+    fn selects_journald_backend_on_linux() {
+        let name = type_name::<DefaultLogsBackend>();
+        assert!(
+            name.contains("JournaldBackend"),
+            "expected journald backend, got {name}"
+        );
+    }
+
+    #[cfg(target_os = "freebsd")]
+    #[test]
+    fn selects_syslog_backend_on_freebsd() {
+        let name = type_name::<DefaultLogsBackend>();
+        assert!(
+            name.contains("FreebsdSyslogBackend"),
+            "expected syslog backend, got {name}"
+        );
+    }
 }
