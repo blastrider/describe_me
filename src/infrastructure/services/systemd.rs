@@ -1,6 +1,7 @@
 use crate::application::services::ServiceBackend;
 use crate::application::AppContext;
 use crate::domain::{DescribeError, ServiceInfo};
+use crate::security;
 use std::env;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -106,7 +107,7 @@ pub fn __parse_systemctl_line_for_tests(line: &str) -> Result<ServiceInfo, Descr
 }
 
 fn ensure_systemctl_allowed() -> Result<(), DescribeError> {
-    if running_as_root() && !allow_root_systemctl() {
+    if security::running_as_root() && !allow_root_systemctl() {
         return Err(DescribeError::External(
             "refus d'exécuter /usr/bin/systemctl en root (exporter DESCRIBE_ME_ALLOW_ROOT_SYSTEMCTL=1 pour forcer)"
                 .into(),
@@ -123,22 +124,6 @@ fn allow_root_systemctl() -> bool {
         }
         Err(_) => false,
     }
-}
-
-fn running_as_root() -> bool {
-    if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
-        // Linux-only: relies on procfs "Uid" line to detect root.
-        for line in status.lines() {
-            if let Some(rest) = line.strip_prefix("Uid:") {
-                if let Some(uid_str) = rest.split_whitespace().next() {
-                    if let Ok(uid) = uid_str.parse::<u32>() {
-                        return uid == 0;
-                    }
-                }
-            }
-        }
-    }
-    false
 }
 
 fn container_mode_enabled() -> bool {
