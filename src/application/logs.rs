@@ -17,14 +17,16 @@ pub trait HostLogBackend: Send + Sync {
 
 #[cfg(all(feature = "journald", target_os = "linux"))]
 type DefaultLogsBackend = crate::infrastructure::logs::linux::JournaldBackend;
-#[cfg(not(all(feature = "journald", target_os = "linux")))]
+#[cfg(target_os = "freebsd")]
+type DefaultLogsBackend = crate::infrastructure::logs::freebsd::FreebsdSyslogBackend;
+#[cfg(not(any(all(feature = "journald", target_os = "linux"), target_os = "freebsd")))]
 type DefaultLogsBackend = UnsupportedLogsBackend;
 
-#[cfg(not(all(feature = "journald", target_os = "linux")))]
+#[cfg(not(any(all(feature = "journald", target_os = "linux"), target_os = "freebsd")))]
 #[derive(Default, Debug)]
 struct UnsupportedLogsBackend;
 
-#[cfg(not(all(feature = "journald", target_os = "linux")))]
+#[cfg(not(any(all(feature = "journald", target_os = "linux"), target_os = "freebsd")))]
 impl HostLogBackend for UnsupportedLogsBackend {
     fn tail(&self, ctx: &AppContext, params: TailParams) -> Result<HostLogsPage, DescribeError> {
         let _ = (ctx, params);
