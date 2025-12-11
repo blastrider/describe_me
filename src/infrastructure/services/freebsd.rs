@@ -4,14 +4,14 @@ use crate::domain::{DescribeError, ServiceInfo};
 use std::collections::HashSet;
 use std::process::{Command, Stdio};
 
-const SERVICE_PATH: &str = "/usr/sbin:/usr/bin:/sbin:/bin";
+const SERVICE_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
 /// FreeBSD rc.d backend using `service` listings.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct RcServiceBackend;
 
 impl ServiceBackend for RcServiceBackend {
-    fn list_services(&self, ctx: &AppContext) -> Result<Vec<ServiceInfo>, DescribeError> {
+    fn collect_services(&self, ctx: &AppContext) -> Result<Vec<ServiceInfo>, DescribeError> {
         let _ = ctx;
         list_rc_services()
     }
