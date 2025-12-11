@@ -37,7 +37,6 @@ pub trait NetBackend: Send + Sync {
 #[cfg(all(feature = "net", target_os = "linux"))]
 type DefaultNetBackend = crate::infrastructure::net::linux::LinuxNetBackend;
 #[cfg(all(feature = "net", target_os = "freebsd"))]
-// TODO: plug FreeBSD implementation once available.
 type DefaultNetBackend = crate::infrastructure::net::freebsd::FreeBsdNetBackend;
 #[cfg(all(feature = "net", not(any(target_os = "linux", target_os = "freebsd"))))]
 type DefaultNetBackend = UnsupportedNetBackend;
