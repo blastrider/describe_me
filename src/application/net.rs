@@ -34,45 +34,13 @@ pub trait NetBackend: Send + Sync {
     ) -> Result<Vec<NetworkInterfaceTraffic>, DescribeError>;
 }
 
-#[cfg(all(feature = "net", target_os = "linux"))]
-type DefaultNetBackend = crate::infrastructure::net::linux::LinuxNetBackend;
-#[cfg(all(feature = "net", target_os = "freebsd"))]
-type DefaultNetBackend = crate::infrastructure::net::freebsd::FreeBsdNetBackend;
-#[cfg(all(feature = "net", not(any(target_os = "linux", target_os = "freebsd"))))]
-type DefaultNetBackend = UnsupportedNetBackend;
+#[cfg(feature = "net")]
+type DefaultNetBackend = crate::infrastructure::net::PlatformNetBackend;
 
 /// Selects the platform net backend.
 #[cfg(feature = "net")]
 pub fn default_net_backend() -> DefaultNetBackend {
-    DefaultNetBackend::default()
-}
-
-#[cfg(all(feature = "net", not(any(target_os = "linux", target_os = "freebsd"))))]
-#[derive(Debug, Default, Clone, Copy)]
-struct UnsupportedNetBackend;
-
-#[cfg(all(feature = "net", not(any(target_os = "linux", target_os = "freebsd"))))]
-impl NetBackend for UnsupportedNetBackend {
-    fn collect_listening_sockets(
-        &self,
-        ctx: &AppContext,
-        _params: NetCollectionParams,
-    ) -> Result<Vec<ListeningSocket>, DescribeError> {
-        let _ = ctx;
-        Err(DescribeError::Unsupported(
-            "listening sockets collection not implemented for this OS",
-        ))
-    }
-
-    fn collect_network_traffic(
-        &self,
-        ctx: &AppContext,
-    ) -> Result<Vec<NetworkInterfaceTraffic>, DescribeError> {
-        let _ = ctx;
-        Err(DescribeError::Unsupported(
-            "network traffic collection not implemented for this OS",
-        ))
-    }
+    crate::infrastructure::net::default_net_backend()
 }
 
 #[cfg(feature = "net")]
@@ -109,4 +77,33 @@ pub fn network_traffic_with_context(
     ctx: &AppContext,
 ) -> Result<Vec<NetworkInterfaceTraffic>, DescribeError> {
     default_net_backend().collect_network_traffic(ctx)
+}
+
+#[cfg(all(test, feature = "net"))]
+mod tests {
+    use super::*;
+    use std::any::type_name;
+
+    #[test]
+    fn default_backend_matches_target_os() {
+        let name = type_name::<DefaultNetBackend>();
+
+        #[cfg(target_os = "linux")]
+        assert!(
+            name.contains("LinuxNetBackend"),
+            "expected Linux backend, got {name}"
+        );
+
+        #[cfg(target_os = "freebsd")]
+        assert!(
+            name.contains("FreeBsdNetBackend"),
+            "expected FreeBSD backend, got {name}"
+        );
+
+        #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+        assert!(
+            name.contains("UnsupportedNetBackend"),
+            "expected noop backend, got {name}"
+        );
+    }
 }
