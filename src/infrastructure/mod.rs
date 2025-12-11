@@ -1,7 +1,7 @@
 pub mod sysinfo;
 pub mod system;
 
-#[cfg(all(feature = "systemd", target_os = "linux"))]
+#[cfg(all(feature = "systemd", any(target_os = "linux", target_os = "freebsd")))]
 pub mod services;
 
 #[cfg(all(feature = "systemd", target_os = "linux"))]
@@ -10,7 +10,13 @@ pub mod systemd {
     pub use super::services::systemd::*;
 }
 
-#[cfg(feature = "journald")]
+#[cfg(all(feature = "systemd", target_os = "freebsd"))]
+pub mod rc {
+    #[allow(unused_imports)]
+    pub use super::services::freebsd::*;
+}
+
+#[cfg(any(feature = "journald", target_os = "freebsd"))]
 pub mod logs;
 
 #[cfg(feature = "net")]
