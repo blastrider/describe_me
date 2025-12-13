@@ -1,16 +1,67 @@
+use crate::application::net::{NetBackend, NetCollectionParams};
+use crate::application::AppContext;
 use crate::domain::{DescribeError, ListeningSocket, NetworkInterfaceTraffic};
 use std::{
     collections::HashMap,
     fs, io,
     path::{Path, PathBuf},
 };
+use tracing::debug;
 
-pub fn collect_listening_sockets(
+const PROC_ROOT: &str = "/proc";
+
+/// Linux backend for network collection (procfs-based).
+///
+/// Linux-only: relies on `/proc/net/*` tables and `/proc/<pid>/fd` inode resolution.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct LinuxNetBackend;
+
+impl NetBackend for LinuxNetBackend {
+    fn collect_listening_sockets(
+        &self,
+        _ctx: &AppContext,
+        params: NetCollectionParams,
+    ) -> Result<Vec<ListeningSocket>, DescribeError> {
+        collect_listening_sockets_linux(params.resolve_processes)
+    }
+
+    fn collect_network_traffic(
+        &self,
+        _ctx: &AppContext,
+    ) -> Result<Vec<NetworkInterfaceTraffic>, DescribeError> {
+        collect_network_traffic_linux()
+    }
+}
+
+pub(crate) fn collect_listening_sockets_linux(
     resolve_processes: bool,
 ) -> Result<Vec<ListeningSocket>, DescribeError> {
+    collect_listening_sockets_from_root(Path::new(PROC_ROOT), resolve_processes)
+}
+
+fn collect_listening_sockets_from_root(
+    proc_root: &Path,
+    resolve_processes: bool,
+) -> Result<Vec<ListeningSocket>, DescribeError> {
+    let net_dir = proc_root.join("net");
+    if !net_dir.is_dir() {
+        debug!(
+            proc_root = %proc_root.display(),
+            "procfs absent or /proc/net missing; returning empty listening sockets"
+        );
+        return Ok(Vec::new());
+    }
+
     // Map inode -> pid (meilleur-effort)
     let inode_to_pid = if resolve_processes {
-        build_inode_pid_map().unwrap_or_default()
+        build_inode_pid_map_from_root(proc_root).unwrap_or_else(|err| {
+            debug!(
+                proc_root = %proc_root.display(),
+                error = %err,
+                "failed to build inode map; continuing without process resolution"
+            );
+            HashMap::new()
+        })
     } else {
         HashMap::new()
     };
@@ -19,26 +70,30 @@ pub fn collect_listening_sockets(
     let mut out = Vec::new();
 
     // TCPv4 LISTEN (st == "0A")
-    if let Ok(mut v) = parse_table(
-        "/proc/net/tcp",
+    let tcp_path = net_dir.join("tcp");
+    match parse_table(
+        &tcp_path,
         "tcp",
         Some("0A"),
         &inode_to_pid,
         &mut pid_cache,
         resolve_processes,
     ) {
-        out.append(&mut v);
+        Ok(mut v) => out.append(&mut v),
+        Err(err) => debug!(path = %tcp_path.display(), error = %err, "skip tcp listening table"),
     }
     // UDPv4 "UNCONN" (st == "07") — sockets en attente (équivalent "listening" pour UDP)
-    if let Ok(mut v) = parse_table(
-        "/proc/net/udp",
+    let udp_path = net_dir.join("udp");
+    match parse_table(
+        &udp_path,
         "udp",
         Some("07"),
         &inode_to_pid,
         &mut pid_cache,
         resolve_processes,
     ) {
-        out.append(&mut v);
+        Ok(mut v) => out.append(&mut v),
+        Err(err) => debug!(path = %udp_path.display(), error = %err, "skip udp listening table"),
     }
 
     // NOTE: on pourra ajouter tcp6/udp6 plus tard (parsing IPv6), ici Linux v4 d’abord (risque parité OS indiqué).
@@ -46,13 +101,14 @@ pub fn collect_listening_sockets(
 }
 
 fn parse_table(
-    path: &str,
+    path: &Path,
     proto: &str,
     required_state_hex: Option<&str>,
     inode_to_pid: &HashMap<u64, u32>,
     pid_cache: &mut HashMap<u32, Option<String>>,
     resolve_processes: bool,
 ) -> io::Result<Vec<ListeningSocket>> {
+    // Linux-only: procfs socket tables (/proc/net/{tcp,udp}).
     let content = fs::read_to_string(path)?;
     Ok(parse_table_content(
         &content,
@@ -158,10 +214,14 @@ fn parse_ipv4_host_port(spec: &str) -> Option<(String, u16)> {
     Some((addr, port))
 }
 
-fn build_inode_pid_map() -> io::Result<HashMap<u64, u32>> {
+fn build_inode_pid_map_from_root(proc_root: &Path) -> io::Result<HashMap<u64, u32>> {
+    // Linux-only: scans /proc/<pid>/fd to map socket inodes to owning PIDs.
     let mut map = HashMap::new();
-    let proc = Path::new("/proc");
-    for entry in fs::read_dir(proc)? {
+    if !proc_root.is_dir() {
+        return Ok(map);
+    }
+
+    for entry in fs::read_dir(proc_root)? {
         let entry = match entry {
             Ok(e) => e,
             Err(_) => continue,
@@ -223,9 +283,34 @@ fn read_process_name(pid: u32) -> Option<String> {
         .filter(|name| !name.is_empty())
 }
 
-pub fn collect_network_traffic() -> Result<Vec<NetworkInterfaceTraffic>, DescribeError> {
-    let content = fs::read_to_string("/proc/net/dev")
-        .map_err(|err| DescribeError::System(format!("read /proc/net/dev: {err}")))?;
+pub(crate) fn collect_network_traffic_linux() -> Result<Vec<NetworkInterfaceTraffic>, DescribeError>
+{
+    let default_path = Path::new(PROC_ROOT).join("net/dev");
+    collect_network_traffic_from_path(&default_path)
+}
+
+fn collect_network_traffic_from_path(
+    path: &Path,
+) -> Result<Vec<NetworkInterfaceTraffic>, DescribeError> {
+    let content = match fs::read_to_string(path) {
+        Ok(data) => data,
+        Err(err) => {
+            if matches!(
+                err.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
+            ) {
+                debug!(
+                    path = %path.display(),
+                    "procfs not available for network traffic; returning empty list"
+                );
+                return Ok(Vec::new());
+            }
+            return Err(DescribeError::System(format!(
+                "read {}: {err}",
+                path.display()
+            )));
+        }
+    };
 
     let mut interfaces = Vec::new();
 
@@ -283,9 +368,10 @@ mod tests {
     use proptest::prelude::*;
     use std::collections::HashMap;
     use std::io::Write;
+    use std::path::{Path, PathBuf};
     use tempfile::NamedTempFile;
 
-    fn write_sample_table() -> (NamedTempFile, String) {
+    fn write_sample_table() -> (NamedTempFile, PathBuf) {
         let mut file = NamedTempFile::new().expect("create temp file");
         writeln!(
             file,
@@ -298,7 +384,7 @@ mod tests {
         )
         .unwrap();
         file.flush().unwrap();
-        let path = file.path().to_str().expect("path utf8").to_string();
+        let path = file.path().to_path_buf();
         (file, path)
     }
 
@@ -334,6 +420,20 @@ mod tests {
         assert_eq!(sockets.len(), 1);
         let sock = &sockets[0];
         assert_eq!(sock.process, Some(4242));
+    }
+
+    #[test]
+    fn collect_listening_sockets_handles_missing_proc() {
+        let sockets =
+            collect_listening_sockets_from_root(Path::new("/nonexistent/proc"), false).unwrap();
+        assert!(sockets.is_empty());
+    }
+
+    #[test]
+    fn collect_network_traffic_handles_missing_proc() {
+        let traffic =
+            collect_network_traffic_from_path(Path::new("/nonexistent/proc/net/dev")).unwrap();
+        assert!(traffic.is_empty());
     }
 
     proptest! {

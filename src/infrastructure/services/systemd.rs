@@ -1,20 +1,26 @@
-#[cfg(feature = "systemd")]
+use crate::application::services::ServiceBackend;
+use crate::application::AppContext;
+use crate::domain::{DescribeError, ServiceInfo};
+use crate::security;
 use std::env;
-#[cfg(feature = "systemd")]
 use std::path::Path;
-#[cfg(feature = "systemd")]
 use std::process::{Command, Stdio};
-#[cfg(feature = "systemd")]
 use tracing::warn;
 
-use crate::domain::{DescribeError, ServiceInfo};
-
-#[cfg(feature = "systemd")]
+// Linux-only: shells out to /usr/bin/systemctl and inspects /proc to guard root usage.
 const SYSTEMCTL_PATH: &str = "/usr/bin/systemctl";
-#[cfg(feature = "systemd")]
 const SYSTEMCTL_SAFE_PATH: &str = "/usr/bin:/bin";
 
-#[cfg(feature = "systemd")]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SystemdBackend;
+
+impl ServiceBackend for SystemdBackend {
+    fn collect_services(&self, ctx: &AppContext) -> Result<Vec<ServiceInfo>, DescribeError> {
+        let _ = ctx;
+        list_systemd_services()
+    }
+}
+
 pub(crate) fn list_systemd_services() -> Result<Vec<ServiceInfo>, DescribeError> {
     ensure_systemctl_allowed()?;
 
@@ -61,7 +67,6 @@ pub(crate) fn list_systemd_services() -> Result<Vec<ServiceInfo>, DescribeError>
         .collect())
 }
 
-#[cfg(feature = "systemd")]
 fn parse_systemctl_line(line: &str) -> Result<ServiceInfo, DescribeError> {
     // "<name> <load> <active> <sub> <description...>"
     let mut parts = line.split_whitespace();
@@ -95,15 +100,14 @@ fn parse_systemctl_line(line: &str) -> Result<ServiceInfo, DescribeError> {
 }
 
 /// Wrapper public pour tests/fuzz (feature-gated).
-#[cfg(all(feature = "systemd", any(test, feature = "internals")))]
+#[cfg(any(test, feature = "internals"))]
 #[doc(hidden)]
 pub fn __parse_systemctl_line_for_tests(line: &str) -> Result<ServiceInfo, DescribeError> {
     parse_systemctl_line(line)
 }
 
-#[cfg(feature = "systemd")]
 fn ensure_systemctl_allowed() -> Result<(), DescribeError> {
-    if running_as_root() && !allow_root_systemctl() {
+    if security::running_as_root() && !allow_root_systemctl() {
         return Err(DescribeError::External(
             "refus d'exécuter /usr/bin/systemctl en root (exporter DESCRIBE_ME_ALLOW_ROOT_SYSTEMCTL=1 pour forcer)"
                 .into(),
@@ -112,7 +116,6 @@ fn ensure_systemctl_allowed() -> Result<(), DescribeError> {
     Ok(())
 }
 
-#[cfg(feature = "systemd")]
 fn allow_root_systemctl() -> bool {
     match env::var("DESCRIBE_ME_ALLOW_ROOT_SYSTEMCTL") {
         Ok(val) => {
@@ -123,30 +126,6 @@ fn allow_root_systemctl() -> bool {
     }
 }
 
-#[cfg(feature = "systemd")]
-fn running_as_root() -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
-            for line in status.lines() {
-                if let Some(rest) = line.strip_prefix("Uid:") {
-                    if let Some(uid_str) = rest.split_whitespace().next() {
-                        if let Ok(uid) = uid_str.parse::<u32>() {
-                            return uid == 0;
-                        }
-                    }
-                }
-            }
-        }
-        false
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        false
-    }
-}
-
-#[cfg(feature = "systemd")]
 fn container_mode_enabled() -> bool {
     match env::var("DESCRIBE_ME_CONTAINER") {
         Ok(val) => {

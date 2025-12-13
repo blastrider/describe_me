@@ -1,8 +1,9 @@
 use crate::application::collectors::log_system_error;
+use crate::application::context::AppContext;
 #[cfg(feature = "systemd")]
 use crate::domain::ServiceInfo;
 use crate::domain::{CaptureOptions, DescribeError, SystemSnapshot};
-use crate::infrastructure::sysinfo;
+use crate::infrastructure::system;
 #[cfg(feature = "systemd")]
 use crate::SharedSlice;
 
@@ -14,11 +15,20 @@ use crate::SharedSlice;
 pub struct CoreCollector;
 
 impl CoreCollector {
-    pub fn capture_base(&self, opts: &CaptureOptions) -> Result<SystemSnapshot, DescribeError> {
-        let base = sysinfo::gather().inspect_err(|err| log_system_error("gather", err))?;
+    pub fn capture_base(
+        &self,
+        opts: &CaptureOptions,
+        ctx: &AppContext,
+    ) -> Result<SystemSnapshot, DescribeError> {
+        let base = system::collect_system_metrics(ctx).inspect_err(|err| {
+            log_system_error("gather", err);
+        })?;
 
         let disk_usage = if opts.with_disk_usage {
-            Some(sysinfo::gather_disks().inspect_err(|err| log_system_error("gather_disks", err))?)
+            Some(
+                system::collect_disks(ctx)
+                    .inspect_err(|err| log_system_error("gather_disks", err))?,
+            )
         } else {
             None
         };

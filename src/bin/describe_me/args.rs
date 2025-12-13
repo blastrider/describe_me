@@ -472,7 +472,7 @@ pub enum CliCommand {
     Plugin(PluginCommand),
     /// Interroge l'historique local (mini time-series).
     History(HistoryCommand),
-    /// Affiche les logs journald de l'hôte (dern. lignes).
+    /// Affiche les logs système de l'hôte (dern. lignes).
     Logs(LogsCommand),
 }
 

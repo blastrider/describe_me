@@ -91,6 +91,11 @@ Et pour toutes les variantes, le helper reste accessible directement :
 Le paquet embarque l’unité systemd durcie fournie dans `packaging/systemd/describe-me.service` et gère automatiquement le rechargement/preset du service lors de l’installation.
 L’unité définit `DESCRIBE_ME_JOURNALCTL=/usr/bin/journalctl` par défaut; surchargez cette variable si `journalctl` vit ailleurs sur votre distribution.
 
+## Binaire FreeBSD
+
+- Build natif (FreeBSD 13/14) : `gmake freebsd-build` (features `cli web config net`), artefacts dans `dist/freebsd/` (`describe_me-freebsd-amd64`, `rc.describe_me`, `README`).
+- Installation manuelle : copier le binaire vers `/usr/local/bin/describe-me`, l’unité rc.d vers `/usr/local/etc/rc.d/describe_me`, activer `describe_me_enable=YES` puis `service describe_me start`. Voir `packaging/freebsd/README.md` pour les détails/prérequis.
+
 ## Image Docker & compose
 
 - Build local : `make docker-image` (tags `describe_me:<version>` + `latest`, override via `DOCKER_IMAGE/DOCKER_TAG/DOCKER_RUST_VERSION/DOCKER_BUILD_ARGS`). Push : `DOCKER_IMAGE=<registry/describe_me> make docker-push`.
@@ -107,6 +112,12 @@ L’unité définit `DESCRIBE_ME_JOURNALCTL=/usr/bin/journalctl` par défaut; su
 - Gabarit complet documenté : `docs/config.reference.toml`
 - Packaging & service : `packaging/systemd/describe-me.service`
 - Environnement Vagrant multi‑distros (VMs + HTTPS + systemd) : `infras/README.md`
+
+## Plateformes supportées
+
+- **Linux** (Debian/Ubuntu/Fedora/Arch/Alpine) : services systemd, journald (`describe-me logs` + page `/logs`), sockets/traﬁc via `/proc`, mises à jour apt/dnf/pacman/apk, plugin conteneurs. CI : job `build-linux` (`cargo test --all-features`).
+- **FreeBSD 13/14** : services rc.d (`service`), logs syslog (`/var/log/messages`, override `DESCRIBE_ME_SYSLOG_PATH`), sockets via `sockstat`, traﬁc via `netstat -ibn`, mises à jour `pkg`/`freebsd-version`. Build/test : `gmake freebsd-build` (binaire dans `dist/freebsd/`), ou `cargo build/test --features "cli web config net"`. Les tests dédiés (`tests/freebsd.rs`) sont ignorés sur Linux.
+- **Autres OS** : compilation possible mais certaines fonctionnalités renvoient une erreur `unsupported_feature` explicite.
 
 ### Utilisation de la crate (API contextuelle)
 
@@ -142,11 +153,6 @@ Pour les tests, utilisez `AppContext::in_memory()` afin d’éviter l’IO disqu
 - Métadonnées : utilisez les variantes `*_with(&AppContext)` pour lire/écrire description et tags.
 - Historique : configurez et alimentez via `ctx.history()`.
 - Tests/outillage : `AppContext::in_memory()` fournit un backend 100% mémoire (pas d’IO disque/env).
-
-## Compatibilité
-
-- Détection des mises à jour: validée sur Ubuntu, Debian et Fedora.
-- Autres systèmes pris en charge (best‑effort): Arch/Manjaro (pacman), Alpine (apk), FreeBSD (pkg).
 
 ## Support & contributions
 

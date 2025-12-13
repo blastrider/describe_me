@@ -29,6 +29,11 @@ CLI ↔ AppContext ↔ Collectors ↔ History / Extensions ↔ Web (Axum + SSE) 
 - Conserver les commentaires de module (`//!`) pour decrire roles/responsabilites; ajouter une note si vous creez un nouveau sous-module ou une nouvelle policy.
 - Avant de pousser : `cargo fmt`, `cargo clippy -- -D warnings`, `cargo test --all-features` (ou au minimum les features concernees).
 
+## Tests rapides par OS
+
+- Linux : `cargo test --all-features` (CI `build-linux` aligne dessus).
+- FreeBSD 13/14 : `cargo test --features "cli web config net"` (ignore les backends systemd/journald). Le binaire natif se construit via `gmake freebsd-build` et les tests dédiés vivent dans `tests/freebsd.rs`.
+
 ## Travail continu apres refactor
 
 Le gros du refactor a ete traite; la suite releve d'un entretien continu, sur les zones touchees par les evolutions produit. Les attentes : garder Clippy (y compris pedantic/nursery) aligne, harmoniser les noms et la doc publique (`///` + exemples) quand vous modifiez une API, ajouter des spans `tracing` la ou l'observabilite le demande, et reordonner au besoin 1 ou 2 modules au fil des nouvelles features (pas de nouvelle vague de refactor prevue).

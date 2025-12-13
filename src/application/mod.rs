@@ -1,6 +1,8 @@
 mod collectors;
 pub mod config;
 mod context;
+#[cfg(feature = "systemd")]
+pub(crate) mod services;
 pub mod sync;
 #[cfg(test)]
 pub mod test_support;
@@ -31,7 +33,7 @@ impl SystemSnapshot {
 
     pub fn capture_with_ctx(opts: CaptureOptions, ctx: &AppContext) -> Result<Self, DescribeError> {
         let started_at = Instant::now();
-        let mut snapshot = CoreCollector.capture_base(&opts)?;
+        let mut snapshot = CoreCollector.capture_base(&opts, ctx)?;
 
         for collector in default_collectors() {
             collector.collect(&mut snapshot, &opts, ctx)?;
@@ -76,7 +78,7 @@ impl SystemSnapshot {
 
 /// Calcule l’espace disque agrégé + partitions.
 pub fn disk_usage() -> Result<DiskUsage, DescribeError> {
-    crate::infrastructure::sysinfo::gather_disks()
+    crate::infrastructure::system::collect_disks(&AppContext::in_memory())
 }
 
 #[cfg(feature = "serde")]
@@ -190,7 +192,7 @@ pub fn filter_services(services: Vec<ServiceInfo>, cfg: &DescribeConfig) -> Vec<
 }
 
 #[cfg(feature = "net")]
-mod net;
+pub(crate) mod net;
 
 #[cfg(feature = "net")]
 pub use net::{net_listen, network_traffic};

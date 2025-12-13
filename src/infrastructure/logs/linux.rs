@@ -1,21 +1,26 @@
-#[cfg(feature = "journald")]
+use crate::application::logs::{HostLogBackend, TailParams};
+use crate::application::AppContext;
+use crate::domain::{DescribeError, HostLogEntry, HostLogsPage};
 use std::path::PathBuf;
-#[cfg(feature = "journald")]
 use std::process::{Command, Stdio};
 
-#[cfg(feature = "journald")]
-use crate::domain::{DescribeError, HostLogEntry, HostLogsPage};
-
-/// Exécuteur dédié à `journalctl`, configurable via l'environnement.
-#[cfg(feature = "journald")]
-pub struct JournalctlRunner {
+/// Journald backend executed via `journalctl`.
+///
+/// Linux-only: shells out to `journalctl` and expects systemd/journald to be present.
+#[derive(Debug, Clone)]
+pub struct JournaldBackend {
     path: PathBuf,
     base_env: Vec<(String, String)>,
 }
 
-#[cfg(feature = "journald")]
-impl JournalctlRunner {
-    /// Construit un runner en lisant éventuellement `DESCRIBE_ME_JOURNALCTL`, sinon `journalctl`.
+impl Default for JournaldBackend {
+    fn default() -> Self {
+        Self::new_from_env()
+    }
+}
+
+impl JournaldBackend {
+    /// Construit un backend en lisant éventuellement `DESCRIBE_ME_JOURNALCTL`, sinon `journalctl`.
     pub fn new_from_env() -> Self {
         let path = std::env::var("DESCRIBE_ME_JOURNALCTL")
             .map(PathBuf::from)
@@ -28,8 +33,7 @@ impl JournalctlRunner {
         Self { path, base_env }
     }
 
-    /// Lit les dernières `lines` entrées journald et les parse en `HostLogsPage`.
-    pub fn tail(&self, lines: usize) -> Result<HostLogsPage, DescribeError> {
+    fn tail_raw(&self, lines: usize) -> Result<HostLogsPage, DescribeError> {
         if lines == 0 {
             return Ok(HostLogsPage {
                 entries: Vec::new(),
@@ -81,7 +85,13 @@ impl JournalctlRunner {
     }
 }
 
-#[cfg(feature = "journald")]
+impl HostLogBackend for JournaldBackend {
+    fn tail(&self, ctx: &AppContext, params: TailParams) -> Result<HostLogsPage, DescribeError> {
+        let _ = ctx;
+        self.tail_raw(params.lines)
+    }
+}
+
 fn parse_line(line: &str) -> Option<HostLogEntry> {
     let mut parts = line.splitn(3, ' ');
     let timestamp = parts.next()?.trim();
@@ -105,15 +115,15 @@ fn parse_line(line: &str) -> Option<HostLogEntry> {
     })
 }
 
-#[cfg(all(test, feature = "journald"))]
+#[cfg(test)]
 mod tests {
-    use super::JournalctlRunner;
+    use super::JournaldBackend;
 
     #[test]
-    fn runner_uses_env_override() {
+    fn backend_uses_env_override() {
         std::env::set_var("DESCRIBE_ME_JOURNALCTL", "/tmp/custom-journalctl");
-        let runner = JournalctlRunner::new_from_env();
-        assert_eq!(runner.path.display().to_string(), "/tmp/custom-journalctl");
+        let backend = JournaldBackend::new_from_env();
+        assert_eq!(backend.path.display().to_string(), "/tmp/custom-journalctl");
         std::env::remove_var("DESCRIBE_ME_JOURNALCTL");
     }
 }

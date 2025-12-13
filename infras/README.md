@@ -1,6 +1,6 @@
 # Environnement Vagrant multi‑distros pour describe_me
 
-Ce répertoire fournit un `Vagrantfile` pour démarrer rapidement plusieurs VM Linux (Debian, Ubuntu, Fedora, Alma, Rocky) ainsi qu'une VM FreeBSD 14.1, et y déployer `describe-me` en service systemd avec HTTPS (sauf FreeBSD où le provisionnement est laissé manuel).
+Ce répertoire fournit un `Vagrantfile` pour démarrer rapidement plusieurs VM Linux (Debian, Ubuntu, Fedora, Alma, Rocky) ainsi qu'une VM FreeBSD 14.3. Les VMs Linux déploient `describe-me` en service systemd avec HTTPS; la VM FreeBSD copie le binaire précompilé depuis `artifacts/freebsd`, génère une config TLS minimale et installe un service rc.d.
 
 ## Prérequis
 
@@ -13,7 +13,7 @@ Ce répertoire fournit un `Vagrantfile` pour démarrer rapidement plusieurs VM L
 - IP privée (host‑only): `192.168.56.50 + index` (Debian=50, Ubuntu=51, Fedora=52, Alma=53, Rocky=54, FreeBSD=55)
 - NAT 8443 → hôte: `18443 + index`
   - Debian: 18443, Ubuntu: 18444, Fedora: 18445, Alma: 18446, Rocky: 18447, FreeBSD: 18448
-- Sur les VMs Linux, le service écoute sur `0.0.0.0:8443`; FreeBSD ne lance pas encore `describe-me`.
+- Sur les VMs Linux, le service écoute sur `0.0.0.0:8443`; FreeBSD fournit un service rc.d (`describe_me`) prêt à activer.
 
 Accès depuis l’hôte:
 
@@ -30,7 +30,7 @@ Dans tous les cas, place‑toi ici: `infras/`
 1) Choisir comment fournir le binaire `describe-me`:
 
 - Option A — Build MUSL (recommandé, portable):
-  - `rustup target add x86_64-unknown-linux-musl`
+ - `rustup target add x86_64-unknown-linux-musl`
   - (Debian/Ubuntu) `sudo apt-get install -y musl-tools`
   - `cargo build --release --target x86_64-unknown-linux-musl --features "cli web config systemd net"`
   - Le provisioner prendra en priorité `target/x86_64-unknown-linux-musl/release/describe-me`.
@@ -39,6 +39,12 @@ Dans tous les cas, place‑toi ici: `infras/`
 - Option B — Laisser la VM compiler (fallback):
   - `BUILD_IN_GUEST=1 vagrant up` (ou `vagrant provision <vm>`)
   - Le provisioner installe rustup/cargo et build dans `/opt/target` (évite les soucis d’exécution dans le dossier partagé).
+
+- Option FreeBSD — Build dans la VM (par défaut):
+  - `vagrant up freebsd` installe Rust + dépendances de build (cmake, pkgconf, perl5, gmake, llvm17/libclang) via `pkg`, exporte automatiquement `LIBCLANG_PATH` et `BINDGEN_EXTRA_CLANG_ARGS`, compile `describe-me` dans `/opt/target` (target `x86_64-unknown-freebsd`, `--all-features`), copie le binaire vers `/usr/local/bin/describe-me`, génère un `config.toml` minimal et installe le service rc.d `describe_me`.
+  - Fallback binaire: cherche d'abord `/opt/target/x86_64-unknown-freebsd/release/describe-me`, puis `/opt/target/release/describe-me` si le premier chemin n'existe pas.
+  - Le rc.d crée `/var/run/describe_me` pour le pidfile (`/var/run/describe_me/describe_me.pid`) et `/var/db/describe_me` pour l'état, propriétaires `describe_me`.
+  - Si tu veux éviter la compilation (non recommandé), tu peux toujours déposer un binaire FreeBSD dans `artifacts/freebsd/describe-me` ou `target/x86_64-unknown-freebsd/release/describe-me` avant provision, mais le provisioner reconstruit déjà dans la VM.
 
 2) Certificats TLS
 
@@ -74,7 +80,7 @@ Astuce: quelques cibles Make sont disponibles ici et redirigent vers la racine d
 - Fedora: `onlyoffice/base-fedora42`
 - Alma: `generic/almalinux9`
 - Rocky: `generic/rocky9`
-- FreeBSD: `freebsd/FreeBSD-14.1-RELEASE` (version `2024.05.31`)
+- FreeBSD: Box locale `FreeBSD-14.3-RELEASE-amd64` (ajoute-la avec `vagrant box add --name FreeBSD-14.3-RELEASE-amd64 <chemin>.box`)
 
 Override possible via variables d’environnement avant `vagrant up`:
 
@@ -84,9 +90,9 @@ Exemples:
 
 - `BOX_UBUNTU=ubuntu/noble64 vagrant up ubuntu`
 - `BOX_ALMA=bento/almalinux-9 vagrant up alma`
-- `BOX_FREEBSD=freebsd/FreeBSD-14.1-RELEASE BOX_FREEBSD_VERSION=2024.05.31 vagrant up freebsd`
+- `BOX_FREEBSD=FreeBSD-14.3-RELEASE-amd64 vagrant up freebsd`
 
-> FreeBSD: aucun provisioner automatique `describe_me` n'est exécuté pour le moment — l'OS utilise `rc.d` (pas systemd), donc la configuration/service reste manuelle pour l'instant.
+> FreeBSD: le provisioner attend un binaire précompilé dans `artifacts/freebsd/describe-me`, copie `/usr/local/bin/describe-me`, génère `/usr/local/etc/describe_me/config.toml` + certs auto-signés, et installe le service rc.d `describe_me`. Active-le si besoin avec `sysrc describe_me_enable=YES && service describe_me start`.
 
 ## Variables utiles
 
@@ -109,13 +115,21 @@ Le fichier généré dans `target/debian/` sera ensuite accepté par les VM Book
 
 ## Déploiement dans la VM
 
-- Binaire: `/opt/describe_me/describe-me`
-- Config TOML: `/etc/describe_me/config.toml`
-- Certs: `/etc/describe_me/certs/server.pem` et `server-key.pem`
-- Service systemd: `describe_me.service`
-- Répertoire d’état (DB): `/var/lib/describe_me` (propriétaire `describe_me`)
+- Linux (Debian/Ubuntu/Fedora/Alma/Rocky):
+  - Binaire: `/opt/describe_me/describe-me`
+  - Config TOML: `/etc/describe_me/config.toml`
+  - Certs: `/etc/describe_me/certs/server.pem` et `server-key.pem`
+  - Service systemd: `describe_me.service`
+  - Répertoire d’état (DB): `/var/lib/describe_me` (propriétaire `describe_me`)
 
-La configuration générée est calquée sur `src/examples/config_tls.toml` (HTTPS, `web.exposure`, `web.security`, etc.). Le `token` est toujours écrit entre guillemets.
+- FreeBSD:
+  - Binaire: `/usr/local/bin/describe-me` (copié depuis `artifacts/freebsd/describe-me`)
+  - Config TOML: `/usr/local/etc/describe_me/config.toml` (générée si absente)
+  - Certs: `/usr/local/etc/describe_me/certs/server.pem` et `server-key.pem` (auto-signés)
+  - Service rc.d: `describe_me` (`sysrc describe_me_enable=YES` puis `service describe_me restart`)
+  - Répertoire d’état: `/var/db/describe_me` (propriétaire `describe_me`)
+
+La configuration Linux est calquée sur `src/examples/config_tls.toml` (HTTPS, `web.exposure`, `web.security`, etc.). La configuration FreeBSD est minimaliste (HTTPS, allowlist privée, token bcrypt). Le `token` est toujours écrit entre guillemets.
 
 ## Accès et test
 

@@ -36,8 +36,8 @@ crate-type = ["rlib"]
 
 [features]
 default = []
-serde = ["dep:serde", "dep:serde_json"]
-systemd = []
+serde = ["dep:serde", "dep:serde_json", "dep:nix"]
+systemd = ["dep:nix"]
 cli = ["dep:anyhow", "dep:clap", "serde", "dep:nix", "dep:argon2", "dep:bcrypt", "dep:rand_core"]
 # pour tests/fuzz uniquement; n'active rien en prod
 internals = []

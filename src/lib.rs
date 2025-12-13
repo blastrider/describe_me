@@ -17,6 +17,7 @@
 mod application;
 pub mod domain;
 mod infrastructure;
+pub mod security;
 mod shared;
 
 pub mod api;
@@ -34,7 +35,7 @@ pub mod internals {
     #[cfg(all(feature = "net", target_os = "linux"))]
     pub use crate::infrastructure::net::linux::parse_table_from_str;
     pub use crate::infrastructure::sysinfo::parse_mountinfo_for_tests;
-    #[cfg(feature = "systemd")]
+    #[cfg(all(feature = "systemd", target_os = "linux"))]
     pub use crate::infrastructure::systemd::__parse_systemctl_line_for_tests;
     #[cfg(target_os = "linux")]
     pub use crate::infrastructure::updates::{
