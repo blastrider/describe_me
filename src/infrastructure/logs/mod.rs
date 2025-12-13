@@ -41,8 +41,6 @@ pub struct UnsupportedLogsBackend;
 impl HostLogBackend for UnsupportedLogsBackend {
     fn tail(&self, ctx: &AppContext, params: TailParams) -> Result<HostLogsPage, DescribeError> {
         let _ = (ctx, params);
-        Err(DescribeError::Unsupported(
-            "host logs backend unavailable on this platform",
-        ))
+        Err(crate::unsupported_feature!("host_logs"))
     }
 }

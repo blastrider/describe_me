@@ -23,3 +23,16 @@ pub enum DescribeError {
     #[error("unsupported: {0}")]
     Unsupported(&'static str),
 }
+
+/// Helper standardisé pour signaler une fonctionnalité absente sur l'OS courant.
+#[macro_export]
+macro_rules! unsupported_feature {
+    ($feature:literal) => {
+        $crate::domain::DescribeError::Unsupported(concat!(
+            "feature ",
+            $feature,
+            " is not supported on ",
+            env!("CARGO_CFG_TARGET_OS")
+        ))
+    };
+}

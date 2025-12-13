@@ -7,6 +7,8 @@ DEB_FEATURES ?= cli web config systemd net journald
 DEB_FEATURE_ARGS ?= --features "$(DEB_FEATURES)"
 DEB_USE_CONTAINER ?= 1
 RPM_FEATURES ?= cli web config systemd net journald
+FREEBSD_FEATURES ?= cli web config net
+FREEBSD_DIST_DIR ?= dist/freebsd
 CONTAINER_RUNTIME ?= docker
 CONTAINER_OPTS ?= --rm
 RPM_UID ?= $(shell id -u)
@@ -31,7 +33,7 @@ ifneq ($(RELEASE_SIGN_TAG),0)
 RELEASE_SIGN_FLAG := --sign-tag
 endif
 
-.PHONY: all deb fmt fmt-check clippy test test-release doc audit deny bench ci msrv-build tools build-complete sbom supply-chain release-patch release-minor release-major build-plugins vagrant-up-debian rpm-el9 rpm-fedora docker-image docker-push
+.PHONY: all deb fmt fmt-check clippy test test-release doc audit deny bench ci msrv-build tools build-complete sbom supply-chain release-patch release-minor release-major build-plugins vagrant-up-debian rpm-el9 rpm-fedora docker-image docker-push freebsd-build
 
 all: deb
 
@@ -108,6 +110,16 @@ ci: fmt-check clippy test test-release doc audit deny bench build-plugins
 
 msrv-build:
 	cargo +$(MSRV) build -Z unstable-options
+
+freebsd-build:
+	@echo "[freebsd] building release binary with features: $(FREEBSD_FEATURES)"
+	$(CARGO) build --release --features "$(FREEBSD_FEATURES)"
+	@mkdir -p $(FREEBSD_DIST_DIR)
+	cp target/release/describe-me $(FREEBSD_DIST_DIR)/describe_me-freebsd-amd64
+	cp packaging/freebsd/describe_me $(FREEBSD_DIST_DIR)/rc.describe_me
+	@if [ -f packaging/freebsd/README.md ]; then \
+		cp packaging/freebsd/README.md $(FREEBSD_DIST_DIR)/README.md; \
+	fi
 
 tools:
 	@for tool in cargo-audit cargo-deny; do \
