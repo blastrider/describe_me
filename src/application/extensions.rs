@@ -3,13 +3,15 @@ use sha2::{Digest, Sha256};
 use std::borrow::Cow;
 #[cfg(feature = "config")]
 use std::collections::BTreeMap;
-use std::ffi::{OsStr, OsString};
-use std::fs::File;
+use std::ffi::OsString;
+use std::fs::{File, Metadata};
 use std::io::{self, Read};
-use std::path::Path;
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 use thiserror::Error;
 
 #[cfg(unix)]
@@ -25,10 +27,11 @@ pub use policy::PluginPolicy;
 
 #[derive(Debug)]
 pub struct PluginProcess<'a> {
-    pub command: &'a OsStr,
+    pub path: PathBuf,
     pub args: &'a [String],
     pub timeout: Duration,
     pub env: Vec<(OsString, OsString)>,
+    pub(crate) identity: PluginFileIdentity,
 }
 
 #[derive(Debug, Error)]
@@ -91,8 +94,41 @@ pub struct PluginFailure {
     pub logged: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PluginFileIdentity {
+    size: u64,
+    modified_ns: Option<u128>,
+    #[cfg(unix)]
+    dev: u64,
+    #[cfg(unix)]
+    ino: u64,
+}
+
+impl PluginFileIdentity {
+    fn from_metadata(meta: &Metadata) -> Self {
+        let modified_ns = meta
+            .modified()
+            .ok()
+            .and_then(|ts| ts.duration_since(UNIX_EPOCH).ok())
+            .map(|dur| dur.as_nanos());
+
+        Self {
+            size: meta.len(),
+            modified_ns,
+            #[cfg(unix)]
+            dev: meta.dev(),
+            #[cfg(unix)]
+            ino: meta.ino(),
+        }
+    }
+}
+
 pub fn execute_process(spec: &PluginProcess<'_>) -> Result<PluginOutput, PluginExecutionError> {
-    let mut command = Command::new(spec.command);
+    enforce_file_identity(&spec.path, &spec.identity)?;
+
+    let command_str = spec.path.display().to_string();
+
+    let mut command = Command::new(&spec.path);
     command
         .args(spec.args)
         .stdin(Stdio::null())
@@ -106,7 +142,7 @@ pub fn execute_process(spec: &PluginProcess<'_>) -> Result<PluginOutput, PluginE
     let mut child = command
         .spawn()
         .map_err(|source| PluginExecutionError::Spawn {
-            command: spec.command.to_string_lossy().into_owned(),
+            command: command_str.clone(),
             source,
         })?;
 
@@ -119,20 +155,20 @@ pub fn execute_process(spec: &PluginProcess<'_>) -> Result<PluginOutput, PluginE
             Ok(Some(status)) => {
                 let stdout_bytes = join_stream(stdout_handle.take()).map_err(|source| {
                     PluginExecutionError::Stdout {
-                        command: spec.command.to_string_lossy().into_owned(),
+                        command: command_str.clone(),
                         source,
                     }
                 })?;
                 let stderr_bytes = join_stream(stderr_handle.take()).map_err(|source| {
                     PluginExecutionError::Stderr {
-                        command: spec.command.to_string_lossy().into_owned(),
+                        command: command_str.clone(),
                         source,
                     }
                 })?;
 
                 if !status.success() {
                     return Err(PluginExecutionError::Exit {
-                        command: spec.command.to_string_lossy().into_owned(),
+                        command: command_str.clone(),
                         code: status.code(),
                         stderr: bytes_to_string(stderr_bytes),
                     });
@@ -144,7 +180,7 @@ pub fn execute_process(spec: &PluginProcess<'_>) -> Result<PluginOutput, PluginE
 
                 let output = serde_json::from_slice(&stdout_bytes).map_err(|source| {
                     PluginExecutionError::Json {
-                        command: spec.command.to_string_lossy().into_owned(),
+                        command: command_str.clone(),
                         source,
                     }
                 })?;
@@ -157,7 +193,7 @@ pub fn execute_process(spec: &PluginProcess<'_>) -> Result<PluginOutput, PluginE
                     let _ = join_stream(stdout_handle.take());
                     let _ = join_stream(stderr_handle.take());
                     return Err(PluginExecutionError::Timeout {
-                        command: spec.command.to_string_lossy().into_owned(),
+                        command: command_str.clone(),
                         timeout,
                     });
                 }
@@ -166,7 +202,7 @@ pub fn execute_process(spec: &PluginProcess<'_>) -> Result<PluginOutput, PluginE
             Err(err) => {
                 let _ = child.kill();
                 return Err(PluginExecutionError::Wait {
-                    command: spec.command.to_string_lossy().into_owned(),
+                    command: command_str.clone(),
                     source: err,
                 });
             }
@@ -337,23 +373,27 @@ fn prepare_plugin_process<'a>(
     policy: &PluginPolicy,
 ) -> Result<PluginProcess<'a>, PluginExecutionError> {
     let path = Path::new(binary_path);
-    ensure_plugin_path_allowed(path, policy)?;
-    ensure_plugin_file_allowed(path, policy)?;
-    if let Some(expected) = policy.expected_sha256.as_deref() {
-        verify_plugin_signature(path, expected)?;
-    }
+    let canonical = ensure_plugin_path_allowed(path, policy)?;
+    let metadata = ensure_plugin_file_allowed(&canonical, policy)?;
+    let baseline_identity = PluginFileIdentity::from_metadata(&metadata);
+    let identity = if let Some(expected) = policy.expected_sha256.as_deref() {
+        verify_plugin_signature(&canonical, expected, &baseline_identity)?
+    } else {
+        baseline_identity
+    };
     Ok(PluginProcess {
-        command: OsStr::new(binary_path),
+        path: canonical,
         args,
         timeout,
         env: build_plugin_env(plugin_name),
+        identity,
     })
 }
 
 fn ensure_plugin_path_allowed(
     path: &Path,
     policy: &PluginPolicy,
-) -> Result<(), PluginExecutionError> {
+) -> Result<PathBuf, PluginExecutionError> {
     let path_str = path.display().to_string();
     if !path.is_absolute() {
         return Err(PluginExecutionError::Validation {
@@ -361,20 +401,46 @@ fn ensure_plugin_path_allowed(
             message: "le chemin doit être absolu".into(),
         });
     }
-    let root = policy.root();
-    if !path.starts_with(root) {
+
+    if path
+        .components()
+        .any(|comp| matches!(comp, Component::ParentDir))
+    {
         return Err(PluginExecutionError::Validation {
             path: path_str,
-            message: format!("le chemin doit commencer par {}", root.display()),
+            message: "composant .. interdit dans le chemin plugin".into(),
         });
     }
-    Ok(())
+
+    let canonical = path
+        .canonicalize()
+        .map_err(|source| PluginExecutionError::Validation {
+            path: path_str.clone(),
+            message: format!("résolution canonique impossible: {source}"),
+        })?;
+
+    let root = policy.root();
+    if !root.is_absolute() {
+        return Err(PluginExecutionError::Validation {
+            path: root.display().to_string(),
+            message: "le répertoire racine des plugins doit être absolu".into(),
+        });
+    }
+    let root_canon = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    if !canonical.starts_with(&root_canon) {
+        return Err(PluginExecutionError::Validation {
+            path: path_str,
+            message: format!("le chemin doit rester sous {}", root_canon.display()),
+        });
+    }
+
+    Ok(canonical)
 }
 
 fn ensure_plugin_file_allowed(
     path: &Path,
     policy: &PluginPolicy,
-) -> Result<(), PluginExecutionError> {
+) -> Result<std::fs::Metadata, PluginExecutionError> {
     let path_str = path.display().to_string();
     let metadata = std::fs::metadata(path).map_err(|source| PluginExecutionError::BinaryIo {
         path: path_str.clone(),
@@ -395,6 +461,42 @@ fn ensure_plugin_file_allowed(
                 message: "permis d'exécution manquants".into(),
             });
         }
+        if mode & 0o022 != 0 {
+            return Err(PluginExecutionError::Validation {
+                path: path_str,
+                message: format!(
+                    "permissions trop ouvertes (mode {}), retirer l'écriture groupe/monde",
+                    format_mode(mode)
+                ),
+            });
+        }
+    }
+    Ok(metadata)
+}
+
+#[cfg(unix)]
+fn format_mode(mode: u32) -> String {
+    format!("{mode:04o}")
+}
+
+fn capture_identity(path: &Path) -> Result<PluginFileIdentity, PluginExecutionError> {
+    let metadata = std::fs::metadata(path).map_err(|source| PluginExecutionError::BinaryIo {
+        path: path.display().to_string(),
+        source,
+    })?;
+    Ok(PluginFileIdentity::from_metadata(&metadata))
+}
+
+fn enforce_file_identity(
+    path: &Path,
+    expected: &PluginFileIdentity,
+) -> Result<(), PluginExecutionError> {
+    let current = capture_identity(path)?;
+    if &current != expected {
+        return Err(PluginExecutionError::Validation {
+            path: path.display().to_string(),
+            message: "le binaire a changé après validation (taille/mtime/inode)".into(),
+        });
     }
     Ok(())
 }
@@ -427,7 +529,11 @@ fn generate_plugin_token() -> String {
     hex::encode(bytes)
 }
 
-fn verify_plugin_signature(path: &Path, expected_hex: &str) -> Result<(), PluginExecutionError> {
+fn verify_plugin_signature(
+    path: &Path,
+    expected_hex: &str,
+    baseline: &PluginFileIdentity,
+) -> Result<PluginFileIdentity, PluginExecutionError> {
     let expected = expected_hex.trim();
     if expected.is_empty() {
         return Err(PluginExecutionError::Validation {
@@ -461,7 +567,16 @@ fn verify_plugin_signature(path: &Path, expected_hex: &str) -> Result<(), Plugin
             actual,
         });
     }
-    Ok(())
+
+    let post_hash_identity = capture_identity(path)?;
+    if &post_hash_identity != baseline {
+        return Err(PluginExecutionError::Validation {
+            path: path.display().to_string(),
+            message: "le binaire a changé pendant la vérification (taille/mtime/inode)".into(),
+        });
+    }
+
+    Ok(post_hash_identity)
 }
 
 fn sleep_bruteforce_jitter() {
@@ -481,8 +596,10 @@ fn is_prelaunch_error(error: &PluginExecutionError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs::File;
+    use std::fs::{self, File};
     use std::io::Write;
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
     use tempfile::tempdir;
 
     #[cfg(unix)]
@@ -501,11 +618,13 @@ mod tests {
         }
         std::fs::set_permissions(&script_path, perms).unwrap();
 
+        let identity = capture_identity(&script_path).unwrap();
         let spec = PluginProcess {
-            command: script_path.as_os_str(),
+            path: script_path,
             args: &[],
             timeout: Duration::from_millis(100),
             env: Vec::new(),
+            identity,
         };
         let err = execute_process(&spec).unwrap_err();
         assert!(matches!(err, PluginExecutionError::Timeout { .. }));
@@ -519,10 +638,11 @@ mod tests {
         file.write_all(b"ok").unwrap();
         drop(file);
 
+        let baseline = capture_identity(&path).unwrap();
         let mut hasher = Sha256::new();
         hasher.update(b"ok");
         let expected = hex::encode(hasher.finalize());
-        verify_plugin_signature(&path, &expected).unwrap();
+        verify_plugin_signature(&path, &expected, &baseline).unwrap();
     }
 
     #[test]
@@ -533,7 +653,8 @@ mod tests {
         file.write_all(b"ko").unwrap();
         drop(file);
 
-        let err = verify_plugin_signature(&path, "aaaaaaaa").unwrap_err();
+        let baseline = capture_identity(&path).unwrap();
+        let err = verify_plugin_signature(&path, "aaaaaaaa", &baseline).unwrap_err();
         assert!(matches!(err, PluginExecutionError::ValidationFailed { .. }));
     }
 
@@ -581,5 +702,116 @@ mod tests {
 
         let relaxed = policy.with_exec_check(false);
         prepare_plugin_process(&path_str, "demo", &[], Duration::from_secs(1), &relaxed).unwrap();
+    }
+
+    #[test]
+    fn prepare_plugin_process_rejects_parent_dir_components() {
+        let root = tempdir().unwrap();
+        let sibling = root.path().parent().unwrap().join("evil-plugin");
+        File::create(&sibling).unwrap();
+
+        let traversal_path = root.path().join("..").join("evil-plugin");
+        let policy = PluginPolicy::with_root(root.path());
+        let err = prepare_plugin_process(
+            traversal_path.to_str().unwrap(),
+            "demo",
+            &[],
+            Duration::from_secs(1),
+            &policy,
+        )
+        .unwrap_err();
+        assert!(matches!(err, PluginExecutionError::Validation { .. }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepare_plugin_process_rejects_symlink_escape() {
+        let root = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let target = outside.path().join("outside");
+        File::create(&target).unwrap();
+        let link_path = root.path().join("plugin");
+        symlink(&target, &link_path).unwrap();
+
+        let policy = PluginPolicy::with_root(root.path());
+        let err = prepare_plugin_process(
+            link_path.to_str().unwrap(),
+            "demo",
+            &[],
+            Duration::from_secs(1),
+            &policy,
+        )
+        .unwrap_err();
+        assert!(matches!(err, PluginExecutionError::Validation { .. }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepare_plugin_process_rejects_world_writable_files() {
+        let root = tempdir().unwrap();
+        let path = root.path().join("bin");
+        File::create(&path).unwrap();
+        let mut perms = fs::metadata(&path).unwrap().permissions();
+        perms.set_mode(0o777);
+        fs::set_permissions(&path, perms).unwrap();
+
+        let policy = PluginPolicy::with_root(root.path());
+        let err = prepare_plugin_process(
+            path.to_str().unwrap(),
+            "demo",
+            &[],
+            Duration::from_secs(1),
+            &policy,
+        )
+        .unwrap_err();
+        assert!(matches!(err, PluginExecutionError::Validation { .. }));
+    }
+
+    #[test]
+    fn verify_plugin_signature_detects_mid_verification_change() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("bin");
+        let mut file = File::create(&path).unwrap();
+        file.write_all(b"old").unwrap();
+        drop(file);
+
+        let baseline = capture_identity(&path).unwrap();
+        fs::write(&path, b"new").unwrap();
+
+        let mut hasher = Sha256::new();
+        hasher.update(b"new");
+        let expected = hex::encode(hasher.finalize());
+
+        let err = verify_plugin_signature(&path, &expected, &baseline).unwrap_err();
+        assert!(matches!(err, PluginExecutionError::Validation { .. }));
+    }
+
+    #[test]
+    fn enforce_identity_detects_mutation_after_prepare() {
+        let root = tempdir().unwrap();
+        let path = root.path().join("bin");
+        let mut file = File::create(&path).unwrap();
+        file.write_all(b"unchanged").unwrap();
+        drop(file);
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(&path).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&path, perms).unwrap();
+        }
+
+        let policy = PluginPolicy::with_root(root.path());
+        let spec = prepare_plugin_process(
+            path.to_str().unwrap(),
+            "demo",
+            &[],
+            Duration::from_secs(1),
+            &policy,
+        )
+        .unwrap();
+
+        fs::write(&spec.path, b"changed").unwrap();
+        let err = enforce_file_identity(&spec.path, &spec.identity).unwrap_err();
+        assert!(matches!(err, PluginExecutionError::Validation { .. }));
     }
 }
