@@ -10,6 +10,7 @@ use std::io::{self, Read};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 use thiserror::Error;
@@ -33,6 +34,9 @@ pub struct PluginProcess<'a> {
     pub env: Vec<(OsString, OsString)>,
     pub(crate) identity: PluginFileIdentity,
 }
+
+const STDOUT_LIMIT_BYTES: usize = 5 * 1024 * 1024; // 5 MiB
+const STDERR_LIMIT_BYTES: usize = 256 * 1024; // 256 KiB
 
 #[derive(Debug, Error)]
 pub enum PluginExecutionError {
@@ -61,6 +65,12 @@ pub enum PluginExecutionError {
         command: String,
         #[source]
         source: io::Error,
+    },
+    #[error("flux {stream} du plugin dépasse la limite ({observed} > {limit} octets)")]
+    OutputLimitExceeded {
+        stream: &'static str,
+        limit: usize,
+        observed: usize,
     },
     #[error("attente commande {command}: {source}")]
     Wait {
@@ -146,25 +156,72 @@ pub fn execute_process(spec: &PluginProcess<'_>) -> Result<PluginOutput, PluginE
             source,
         })?;
 
-    let mut stdout_handle = child.stdout.take().map(read_stream);
-    let mut stderr_handle = child.stderr.take().map(read_stream);
+    let (stdout_tx, stdout_rx) = mpsc::channel();
+    let stdout_handle = child
+        .stdout
+        .take()
+        .map(|r| spawn_reader(r, STDOUT_LIMIT_BYTES, stdout_tx));
+
+    let (stderr_tx, stderr_rx) = mpsc::channel();
+    let stderr_handle = child
+        .stderr
+        .take()
+        .map(|r| spawn_reader(r, STDERR_LIMIT_BYTES, stderr_tx));
+
+    let mut stdout_result: Option<Result<Vec<u8>, StreamReadError>> = None;
+    let mut stderr_result: Option<Result<Vec<u8>, StreamReadError>> = None;
+    let mut limit_error: Option<PluginExecutionError> = None;
+    let mut killed = false;
+
     let timeout = spec.timeout;
     let started = Instant::now();
     loop {
+        if stdout_result.is_none() {
+            if let Ok(res) = stdout_rx.try_recv() {
+                stdout_result = Some(res);
+            }
+        }
+        if stderr_result.is_none() {
+            if let Ok(res) = stderr_rx.try_recv() {
+                stderr_result = Some(res);
+            }
+        }
+
+        if limit_error.is_none() {
+            if let Some(Err(StreamReadError::LimitExceeded { limit, observed })) =
+                stdout_result.as_ref()
+            {
+                limit_error = Some(PluginExecutionError::OutputLimitExceeded {
+                    stream: "stdout",
+                    limit: *limit,
+                    observed: *observed,
+                });
+            }
+            if let Some(Err(StreamReadError::LimitExceeded { limit, observed })) =
+                stderr_result.as_ref()
+            {
+                limit_error = Some(PluginExecutionError::OutputLimitExceeded {
+                    stream: "stderr",
+                    limit: *limit,
+                    observed: *observed,
+                });
+            }
+            if limit_error.is_some() && !killed {
+                let _ = child.kill();
+                killed = true;
+            }
+        }
+
         match child.try_wait() {
             Ok(Some(status)) => {
-                let stdout_bytes = join_stream(stdout_handle.take()).map_err(|source| {
-                    PluginExecutionError::Stdout {
-                        command: command_str.clone(),
-                        source,
-                    }
-                })?;
-                let stderr_bytes = join_stream(stderr_handle.take()).map_err(|source| {
-                    PluginExecutionError::Stderr {
-                        command: command_str.clone(),
-                        source,
-                    }
-                })?;
+                let stdout_bytes = collect_stream(stdout_handle, stdout_result, stdout_rx, "stdout")
+                    .map_err(|err| map_stream_error(err, "stdout", &command_str))?;
+                let stderr_bytes = collect_stream(stderr_handle, stderr_result, stderr_rx, "stderr")
+                    .map_err(|err| map_stream_error(err, "stderr", &command_str))?;
+
+                if let Some(err) = limit_error {
+                    return Err(err);
+                }
 
                 if !status.success() {
                     return Err(PluginExecutionError::Exit {
@@ -190,8 +247,8 @@ pub fn execute_process(spec: &PluginProcess<'_>) -> Result<PluginOutput, PluginE
                 if started.elapsed() >= timeout {
                     let _ = child.kill();
                     let _ = child.wait();
-                    let _ = join_stream(stdout_handle.take());
-                    let _ = join_stream(stderr_handle.take());
+                    drop(stdout_rx);
+                    drop(stderr_rx);
                     return Err(PluginExecutionError::Timeout {
                         command: command_str.clone(),
                         timeout,
@@ -210,25 +267,101 @@ pub fn execute_process(spec: &PluginProcess<'_>) -> Result<PluginOutput, PluginE
     }
 }
 
-fn read_stream<T>(reader: T) -> thread::JoinHandle<io::Result<Vec<u8>>>
-where
-    T: Read + Send + 'static,
-{
+#[derive(Debug)]
+enum StreamReadError {
+    Io(io::Error),
+    LimitExceeded { limit: usize, observed: usize },
+}
+
+fn read_bounded<R: Read>(mut reader: R, limit: usize) -> Result<Vec<u8>, StreamReadError> {
+    let mut buffer = Vec::with_capacity(8192);
+    let mut chunk = [0u8; 8192];
+    loop {
+        let read = reader.read(&mut chunk).map_err(StreamReadError::Io)?;
+        if read == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&chunk[..read]);
+        if buffer.len() > limit {
+            return Err(StreamReadError::LimitExceeded {
+                limit,
+                observed: buffer.len(),
+            });
+        }
+    }
+    Ok(buffer)
+}
+
+fn spawn_reader<R: Read + Send + 'static>(
+    reader: R,
+    limit: usize,
+    tx: mpsc::Sender<Result<Vec<u8>, StreamReadError>>,
+) -> thread::JoinHandle<()> {
     thread::spawn(move || {
-        let mut buffer = Vec::new();
-        let mut handle = reader;
-        handle.read_to_end(&mut buffer)?;
-        Ok(buffer)
+        let _ = tx.send(read_bounded(reader, limit));
     })
 }
 
-fn join_stream(handle: Option<thread::JoinHandle<io::Result<Vec<u8>>>>) -> io::Result<Vec<u8>> {
+fn collect_stream(
+    handle: Option<thread::JoinHandle<()>>,
+    initial: Option<Result<Vec<u8>, StreamReadError>>,
+    rx: mpsc::Receiver<Result<Vec<u8>, StreamReadError>>,
+    stream: &'static str,
+) -> Result<Vec<u8>, StreamReadError> {
+    if handle.is_none() {
+        return initial.unwrap_or_else(|| Ok(Vec::new()));
+    }
+
+    let result = match initial {
+        Some(res) => res,
+        None => rx
+            .recv()
+            .map_err(|_| {
+                StreamReadError::Io(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    format!("{stream} reader channel closed"),
+                ))
+            })?,
+    };
+
     if let Some(join_handle) = handle {
-        join_handle
-            .join()
-            .map_err(|_| io::Error::other("reader thread panicked"))?
-    } else {
-        Ok(Vec::new())
+        if join_handle.join().is_err() {
+            return Err(StreamReadError::Io(io::Error::other(
+                "reader thread panicked",
+            )));
+        }
+    }
+
+    result
+}
+
+fn map_stream_error(
+    err: StreamReadError,
+    stream: &'static str,
+    command: &str,
+) -> PluginExecutionError {
+    match err {
+        StreamReadError::Io(source) => match stream {
+            "stdout" => PluginExecutionError::Stdout {
+                command: command.to_string(),
+                source,
+            },
+            "stderr" => PluginExecutionError::Stderr {
+                command: command.to_string(),
+                source,
+            },
+            _ => PluginExecutionError::Wait {
+                command: command.to_string(),
+                source,
+            },
+        },
+        StreamReadError::LimitExceeded { limit, observed } => {
+            PluginExecutionError::OutputLimitExceeded {
+                stream,
+                limit,
+                observed,
+            }
+        }
     }
 }
 
@@ -813,5 +946,87 @@ mod tests {
         fs::write(&spec.path, b"changed").unwrap();
         let err = enforce_file_identity(&spec.path, &spec.identity).unwrap_err();
         assert!(matches!(err, PluginExecutionError::Validation { .. }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn execute_process_limits_stdout() {
+        let dir = tempdir().unwrap();
+        let script = dir.path().join("spam.sh");
+        let mut file = File::create(&script).unwrap();
+        let bytes = STDOUT_LIMIT_BYTES + 1024;
+        writeln!(
+            file,
+            "#!/bin/sh\nyes X | head -c {bytes}\n",
+        )
+        .unwrap();
+        drop(file);
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+
+        let policy = PluginPolicy::with_root(dir.path());
+        let spec = prepare_plugin_process(
+            script.to_str().unwrap(),
+            "demo",
+            &[],
+            Duration::from_secs(1),
+            &policy,
+        )
+        .unwrap();
+        let err = execute_process(&spec).unwrap_err();
+        match err {
+            PluginExecutionError::OutputLimitExceeded {
+                stream,
+                limit,
+                observed,
+            } => {
+                assert_eq!(stream, "stdout");
+                assert_eq!(limit, STDOUT_LIMIT_BYTES);
+                assert!(observed > limit);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn execute_process_limits_stderr() {
+        let dir = tempdir().unwrap();
+        let script = dir.path().join("spam_err.sh");
+        let mut file = File::create(&script).unwrap();
+        let bytes = STDERR_LIMIT_BYTES + 1024;
+        writeln!(
+            file,
+            "#!/bin/sh\nyes X | head -c {bytes} >&2\n",
+        )
+        .unwrap();
+        drop(file);
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+
+        let policy = PluginPolicy::with_root(dir.path());
+        let spec = prepare_plugin_process(
+            script.to_str().unwrap(),
+            "demo",
+            &[],
+            Duration::from_secs(1),
+            &policy,
+        )
+        .unwrap();
+        let err = execute_process(&spec).unwrap_err();
+        match err {
+            PluginExecutionError::OutputLimitExceeded {
+                stream,
+                limit,
+                observed,
+            } => {
+                assert_eq!(stream, "stderr");
+                assert_eq!(limit, STDERR_LIMIT_BYTES);
+                assert!(observed > limit);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 }
