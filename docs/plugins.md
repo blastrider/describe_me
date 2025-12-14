@@ -123,3 +123,4 @@ sys.exit(0)
 - Les permissions Unix sont vérifiées : binaire régulier, bit exécutable requis (sauf override), et refus si group/world-writable.
 - Le hash SHA-256 est recalculé juste avant l’exécution et l’identité du fichier (inode/mtime/size) est recontrôlée pour éviter un swap entre la vérification et le spawn.
 - Les exécutions ad-hoc (`describe-me plugin run --name … --path …`) appliquent les mêmes règles et n’acceptent qu’un chemin absolu sous le root configuré (customisable via `PluginPolicy::with_root` côté SDK interne).
+- Sortie bornée pour éviter l’OOM : stdout plafonné par défaut à ~5 MiB, stderr à ~256 KiB. Au-delà, le plugin est tué et signalé via `PluginError`.
