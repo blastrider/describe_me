@@ -5,6 +5,7 @@
 - Sécurité : cookie Max-Age synchronisé avec le TTL serveur, suppression du stockage client de jeton, 401 nettoie le cookie côté backend.
 - Docs : ajout de `docs/web-auth.md` décrivant le flux d'auth web (serveur + frontend) et les points de vigilance.
 - API : le réexport global `pub use crate::api::*;` reste provisoire et sera supprimé lors d'une prochaine version majeure ; utilisez les modules explicites (`describe_me::api::history::*`, etc.).
+- API : `PluginDefinition`/`PluginPolicy` marqués `#[non_exhaustive]` et constructeurs ajoutés pour préserver la compatibilité future.
 
 ## v0.5.0 - 2025-12-01
 
