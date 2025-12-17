@@ -1,13 +1,14 @@
 use crate::domain::{UpdatePackage, UpdatesInfo};
 use crate::SharedSlice;
-use std::io;
+use std::fs;
+use std::io::{self, Read};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
-use std::{env, fs};
+use tempfile::TempDir;
 use tracing::{debug, trace, warn};
 
 const UPDATE_COMMAND_TIMEOUT: Duration = Duration::from_secs(20);
@@ -60,10 +61,36 @@ fn run_command_with_timeout(cmd: Command, timeout: Duration, label: &str) -> io:
     let mut cmd = cmd;
     let start = Instant::now();
     let mut child = cmd.spawn()?;
+
+    let stdout_handle = child.stdout.take().map(|mut stdout| {
+        thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = stdout.read_to_end(&mut buf);
+            buf
+        })
+    });
+    let stderr_handle = child.stderr.take().map(|mut stderr| {
+        thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = stderr.read_to_end(&mut buf);
+            buf
+        })
+    });
+
+    let join_output = |handle: Option<thread::JoinHandle<Vec<u8>>>| -> Vec<u8> {
+        handle.and_then(|h| h.join().ok()).unwrap_or_default()
+    };
+
     loop {
-        match child.try_wait()? {
-            Some(_) => {
-                let output = child.wait_with_output()?;
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let stdout = join_output(stdout_handle);
+                let stderr = join_output(stderr_handle);
+                let output = Output {
+                    status,
+                    stdout,
+                    stderr,
+                };
                 let elapsed = start.elapsed();
                 debug!(
                     "update_command_completed command={} status={} duration_ms={}",
@@ -73,7 +100,7 @@ fn run_command_with_timeout(cmd: Command, timeout: Duration, label: &str) -> io:
                 );
                 return Ok(output);
             }
-            None => {
+            Ok(None) => {
                 if start.elapsed() >= timeout {
                     warn!(
                         "update_command_timeout command={} timeout_s={}",
@@ -82,17 +109,40 @@ fn run_command_with_timeout(cmd: Command, timeout: Duration, label: &str) -> io:
                     );
                     let _ = child.kill();
                     let _ = child.wait();
+                    let _ = join_output(stdout_handle);
+                    let _ = join_output(stderr_handle);
                     return Err(io::Error::new(io::ErrorKind::TimedOut, "command timed out"));
                 }
-                thread::sleep(Duration::from_millis(100));
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(err) => {
+                debug!(
+                    error = %err,
+                    "update_command_wait_failed command={}",
+                    label
+                );
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = join_output(stdout_handle);
+                let _ = join_output(stderr_handle);
+                return Err(err);
             }
         }
     }
 }
 
-/// Prépare des répertoires XDG temporaires et renvoie (home, state, cache, config) en String.
-fn prepare_temp_xdg(prefix: &str) -> Option<(String, String, String, String)> {
-    let base = env::temp_dir().join(prefix);
+struct TempXdg {
+    _root: TempDir,
+    home: PathBuf,
+    state: PathBuf,
+    cache: PathBuf,
+    config: PathBuf,
+}
+
+/// Prépare des répertoires XDG temporaires uniques par run.
+fn prepare_temp_xdg(prefix: &str) -> Option<TempXdg> {
+    let root = tempfile::Builder::new().prefix(prefix).tempdir().ok()?;
+    let base = root.path().to_path_buf();
     let state = base.join("state");
     let cache = base.join("cache");
     let config = base.join("config");
@@ -106,12 +156,13 @@ fn prepare_temp_xdg(prefix: &str) -> Option<(String, String, String, String)> {
             debug!("xdg_chmod_failed path={} err={}", dir.display(), err);
         }
     }
-    Some((
-        base.display().to_string(),
-        state.display().to_string(),
-        cache.display().to_string(),
-        config.display().to_string(),
-    ))
+    Some(TempXdg {
+        _root: root,
+        home: base,
+        state,
+        cache,
+        config,
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -276,18 +327,18 @@ fn gather_dnf_updates() -> Option<UpdatesInfo> {
     for (prog, args, label) in attempts {
         let mut cmd = hardened_command(prog);
         cmd.args(*args).env("LC_ALL", "C");
-        if let Some((home, state, cache, config)) = &xdg {
-            cmd.env("HOME", home)
-                .env("XDG_STATE_HOME", state)
-                .env("XDG_CACHE_HOME", cache)
-                .env("XDG_CONFIG_HOME", config);
+        if let Some(xdg) = &xdg {
+            cmd.env("HOME", &xdg.home)
+                .env("XDG_STATE_HOME", &xdg.state)
+                .env("XDG_CACHE_HOME", &xdg.cache)
+                .env("XDG_CONFIG_HOME", &xdg.config);
         }
         debug!(
             "dnf_like_attempt command={} home={:?} xdg_state={:?} xdg_cache={:?}",
             *label,
-            xdg.as_ref().map(|x| &x.0),
-            xdg.as_ref().map(|x| &x.1),
-            xdg.as_ref().map(|x| &x.2)
+            xdg.as_ref().map(|x| x.home.display().to_string()),
+            xdg.as_ref().map(|x| x.state.display().to_string()),
+            xdg.as_ref().map(|x| x.cache.display().to_string())
         );
         let output = match run_command(cmd, label) {
             Ok(out) => out,
@@ -772,6 +823,10 @@ mod tests {
     use super::*;
     #[cfg(target_os = "linux")]
     use proptest::prelude::*;
+    #[cfg(unix)]
+    use std::io::Write;
+    #[cfg(unix)]
+    use tempfile::NamedTempFile;
 
     #[test]
     fn apt_counts_inst_lines() {
@@ -818,6 +873,31 @@ Calculating upgrade... Done";
         assert_eq!(pkg.available_version, None);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn run_command_handles_large_output_without_timeout() {
+        let mut tmp = NamedTempFile::new().expect("temp payload");
+        let payload = vec![b'x'; 100_000];
+        tmp.write_all(&payload).expect("write payload");
+        tmp.flush().expect("flush payload");
+
+        let mut cmd = hardened_command("sh");
+        cmd.arg("-c")
+            .arg("cat \"$PAYLOAD\" && cat \"$PAYLOAD\" 1>&2")
+            .env("PAYLOAD", tmp.path());
+
+        let output = run_command_with_timeout(cmd, Duration::from_secs(2), "cat-payload")
+            .expect("command should complete");
+
+        assert!(
+            output.status.success(),
+            "command exited with {:?}",
+            output.status
+        );
+        assert_eq!(output.stdout, payload);
+        assert_eq!(output.stderr, payload);
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn parse_apt_line_extracts_details() {
@@ -855,6 +935,13 @@ foo.noarch                    1-2.el9               @appstream";
 Security:
     kernel.x86_64 5.14.0-370.el9_1";
         assert_eq!(count_dnf_updates(sample), 1);
+    }
+
+    #[test]
+    fn temp_xdg_uses_unique_dirs() {
+        let first = prepare_temp_xdg("describe_me-dnf").expect("temp xdg");
+        let second = prepare_temp_xdg("describe_me-dnf").expect("temp xdg");
+        assert_ne!(first.home, second.home);
     }
 
     #[cfg(target_os = "linux")]
