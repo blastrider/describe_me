@@ -3,6 +3,7 @@ use sha2::{Digest, Sha256};
 use std::borrow::Cow;
 #[cfg(feature = "config")]
 use std::collections::BTreeMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fs::{File, Metadata};
 use std::io::{self, Read};
@@ -37,6 +38,7 @@ pub struct PluginProcess<'a> {
 
 const STDOUT_LIMIT_BYTES: usize = 5 * 1024 * 1024; // 5 MiB
 const STDERR_LIMIT_BYTES: usize = 256 * 1024; // 256 KiB
+const DEFAULT_PLUGIN_ENV_ALLOWLIST: &[&str] = &["PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "HOME"];
 
 #[derive(Debug, Error)]
 pub enum PluginExecutionError {
@@ -112,10 +114,11 @@ pub(crate) struct PluginFileIdentity {
     dev: u64,
     #[cfg(unix)]
     ino: u64,
+    sha256: [u8; 32],
 }
 
 impl PluginFileIdentity {
-    fn from_metadata(meta: &Metadata) -> Self {
+    fn from_metadata(meta: &Metadata, sha256: [u8; 32]) -> Self {
         let modified_ns = meta
             .modified()
             .ok()
@@ -129,6 +132,7 @@ impl PluginFileIdentity {
             dev: meta.dev(),
             #[cfg(unix)]
             ino: meta.ino(),
+            sha256,
         }
     }
 }
@@ -144,17 +148,36 @@ pub fn execute_process(spec: &PluginProcess<'_>) -> Result<PluginOutput, PluginE
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    command.env_clear();
 
     for (key, value) in &spec.env {
         command.env(key, value);
     }
 
-    let mut child = command
-        .spawn()
-        .map_err(|source| PluginExecutionError::Spawn {
-            command: command_str.clone(),
-            source,
-        })?;
+    #[cfg(unix)]
+    const ETXTBSY: i32 = 26;
+    let mut spawn_attempts = 0;
+    let mut child = loop {
+        match command.spawn() {
+            Ok(child) => break child,
+            Err(err) => {
+                #[cfg(unix)]
+                let is_text_busy = err.raw_os_error() == Some(ETXTBSY);
+                #[cfg(not(unix))]
+                let is_text_busy = false;
+
+                if is_text_busy && spawn_attempts < 2 {
+                    spawn_attempts += 1;
+                    thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
+                return Err(PluginExecutionError::Spawn {
+                    command: command_str.clone(),
+                    source: err,
+                });
+            }
+        }
+    };
 
     let (stdout_tx, stdout_rx) = mpsc::channel();
     let stdout_handle = child
@@ -214,10 +237,12 @@ pub fn execute_process(spec: &PluginProcess<'_>) -> Result<PluginOutput, PluginE
 
         match child.try_wait() {
             Ok(Some(status)) => {
-                let stdout_bytes = collect_stream(stdout_handle, stdout_result, stdout_rx, "stdout")
-                    .map_err(|err| map_stream_error(err, "stdout", &command_str))?;
-                let stderr_bytes = collect_stream(stderr_handle, stderr_result, stderr_rx, "stderr")
-                    .map_err(|err| map_stream_error(err, "stderr", &command_str))?;
+                let stdout_bytes =
+                    collect_stream(stdout_handle, stdout_result, stdout_rx, "stdout")
+                        .map_err(|err| map_stream_error(err, "stdout", &command_str))?;
+                let stderr_bytes =
+                    collect_stream(stderr_handle, stderr_result, stderr_rx, "stderr")
+                        .map_err(|err| map_stream_error(err, "stderr", &command_str))?;
 
                 if let Some(err) = limit_error {
                     return Err(err);
@@ -314,14 +339,12 @@ fn collect_stream(
 
     let result = match initial {
         Some(res) => res,
-        None => rx
-            .recv()
-            .map_err(|_| {
-                StreamReadError::Io(io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    format!("{stream} reader channel closed"),
-                ))
-            })?,
+        None => rx.recv().map_err(|_| {
+            StreamReadError::Io(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                format!("{stream} reader channel closed"),
+            ))
+        })?,
     };
 
     if let Some(join_handle) = handle {
@@ -444,6 +467,12 @@ fn run_extensions(
 fn plugin_policy_for_definition(base: &PluginPolicy, plugin: &PluginDefinition) -> PluginPolicy {
     let mut policy = base.clone();
     policy.expected_sha256 = Some(plugin.sha256.clone());
+    if !plugin.allowed_env.is_empty() {
+        policy.allowed_env = plugin.allowed_env.clone();
+    }
+    if !plugin.extra_env.is_empty() {
+        policy.extra_env.extend(plugin.extra_env.clone());
+    }
     policy
 }
 
@@ -507,8 +536,8 @@ fn prepare_plugin_process<'a>(
 ) -> Result<PluginProcess<'a>, PluginExecutionError> {
     let path = Path::new(binary_path);
     let canonical = ensure_plugin_path_allowed(path, policy)?;
-    let metadata = ensure_plugin_file_allowed(&canonical, policy)?;
-    let baseline_identity = PluginFileIdentity::from_metadata(&metadata);
+    ensure_plugin_file_allowed(&canonical, policy)?;
+    let baseline_identity = capture_identity(&canonical)?;
     let identity = if let Some(expected) = policy.expected_sha256.as_deref() {
         verify_plugin_signature(&canonical, expected, &baseline_identity)?
     } else {
@@ -518,7 +547,7 @@ fn prepare_plugin_process<'a>(
         path: canonical,
         args,
         timeout,
-        env: build_plugin_env(plugin_name),
+        env: build_plugin_env(plugin_name, policy),
         identity,
     })
 }
@@ -613,11 +642,33 @@ fn format_mode(mode: u32) -> String {
 }
 
 fn capture_identity(path: &Path) -> Result<PluginFileIdentity, PluginExecutionError> {
-    let metadata = std::fs::metadata(path).map_err(|source| PluginExecutionError::BinaryIo {
+    let mut file = File::open(path).map_err(|source| PluginExecutionError::BinaryIo {
         path: path.display().to_string(),
         source,
     })?;
-    Ok(PluginFileIdentity::from_metadata(&metadata))
+    let metadata = file
+        .metadata()
+        .map_err(|source| PluginExecutionError::BinaryIo {
+            path: path.display().to_string(),
+            source,
+        })?;
+
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 8192];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|source| PluginExecutionError::BinaryIo {
+                path: path.display().to_string(),
+                source,
+            })?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let sha256: [u8; 32] = hasher.finalize().into();
+    Ok(PluginFileIdentity::from_metadata(&metadata, sha256))
 }
 
 fn enforce_file_identity(
@@ -628,32 +679,55 @@ fn enforce_file_identity(
     if &current != expected {
         return Err(PluginExecutionError::Validation {
             path: path.display().to_string(),
-            message: "le binaire a changé après validation (taille/mtime/inode)".into(),
+            message: "le binaire a changé après validation (taille/mtime/inode/sha256)".into(),
         });
     }
     Ok(())
 }
 
-fn build_plugin_env(plugin_name: &str) -> Vec<(OsString, OsString)> {
-    let token = generate_plugin_token();
-    vec![
-        (
-            OsString::from("DESCRIBE_ME_HOST"),
-            OsString::from("describe_me"),
-        ),
-        (
-            OsString::from("DESCRIBE_ME_PLUGIN_NAME"),
-            OsString::from(plugin_name),
-        ),
-        (
-            OsString::from("DESCRIBE_ME_PLUGIN_PROTO"),
-            OsString::from("v1"),
-        ),
-        (
-            OsString::from("DESCRIBE_ME_PLUGIN_TOKEN"),
-            OsString::from(token),
-        ),
-    ]
+fn build_plugin_env(plugin_name: &str, policy: &PluginPolicy) -> Vec<(OsString, OsString)> {
+    let allowlist = if policy.allowed_env.is_empty() {
+        DEFAULT_PLUGIN_ENV_ALLOWLIST
+            .iter()
+            .map(|name| OsString::from(*name))
+            .collect::<HashSet<_>>()
+    } else {
+        policy
+            .allowed_env
+            .iter()
+            .map(OsString::from)
+            .collect::<HashSet<_>>()
+    };
+
+    let mut env: HashMap<OsString, OsString> = HashMap::new();
+    for (key, value) in std::env::vars_os() {
+        if allowlist.contains(&key) {
+            env.insert(key, value);
+        }
+    }
+    for (key, value) in &policy.extra_env {
+        env.insert(OsString::from(key), OsString::from(value));
+    }
+
+    // Always override with the host-provided plugin context.
+    env.insert(
+        OsString::from("DESCRIBE_ME_HOST"),
+        OsString::from("describe_me"),
+    );
+    env.insert(
+        OsString::from("DESCRIBE_ME_PLUGIN_NAME"),
+        OsString::from(plugin_name),
+    );
+    env.insert(
+        OsString::from("DESCRIBE_ME_PLUGIN_PROTO"),
+        OsString::from("v1"),
+    );
+    env.insert(
+        OsString::from("DESCRIBE_ME_PLUGIN_TOKEN"),
+        OsString::from(generate_plugin_token()),
+    );
+
+    env.into_iter().collect()
 }
 
 fn generate_plugin_token() -> String {
@@ -675,25 +749,16 @@ fn verify_plugin_signature(
         });
     }
     let expected_norm = expected.to_ascii_lowercase();
-    let mut file = File::open(path).map_err(|source| PluginExecutionError::BinaryIo {
-        path: path.display().to_string(),
-        source,
-    })?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0u8; 8192];
-    loop {
-        let read = file
-            .read(&mut buffer)
-            .map_err(|source| PluginExecutionError::BinaryIo {
-                path: path.display().to_string(),
-                source,
-            })?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
+    let identity = capture_identity(path)?;
+    if &identity != baseline {
+        return Err(PluginExecutionError::Validation {
+            path: path.display().to_string(),
+            message: "le binaire a changé pendant la vérification (taille/mtime/inode/sha256)"
+                .into(),
+        });
     }
-    let actual = hex::encode(hasher.finalize());
+
+    let actual = hex::encode(identity.sha256);
     if actual != expected_norm {
         return Err(PluginExecutionError::ValidationFailed {
             expected: expected_norm,
@@ -701,15 +766,7 @@ fn verify_plugin_signature(
         });
     }
 
-    let post_hash_identity = capture_identity(path)?;
-    if &post_hash_identity != baseline {
-        return Err(PluginExecutionError::Validation {
-            path: path.display().to_string(),
-            message: "le binaire a changé pendant la vérification (taille/mtime/inode)".into(),
-        });
-    }
-
-    Ok(post_hash_identity)
+    Ok(identity)
 }
 
 fn sleep_bruteforce_jitter() {
@@ -729,11 +786,19 @@ fn is_prelaunch_error(error: &PluginExecutionError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env;
+    use std::ffi::OsStr;
     use std::fs::{self, File};
     use std::io::Write;
     #[cfg(unix)]
     use std::os::unix::fs::symlink;
+    use std::sync::{Mutex, OnceLock};
     use tempfile::tempdir;
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
 
     #[cfg(unix)]
     #[test]
@@ -812,6 +877,49 @@ mod tests {
         let policy = PluginPolicy::with_root(dir.path()).with_expected_sha256(Some(expected));
         let path_str = path.to_string_lossy().to_string();
         prepare_plugin_process(&path_str, "demo", &[], Duration::from_secs(1), &policy).unwrap();
+    }
+
+    #[test]
+    fn plugin_env_filters_unlisted_vars() {
+        let _guard = env_lock();
+        let secret_key = "AWS_SECRET_ACCESS_KEY";
+        let lang_key = "LANG";
+        let extra_key = "EXTRA_VAR";
+
+        let prev_secret = env::var_os(secret_key);
+        let prev_lang = env::var_os(lang_key);
+        let prev_extra = env::var_os(extra_key);
+
+        env::set_var(secret_key, "supersecret");
+        env::set_var(lang_key, "C");
+        env::remove_var(extra_key);
+
+        let policy = PluginPolicy::default()
+            .with_allowed_env([lang_key.to_string()])
+            .with_extra_env([(extra_key.to_string(), "1".to_string())]);
+        let envs = build_plugin_env("demo", &policy);
+        let map: HashMap<OsString, OsString> = envs.into_iter().collect();
+
+        assert_eq!(map.get(OsStr::new(secret_key)), None);
+        assert_eq!(map.get(OsStr::new(lang_key)), Some(&OsString::from("C")));
+        assert_eq!(map.get(OsStr::new(extra_key)), Some(&OsString::from("1")));
+        assert_eq!(
+            map.get(OsStr::new("DESCRIBE_ME_PLUGIN_NAME")),
+            Some(&OsString::from("demo"))
+        );
+
+        match prev_secret {
+            Some(val) => env::set_var(secret_key, val),
+            None => env::remove_var(secret_key),
+        }
+        match prev_lang {
+            Some(val) => env::set_var(lang_key, val),
+            None => env::remove_var(lang_key),
+        }
+        match prev_extra {
+            Some(val) => env::set_var(extra_key, val),
+            None => env::remove_var(extra_key),
+        }
     }
 
     #[cfg(unix)]
@@ -955,11 +1063,7 @@ mod tests {
         let script = dir.path().join("spam.sh");
         let mut file = File::create(&script).unwrap();
         let bytes = STDOUT_LIMIT_BYTES + 1024;
-        writeln!(
-            file,
-            "#!/bin/sh\nyes X | head -c {bytes}\n",
-        )
-        .unwrap();
+        writeln!(file, "#!/bin/sh\nyes X | head -c {bytes}\n",).unwrap();
         drop(file);
         let mut perms = fs::metadata(&script).unwrap().permissions();
         perms.set_mode(0o755);
@@ -996,11 +1100,7 @@ mod tests {
         let script = dir.path().join("spam_err.sh");
         let mut file = File::create(&script).unwrap();
         let bytes = STDERR_LIMIT_BYTES + 1024;
-        writeln!(
-            file,
-            "#!/bin/sh\nyes X | head -c {bytes} >&2\n",
-        )
-        .unwrap();
+        writeln!(file, "#!/bin/sh\nyes X | head -c {bytes} >&2\n",).unwrap();
         drop(file);
         let mut perms = fs::metadata(&script).unwrap().permissions();
         perms.set_mode(0o755);
