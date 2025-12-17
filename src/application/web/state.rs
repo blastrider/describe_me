@@ -145,6 +145,7 @@ pub struct StaticWebConfig {
     pub session_cookie_secure: bool,
     pub session_ttl: Duration,
     pub updates_refresh_ttl: Duration,
+    pub tls_enabled: bool,
 }
 
 #[derive(Clone)]
