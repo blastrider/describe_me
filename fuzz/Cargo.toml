@@ -13,7 +13,7 @@ libfuzzer-sys = "0.4"
 [dependencies.describe_me]
 path = ".."
 default-features = false
-features = ["internals", "net"]
+features = ["internals", "net", "config", "web"]
 
 [[bin]]
 name = "parse_proc_net"
@@ -38,4 +38,3 @@ path = "fuzz_targets/parse_mountinfo.rs"
 [[bin]]
 name = "parse_systemd_line"
 path = "fuzz_targets/parse_systemd_line.rs"
-
