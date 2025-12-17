@@ -1,9 +1,11 @@
+use axum::extract::ConnectInfo;
 use axum::http::{header, HeaderMap, HeaderValue, Request};
 use axum::response::Response;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use futures_util::future::BoxFuture;
 use rand_core::{OsRng, RngCore};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use tower::{Layer, Service};
@@ -41,12 +43,16 @@ impl CspNonce {
 }
 
 /// Middleware layer appliquant les en-têtes de sécurité et injectant un nonce CSP.
-#[derive(Clone, Default)]
-pub struct SecurityHeadersLayer;
+use super::state::StaticWebConfig;
+
+#[derive(Clone)]
+pub struct SecurityHeadersLayer {
+    static_cfg: Arc<StaticWebConfig>,
+}
 
 impl SecurityHeadersLayer {
-    pub fn new() -> Self {
-        Self
+    pub fn new(static_cfg: Arc<StaticWebConfig>) -> Self {
+        Self { static_cfg }
     }
 }
 
@@ -54,13 +60,17 @@ impl<S> Layer<S> for SecurityHeadersLayer {
     type Service = SecurityHeadersMiddleware<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        SecurityHeadersMiddleware { inner }
+        SecurityHeadersMiddleware {
+            inner,
+            static_cfg: self.static_cfg.clone(),
+        }
     }
 }
 
 #[derive(Clone)]
 pub struct SecurityHeadersMiddleware<S> {
     inner: S,
+    static_cfg: Arc<StaticWebConfig>,
 }
 
 impl<S, B> Service<Request<B>> for SecurityHeadersMiddleware<S>
@@ -81,16 +91,17 @@ where
         let mut inner = self.inner.clone();
         let csp_nonce = CspNonce::new(generate_csp_nonce());
         req.extensions_mut().insert(csp_nonce.clone());
+        let is_https = is_request_https(&req, &self.static_cfg);
 
         Box::pin(async move {
             let mut response = inner.call(req).await?;
-            apply_security_headers(response.headers_mut(), &csp_nonce);
+            apply_security_headers(response.headers_mut(), &csp_nonce, is_https);
             Ok(response)
         })
     }
 }
 
-pub(crate) fn apply_security_headers(headers: &mut HeaderMap, nonce: &CspNonce) {
+pub(crate) fn apply_security_headers(headers: &mut HeaderMap, nonce: &CspNonce, is_https: bool) {
     let csp_value = format!(
         "default-src 'none'; connect-src 'self'; img-src 'self'; font-src 'self'; \
          style-src 'nonce-{nonce}'; script-src 'nonce-{nonce}'; script-src-attr 'none'; base-uri 'none'; form-action 'self'; \
@@ -118,10 +129,12 @@ pub(crate) fn apply_security_headers(headers: &mut HeaderMap, nonce: &CspNonce) 
         HEADER_PERMISSIONS_POLICY,
         HeaderValue::from_static("geolocation=(), camera=(), microphone=()"),
     );
-    headers.insert(
-        HEADER_STRICT_TRANSPORT_SECURITY,
-        HeaderValue::from_static("max-age=31536000; includeSubDomains"),
-    );
+    if is_https {
+        headers.insert(
+            HEADER_STRICT_TRANSPORT_SECURITY,
+            HeaderValue::from_static("max-age=31536000; includeSubDomains"),
+        );
+    }
     headers.insert(
         HEADER_CROSS_ORIGIN_OPENER_POLICY,
         HeaderValue::from_static("same-origin"),
@@ -136,4 +149,73 @@ fn generate_csp_nonce() -> String {
     let mut bytes = [0u8; 32];
     OsRng.fill_bytes(&mut bytes);
     URL_SAFE_NO_PAD.encode(bytes)
+}
+
+pub(crate) fn is_request_https<B>(req: &Request<B>, cfg: &StaticWebConfig) -> bool {
+    if cfg.tls_enabled {
+        return true;
+    }
+
+    if req
+        .uri()
+        .scheme_str()
+        .map(|scheme| scheme.eq_ignore_ascii_case("https"))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+
+    let remote_ip = req
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|info| info.0.ip());
+
+    let Some(ip) = remote_ip else { return false };
+    if !cfg.security.is_trusted_proxy(ip) {
+        return false;
+    }
+
+    if let Some(forwarded) = req.headers().get(header::FORWARDED) {
+        if forwarded_proto_is_https(forwarded) {
+            return true;
+        }
+    }
+
+    if proto_header_is_https(req.headers().get("x-forwarded-proto")) {
+        return true;
+    }
+
+    false
+}
+
+fn proto_header_is_https(value: Option<&HeaderValue>) -> bool {
+    value
+        .and_then(|val| val.to_str().ok())
+        .map(|text| {
+            text.split(',')
+                .any(|part| part.trim().eq_ignore_ascii_case("https"))
+        })
+        .unwrap_or(false)
+}
+
+fn forwarded_proto_is_https(value: &HeaderValue) -> bool {
+    let Ok(text) = value.to_str() else {
+        return false;
+    };
+    for segment in text.split(',') {
+        for directive in segment.split(';') {
+            let mut kv = directive.splitn(2, '=');
+            let key = kv.next().map(|k| k.trim().to_ascii_lowercase());
+            if key.as_deref() != Some("proto") {
+                continue;
+            }
+            if let Some(raw_val) = kv.next() {
+                let trimmed = raw_val.trim().trim_matches('"').trim_matches('\'');
+                if trimmed.eq_ignore_ascii_case("https") {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
