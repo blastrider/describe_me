@@ -83,6 +83,7 @@ fn build_app_state(
         session_cookie_secure,
         session_ttl,
         updates_refresh_ttl: Duration::from_secs(1),
+        tls_enabled: false,
     };
     let runtime = RuntimeState {
         shutdown: Arc::new(tokio::sync::Notify::new()),
