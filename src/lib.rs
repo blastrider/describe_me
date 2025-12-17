@@ -33,7 +33,10 @@ pub use crate::api::*;
 pub mod internals {
     //! Helpers de parsing réservés aux tests/fuzz. Non stable, non supportés en production.
     #[cfg(all(feature = "net", target_os = "linux"))]
-    pub use crate::infrastructure::net::linux::parse_table_from_str;
+    pub use crate::infrastructure::net::linux::{
+        parse_table_from_str, table_parse_opts_tcp, table_parse_opts_udp, AddressKind,
+        TableParseOpts,
+    };
     pub use crate::infrastructure::sysinfo::parse_mountinfo_for_tests;
     #[cfg(all(feature = "systemd", target_os = "linux"))]
     pub use crate::infrastructure::systemd::__parse_systemctl_line_for_tests;
