@@ -16,6 +16,55 @@ struct Inner {
     notify: Notify,
 }
 
+/// Guard that ensures `refreshing` is reset even if the refresh task panics or is cancelled.
+struct RefreshGuard {
+    inner: Arc<Inner>,
+    armed: bool,
+}
+
+impl RefreshGuard {
+    fn new(inner: Arc<Inner>) -> Self {
+        Self { inner, armed: true }
+    }
+
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for RefreshGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let inner = self.inner.clone();
+        let reset_sync = |inner: &Inner| {
+            if let Ok(mut state) = inner.state.try_lock() {
+                state.refreshing = false;
+                state.last_refresh = Some(Instant::now());
+                drop(state);
+                inner.notify.notify_waiters();
+                return true;
+            }
+            false
+        };
+
+        if reset_sync(&inner) {
+            return;
+        }
+
+        // Contended: spin with a short backoff until the lock can be acquired.
+        let mut backoff = 1u64;
+        loop {
+            if reset_sync(&inner) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(backoff));
+            backoff = (backoff.saturating_mul(2)).min(10);
+        }
+    }
+}
+
 #[derive(Default)]
 struct State {
     data: Option<UpdatesInfo>,
@@ -99,9 +148,12 @@ impl UpdatesCache {
     }
 
     async fn run_refresh(inner: Arc<Inner>) -> Option<UpdatesInfo> {
+        let guard = RefreshGuard::new(inner.clone());
         let result =
             tokio::task::spawn_blocking(crate::infrastructure::updates::gather_updates).await;
-        Self::apply_refresh_result(&inner, result).await
+        let output = Self::apply_refresh_result(&inner, result).await;
+        guard.disarm();
+        output
     }
 
     async fn apply_refresh_result(
@@ -203,5 +255,87 @@ mod tests {
         assert!(state.last_refresh.is_some());
         assert!(state.last_success.is_some());
         assert!(!state.refreshing);
+    }
+
+    #[tokio::test]
+    async fn refresh_guard_resets_on_panic() {
+        let cache = UpdatesCache::new(Duration::from_secs(1), Duration::from_secs(1));
+        {
+            let mut state = cache.inner.state.lock().await;
+            state.refreshing = true;
+        }
+        let inner = cache.inner.clone();
+        tokio::spawn(async move {
+            let guard = super::RefreshGuard::new(inner.clone());
+            // Simulate panic before apply_refresh_result
+            drop(guard); // drop without disarm
+            panic!("simulated panic");
+        })
+        .await
+        .ok();
+
+        // Give the guard time to reset (with timeout to avoid hangs)
+        let _ =
+            tokio::time::timeout(Duration::from_millis(100), cache.inner.notify.notified()).await;
+        let state = cache.inner.state.lock().await;
+        assert!(
+            !state.refreshing,
+            "refreshing should be reset even if task panics"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_guard_resets_without_spawn() {
+        let cache = UpdatesCache::new(Duration::from_secs(1), Duration::from_secs(1));
+        {
+            let mut state = cache.inner.state.lock().await;
+            state.refreshing = true;
+        }
+        // Drop the guard on this thread so try_lock succeeds and no spawn is needed.
+        {
+            let guard = super::RefreshGuard::new(cache.inner.clone());
+            drop(guard);
+        }
+        let state = cache.inner.state.lock().await;
+        assert!(
+            !state.refreshing,
+            "refreshing should reset synchronously even without spawn"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn refresh_guard_resets_under_lock_contention() {
+        let cache = UpdatesCache::new(Duration::from_secs(1), Duration::from_secs(1));
+        let (tx_release, rx_release) = std::sync::mpsc::channel();
+        let inner_for_thread = cache.inner.clone();
+        let holder = std::thread::spawn(move || {
+            let mut state = inner_for_thread.state.blocking_lock();
+            state.refreshing = true;
+            let _ = rx_release.recv(); // hold lock until signaled
+        });
+
+        // Ensure the lock is held by the blocking thread.
+        while let Ok(guard) = cache.inner.state.try_lock() {
+            drop(guard);
+            tokio::task::yield_now().await;
+        }
+
+        // Release the lock shortly after dropping the guard so the contention path is exercised.
+        let release_task = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            tx_release.send(()).ok();
+        });
+
+        let guard = super::RefreshGuard::new(cache.inner.clone());
+        drop(guard);
+
+        release_task.await.ok();
+        holder.join().ok();
+
+        let state = cache.inner.state.lock().await;
+        assert!(
+            !state.refreshing,
+            "refreshing should reset even when lock was contended"
+        );
     }
 }
