@@ -1,6 +1,7 @@
 use super::history_profile::HistoryProfile;
 #[cfg(feature = "serde")]
 use serde::Deserialize;
+use std::collections::BTreeMap;
 
 /// Configuration haut-niveau.
 #[derive(Debug, Clone, Default)]
@@ -39,7 +40,7 @@ pub struct WebAccessConfig {
     pub token: Option<String>,
     /// IP ou réseaux autorisés (ex: "192.0.2.5", "10.0.0.0/16", "::1").
     pub allow_ips: Vec<String>,
-    /// Origins autorisés (ex: "https://admin.example.com") pour CORS strict.
+    /// Origins autorisés (ex: "<https://admin.example.com>") pour CORS strict.
     pub allow_origins: Vec<String>,
     /// Proxys de confiance dont on accepte X-Forwarded-For.
     pub trusted_proxies: Vec<String>,
@@ -126,6 +127,7 @@ pub struct HistoryConfig {
 /// Plugin externe lancé durant les captures.
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "serde", derive(Deserialize))]
+#[non_exhaustive]
 pub struct PluginDefinition {
     /// Nom stable affiché côté UI/JSON (namespacing).
     pub name: String,
@@ -140,6 +142,27 @@ pub struct PluginDefinition {
     /// Empreinte SHA-256 hexadécimale attendue pour le binaire.
     #[cfg_attr(feature = "serde", serde(deserialize_with = "deserialize_sha256"))]
     pub sha256: String,
+    /// Allowlist d'ENV transmis au plugin (vide => allowlist par défaut).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub allowed_env: Vec<String>,
+    /// ENV additionnels injectés (override explicite).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub extra_env: BTreeMap<String, String>,
+}
+
+impl PluginDefinition {
+    pub fn new(
+        name: impl Into<String>,
+        path: impl Into<String>,
+        sha256: impl Into<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            path: path.into(),
+            sha256: sha256.into(),
+            ..Self::default()
+        }
+    }
 }
 
 /// Contrôle fin des champs JSON sensibles.
@@ -420,6 +443,10 @@ pub struct BruteForceConfig {
     pub token_ip_spread: u32,
     /// Délai minimal conseillé entre deux tentatives SSE échouées (secondes).
     pub sse_min_retry_seconds: u64,
+    /// TTL (secondes) des entrées de suivi de spread token.
+    pub token_spread_ttl_seconds: u64,
+    /// Intervalle de nettoyage des entrées de spread token (secondes).
+    pub token_spread_cleanup_seconds: u64,
 }
 
 impl Default for BruteForceConfig {
@@ -434,6 +461,8 @@ impl Default for BruteForceConfig {
             token_failure_threshold: 6,
             token_ip_spread: 2,
             sse_min_retry_seconds: 2,
+            token_spread_ttl_seconds: 45 * 60,
+            token_spread_cleanup_seconds: 60,
         }
     }
 }
