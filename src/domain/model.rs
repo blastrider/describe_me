@@ -52,9 +52,8 @@ pub struct ContainersSnapshot {
 
 /// Instantané système construit par le pipeline de capture.
 ///
-/// Il est initialisé par le [`CoreCollector`](crate::application::collectors::CoreCollector) avec
-/// des valeurs par défaut, puis complété par les autres collecteurs qui ne devraient modifier que
-/// leurs propres champs.
+/// Il est initialisé par le collecteur de base (`CoreCollector`) avec des valeurs par défaut, puis
+/// complété par les autres collecteurs qui ne devraient modifier que leurs propres champs.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct SystemSnapshot {
