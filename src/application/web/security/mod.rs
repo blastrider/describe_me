@@ -262,6 +262,10 @@ impl WebSecurity {
         self.sessions.ttl()
     }
 
+    pub(crate) fn is_trusted_proxy(&self, ip: IpAddr) -> bool {
+        self.trusted_proxies.iter().any(|rule| rule.matches(ip))
+    }
+
     pub(super) fn session_manager(&self) -> &SessionManager {
         &self.sessions
     }
@@ -700,14 +704,14 @@ impl fmt::Display for TokenKey {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum IpMatcher {
+pub(crate) enum IpMatcher {
     Exact(IpAddr),
     Ipv4 { network: u32, mask: u32 },
     Ipv6 { network: u128, mask: u128 },
 }
 
 impl IpMatcher {
-    fn parse(raw: &str) -> Result<Self, String> {
+    pub(crate) fn parse(raw: &str) -> Result<Self, String> {
         if raw.is_empty() {
             return Err("entrée vide".into());
         }
@@ -754,7 +758,7 @@ impl IpMatcher {
         }
     }
 
-    fn matches(&self, addr: IpAddr) -> bool {
+    pub(crate) fn matches(&self, addr: IpAddr) -> bool {
         match (self, addr) {
             (IpMatcher::Exact(expected), current) => *expected == current,
             (IpMatcher::Ipv4 { network, mask }, IpAddr::V4(current)) => {
