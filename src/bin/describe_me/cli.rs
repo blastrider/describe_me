@@ -564,12 +564,9 @@ pub fn run(mut cli: Cli) -> Result<()> {
             );
         }
 
-        #[cfg(feature = "config")]
-        let cfg_for_web = cfg.clone();
-
         let access = web_access;
         let exposure_for_web = web_exposure;
-        let ctx_for_web = ctx.clone();
+        let ctx_for_web = ctx;
 
         // runtime tokio local pour ne pas imposer #[tokio::main]
         let rt = tokio::runtime::Builder::new_multi_thread()
@@ -580,7 +577,7 @@ pub fn run(mut cli: Cli) -> Result<()> {
                 addr,
                 tick,
                 #[cfg(feature = "config")]
-                cfg_for_web,
+                cfg,
                 web_debug,
                 access,
                 exposure_for_web,
