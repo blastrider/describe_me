@@ -361,8 +361,8 @@ pub(super) async fn sse_stream(
                             .disk_usage
                             .as_ref()
                             .and_then(|du| du.partitions.as_ref().map(|p| p.len()));
-                        let payload =
-                            serde_json::to_string(&view).unwrap_or_else(|e| json_err(e.to_string()));
+                        let payload = serde_json::to_string(&view)
+                            .unwrap_or_else(|e| json_err(e.to_string()));
                         state_for_cache.cache_snapshot(view);
                         (payload, services_count, partitions_count, None)
                     }
