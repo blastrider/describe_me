@@ -127,61 +127,54 @@ fn parse_table_content(
     pid_cache: &mut HashMap<u32, Option<String>>,
     resolve_processes: bool,
 ) -> Vec<ListeningSocket> {
-    let mut sockets = Vec::new();
-
-    for (i, line) in content.lines().enumerate() {
-        if i == 0 || line.trim().is_empty() {
-            continue; // skip header
-        }
-        let cols: Vec<&str> = line.split_whitespace().collect();
-        if cols.len() < 12 {
-            continue;
-        }
-        let local = cols[1]; // "HHHHHHHH:PPPP" (IPv4) or "HH..HH:PPPP" (IPv6)
-        let remote = cols[2];
-        let st = cols[3]; // "0A" LISTEN (tcp) / "07" UNCONN (udp)
-        let inode_str = cols[11]; // inode
-
-        if let Some(req) = opts.required_state_hex {
-            if st != req {
-                continue;
+    content
+        .lines()
+        .enumerate()
+        .filter_map(|(i, line)| {
+            if i == 0 || line.trim().is_empty() {
+                return None; // skip header
             }
-        }
+            let cols: Vec<&str> = line.split_whitespace().collect();
+            if cols.len() < 12 {
+                return None;
+            }
+            let local = cols[1]; // "HHHHHHHH:PPPP" (IPv4) or "HH..HH:PPPP" (IPv6)
+            let remote = cols[2];
+            let st = cols[3]; // "0A" LISTEN (tcp) / "07" UNCONN (udp)
+            let inode_str = cols[11]; // inode
 
-        if opts.require_wildcard_remote && !is_wildcard_remote(remote, opts.addr_kind) {
-            continue;
-        }
+            if opts.required_state_hex.is_some_and(|req| st != req) {
+                return None;
+            }
 
-        let (addr, port) = match parse_host_port(local, opts.addr_kind) {
-            Some(x) => x,
-            None => continue,
-        };
+            if opts.require_wildcard_remote && !is_wildcard_remote(remote, opts.addr_kind) {
+                return None;
+            }
 
-        // Inode -> PID
-        let pid = if resolve_processes {
-            inode_str
-                .parse::<u64>()
-                .ok()
-                .and_then(|ino| inode_to_pid.get(&ino).copied())
-        } else {
-            None
-        };
-        let process_name = if resolve_processes {
-            pid.and_then(|p| resolve_process_name(p, pid_cache))
-        } else {
-            None
-        };
+            let (addr, port) = parse_host_port(local, opts.addr_kind)?;
 
-        sockets.push(ListeningSocket {
-            proto: opts.proto.to_string(),
-            addr,
-            port,
-            process: pid,
-            process_name,
-        });
-    }
+            // Inode -> PID
+            let pid = resolve_processes
+                .then(|| {
+                    inode_str
+                        .parse::<u64>()
+                        .ok()
+                        .and_then(|ino| inode_to_pid.get(&ino).copied())
+                })
+                .flatten();
+            let process_name = resolve_processes
+                .then(|| pid.and_then(|p| resolve_process_name(p, pid_cache)))
+                .flatten();
 
-    sockets
+            Some(ListeningSocket {
+                proto: opts.proto.to_string(),
+                addr,
+                port,
+                process: pid,
+                process_name,
+            })
+        })
+        .collect()
 }
 
 #[cfg(any(test, feature = "internals"))]
