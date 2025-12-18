@@ -32,9 +32,10 @@ pub fn init_logging() {
         .unwrap();
 
     #[cfg(feature = "journald")]
-    if try_init_journald(&filter, log_to_stderr) {
-        return;
-    }
+    let filter = match try_init_journald(filter, log_to_stderr) {
+        Some(filter) => filter,
+        None => return,
+    };
 
     // Fallback: stderr lisible (pas d’ANSI forcé)
     let fmt_layer = tracing_subscriber::fmt::layer()
@@ -50,35 +51,35 @@ pub fn init_logging() {
 }
 
 #[cfg(feature = "journald")]
-fn try_init_journald(filter: &EnvFilter, log_to_stderr: bool) -> bool {
+fn try_init_journald(filter: EnvFilter, log_to_stderr: bool) -> Option<EnvFilter> {
     if !std::path::Path::new("/run/systemd/journal/socket").exists() {
-        return false;
+        return Some(filter);
     }
 
-    if let Ok(layer) = tracing_journald::layer() {
-        if log_to_stderr {
-            let fmt_layer = tracing_subscriber::fmt::layer()
-                .with_target(false)
-                .with_thread_ids(false)
-                .with_thread_names(false)
-                .with_writer(std::io::stderr);
+    let Ok(layer) = tracing_journald::layer() else {
+        return Some(filter);
+    };
 
-            return tracing_subscriber::registry()
-                .with(filter.clone())
-                .with(layer)
-                .with(fmt_layer)
-                .try_init()
-                .is_ok();
-        }
+    if log_to_stderr {
+        let fmt_layer = tracing_subscriber::fmt::layer()
+            .with_target(false)
+            .with_thread_ids(false)
+            .with_thread_names(false)
+            .with_writer(std::io::stderr);
 
-        return tracing_subscriber::registry()
-            .with(filter.clone())
+        let _ = tracing_subscriber::registry()
+            .with(filter)
             .with(layer)
-            .try_init()
-            .is_ok();
+            .with(fmt_layer)
+            .try_init();
+        return None;
     }
 
-    false
+    let _ = tracing_subscriber::registry()
+        .with(filter)
+        .with(layer)
+        .try_init();
+    None
 }
 
 /// Énumération centralisée des événements de log applicatifs.
