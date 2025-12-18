@@ -307,16 +307,12 @@ pub(super) async fn sse_stream(
     let mut ticker = time::interval(interval);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
-    #[cfg(feature = "config")]
-    let config = state.config();
     let exposure = state.exposure();
     let updates_cache = state.updates_cache().clone();
     let state_for_cache = state.clone();
     let ctx = state.ctx();
 
     let stream = IntervalStream::new(ticker).then(move |_| {
-        #[cfg(feature = "config")]
-        let config = config.clone();
         let exposure = exposure;
         let max_payload = max_payload;
         let metrics = metrics_for_stream.clone();
@@ -328,6 +324,9 @@ pub(super) async fn sse_stream(
             if exposure.updates() {
                 updates_cache.ensure_fresh().await;
             }
+
+            #[cfg(feature = "config")]
+            let config = state_for_cache.config_ref();
 
             let (payload, services_count, partitions_count, close_after) =
                 match capture_snapshot_with_view(
@@ -342,7 +341,7 @@ pub(super) async fn sse_stream(
                     },
                     exposure,
                     #[cfg(feature = "config")]
-                    config.as_ref(),
+                    config,
                     &ctx,
                 ) {
                     Ok((_snapshot, mut view)) => {
@@ -351,7 +350,6 @@ pub(super) async fn sse_stream(
                                 view.updates = Some(info);
                             }
                         }
-                        state_for_cache.cache_snapshot(view.clone());
                         #[cfg(feature = "systemd")]
                         let services_count = view
                             .services_running
@@ -363,13 +361,10 @@ pub(super) async fn sse_stream(
                             .disk_usage
                             .as_ref()
                             .and_then(|du| du.partitions.as_ref().map(|p| p.len()));
-                        (
-                            serde_json::to_string(&view)
-                                .unwrap_or_else(|e| json_err(e.to_string())),
-                            services_count,
-                            partitions_count,
-                            None,
-                        )
+                        let payload =
+                            serde_json::to_string(&view).unwrap_or_else(|e| json_err(e.to_string()));
+                        state_for_cache.cache_snapshot(view);
+                        (payload, services_count, partitions_count, None)
                     }
                     Err(e) => (
                         json_err(e.to_string()),
