@@ -67,7 +67,7 @@ impl Drop for RefreshGuard {
 
 #[derive(Default)]
 struct State {
-    data: Option<UpdatesInfo>,
+    data: Option<Arc<UpdatesInfo>>,
     last_refresh: Option<Instant>,
     last_success: Option<Instant>,
     refreshing: bool,
@@ -86,6 +86,10 @@ impl UpdatesCache {
     }
 
     pub async fn peek(&self) -> Option<UpdatesInfo> {
+        self.peek_shared().await.map(|info| (*info).clone())
+    }
+
+    pub(crate) async fn peek_shared(&self) -> Option<Arc<UpdatesInfo>> {
         let state = self.inner.state.lock().await;
         state.data.clone()
     }
@@ -123,7 +127,14 @@ impl UpdatesCache {
         });
     }
 
+    #[allow(dead_code)]
     pub async fn refresh_blocking(&self) -> Option<UpdatesInfo> {
+        self.refresh_blocking_shared()
+            .await
+            .map(|info| (*info).clone())
+    }
+
+    pub(crate) async fn refresh_blocking_shared(&self) -> Option<Arc<UpdatesInfo>> {
         loop {
             let wait_for_refresh = {
                 let mut state = self.inner.state.lock().await;
@@ -147,7 +158,7 @@ impl UpdatesCache {
         }
     }
 
-    async fn run_refresh(inner: Arc<Inner>) -> Option<UpdatesInfo> {
+    async fn run_refresh(inner: Arc<Inner>) -> Option<Arc<UpdatesInfo>> {
         let guard = RefreshGuard::new(inner.clone());
         let result =
             tokio::task::spawn_blocking(crate::infrastructure::updates::gather_updates).await;
@@ -159,12 +170,13 @@ impl UpdatesCache {
     async fn apply_refresh_result(
         inner: &Arc<Inner>,
         result: Result<Option<UpdatesInfo>, tokio::task::JoinError>,
-    ) -> Option<UpdatesInfo> {
+    ) -> Option<Arc<UpdatesInfo>> {
         let now = Instant::now();
         let mut state = inner.state.lock().await;
         state.refreshing = false;
         match result {
             Ok(updates) => {
+                let updates = updates.map(Arc::new);
                 if let Some(ref info) = updates {
                     debug!(pending = info.pending, "updates_cache_refresh_success");
                     state.last_success = Some(now);
@@ -217,14 +229,14 @@ mod tests {
         let notify_future = inner.notify.notified();
 
         let result = UpdatesCache::apply_refresh_result(&inner, Ok(Some(pending.clone()))).await;
-        assert_eq!(result, Some(pending.clone()));
+        assert_eq!(result.as_deref(), Some(&pending));
 
         timeout(Duration::from_millis(50), notify_future)
             .await
             .expect("should notify waiters");
 
         let state = inner.state.lock().await;
-        assert_eq!(state.data, Some(pending));
+        assert_eq!(state.data.as_deref(), Some(&pending));
         assert!(state.last_success.is_some());
         assert!(state.last_refresh.is_some());
         assert!(!state.refreshing);
@@ -234,7 +246,7 @@ mod tests {
     async fn apply_refresh_result_preserves_data_on_error() {
         let existing = sample_updates(1);
         let inner = new_inner_with_state(State {
-            data: Some(existing.clone()),
+            data: Some(Arc::new(existing.clone())),
             last_success: Some(Instant::now()),
             refreshing: true,
             ..State::default()
@@ -244,14 +256,14 @@ mod tests {
         let join_err = tokio::spawn(async { panic!("fail") }).await.unwrap_err();
 
         let result = UpdatesCache::apply_refresh_result(&inner, Err(join_err)).await;
-        assert_eq!(result, Some(existing.clone()));
+        assert_eq!(result.as_deref(), Some(&existing));
 
         timeout(Duration::from_millis(50), notify_future)
             .await
             .expect("should notify waiters after failure");
 
         let state = inner.state.lock().await;
-        assert_eq!(state.data, Some(existing));
+        assert_eq!(state.data.as_deref(), Some(&existing));
         assert!(state.last_refresh.is_some());
         assert!(state.last_success.is_some());
         assert!(!state.refreshing);
