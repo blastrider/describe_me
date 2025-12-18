@@ -259,7 +259,7 @@ fn emit_security_incident(
 ) {
     LogEvent::SecurityIncident {
         category: Cow::Borrowed(category),
-        route: Cow::Owned(route.as_str().to_string()),
+        route: Cow::Borrowed(route.as_str()),
         ip: ip.map(|addr| Cow::Owned(addr.to_string())),
         token: token.map(|key| Cow::Owned(key.to_string())),
         detail: detail.map(Cow::Owned),
