@@ -37,7 +37,7 @@ impl Drop for RefreshGuard {
         if !self.armed {
             return;
         }
-        let inner = self.inner.clone();
+        let inner = self.inner.as_ref();
         let reset_sync = |inner: &Inner| {
             if let Ok(mut state) = inner.state.try_lock() {
                 state.refreshing = false;
@@ -49,14 +49,14 @@ impl Drop for RefreshGuard {
             false
         };
 
-        if reset_sync(&inner) {
+        if reset_sync(inner) {
             return;
         }
 
         // Contended: spin with a short backoff until the lock can be acquired.
         let mut backoff = 1u64;
         loop {
-            if reset_sync(&inner) {
+            if reset_sync(inner) {
                 break;
             }
             std::thread::sleep(Duration::from_millis(backoff));
