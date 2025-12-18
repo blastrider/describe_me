@@ -273,7 +273,7 @@ impl WebSecurity {
     fn log_incident(&self, category: &'static str, request: &AuthRequest, detail: Option<String>) {
         LogEvent::SecurityIncident {
             category: Cow::Borrowed(category),
-            route: Cow::Owned(request.route.as_str().to_string()),
+            route: Cow::Borrowed(request.route.as_str()),
             ip: Some(Cow::Owned(request.remote_ip.to_string())),
             token: Some(Cow::Owned(request.token_key.to_string())),
             detail: detail.map(Cow::Owned),
@@ -380,7 +380,7 @@ impl WebSecurity {
 
         LogEvent::AuthOk {
             ip: Cow::Owned(request.remote_ip.to_string()),
-            route: Cow::Owned(request.route.as_str().to_string()),
+            route: Cow::Borrowed(request.route.as_str()),
             token: Cow::Owned(request.token_key.to_string()),
         }
         .emit();
@@ -477,7 +477,7 @@ impl WebSecurity {
 
         LogEvent::AuthOk {
             ip: Cow::Owned(request.remote_ip.to_string()),
-            route: Cow::Owned(request.route.as_str().to_string()),
+            route: Cow::Borrowed(request.route.as_str()),
             token: Cow::Owned(request.token_key.to_string()),
         }
         .emit();
