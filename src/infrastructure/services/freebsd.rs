@@ -94,14 +94,14 @@ fn extract_summary(output: &str) -> Option<String> {
 }
 
 fn parse_service_list_output(output: &str) -> Vec<String> {
-    let mut seen = HashSet::new();
+    let mut seen: HashSet<&str> = HashSet::new();
     let mut names = Vec::new();
     for token in output.split_whitespace() {
         let base = token.rsplit('/').next().unwrap_or(token);
         if base.is_empty() {
             continue;
         }
-        if seen.insert(base.to_string()) {
+        if seen.insert(base) {
             names.push(base.to_string());
         }
     }
