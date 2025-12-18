@@ -8,6 +8,8 @@
 //! catalogue discoverable, and simplifies future additions. See
 //! `docs/logging.md` for usage guidelines and examples.
 
+use crate::application::history::HistoryMode;
+use crate::domain::HistoryProfile;
 use std::borrow::Cow;
 use tracing::dispatcher;
 use tracing::{debug, error, info, warn};
@@ -21,6 +23,7 @@ pub fn init_logging() {
         return;
     }
 
+    #[allow(unused_variables)]
     let log_to_stderr = std::env::var_os("DESCRIBE_ME_LOG_STDERR").is_some()
         || std::env::var_os("DESCRIBE_ME_CONTAINER").is_some();
 
@@ -159,6 +162,15 @@ pub enum LogEvent<'a> {
         points: u32,
         window_seconds: u64,
         truncated: bool,
+    },
+    HistoryConfig {
+        enabled: bool,
+        profile: HistoryProfile,
+        mode: HistoryMode,
+        retention_points: u32,
+        max_window_seconds: u32,
+        rounding_seconds: u64,
+        paranoid: bool,
     },
 }
 
@@ -382,6 +394,33 @@ impl LogEvent<'_> {
                     points,
                     window_seconds,
                     truncated
+                );
+            }
+            LogEvent::HistoryConfig {
+                enabled,
+                profile,
+                mode,
+                retention_points,
+                max_window_seconds,
+                rounding_seconds,
+                paranoid,
+            } => {
+                info!(
+                    enabled,
+                    profile = ?profile,
+                    mode = ?mode,
+                    retention_points,
+                    max_window_seconds,
+                    rounding_seconds,
+                    paranoid,
+                    "history_config enabled={} profile={:?} mode={:?} retention_points={} max_window_seconds={} rounding_seconds={} paranoid={}",
+                    enabled,
+                    profile,
+                    mode,
+                    retention_points,
+                    max_window_seconds,
+                    rounding_seconds,
+                    paranoid
                 );
             }
         }

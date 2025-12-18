@@ -1,6 +1,7 @@
 mod collectors;
 pub mod config;
 mod context;
+mod history_config;
 #[cfg(feature = "systemd")]
 pub(crate) mod services;
 pub mod sync;
@@ -10,6 +11,9 @@ pub mod test_support;
 use crate::application::collectors::{default_collectors, CoreCollector};
 #[cfg(feature = "serde")]
 use crate::application::exposure::{Exposure, SnapshotView};
+pub use crate::application::history_config::apply_history_settings;
+#[cfg(feature = "config")]
+pub use crate::application::history_config::history_settings_from_config;
 use crate::application::logging::LogEvent;
 #[cfg(feature = "config")]
 use crate::domain::DescribeConfig;

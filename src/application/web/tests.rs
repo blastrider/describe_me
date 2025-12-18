@@ -1,6 +1,9 @@
 use super::{csp, handlers, origin, *};
+use crate::application::context::AppContext;
 use crate::application::exposure::Exposure;
-use crate::application::test_support::{make_secured_app_state, make_test_app_state};
+use crate::application::test_support::{
+    dummy_snapshot, make_app_state_with_ctx, make_secured_app_state, make_test_app_state,
+};
 use crate::application::web::csp::{
     apply_security_headers, is_request_https, CspNonce, HEADER_STRICT_TRANSPORT_SECURITY,
 };
@@ -683,6 +686,67 @@ async fn metrics_return_cached_snapshot() {
     assert!(text.contains("describe_me_cpu_count 4"));
     assert!(text.contains("describe_me_snapshot_age_seconds"));
     assert!(text.contains("describe_me_disk_bytes_total 10000"));
+}
+
+#[tokio::test]
+async fn history_endpoint_available_when_enabled() {
+    let ctx = AppContext::in_memory();
+    ctx.history().record_snapshot(&dummy_snapshot());
+
+    let exposure = Exposure::all();
+    let security = WebSecurity::build(
+        WebAccess::default(),
+        #[cfg(feature = "config")]
+        None,
+    )
+    .expect("security");
+    let state = make_app_state_with_ctx(exposure, security, true, ctx);
+
+    let params = super::services::HistoryQueryParams {
+        server: None,
+        window: Some(60),
+        limit: Some(32),
+        ip: "127.0.0.1".into(),
+        token: "test".into(),
+    };
+
+    let dto = super::services::build_history_series_response(&state, params)
+        .await
+        .expect("history service");
+    assert!(
+        !dto.points.is_empty(),
+        "expected at least one history point when enabled"
+    );
+}
+
+#[tokio::test]
+async fn history_endpoint_returns_503_when_disabled() {
+    let ctx = AppContext::in_memory();
+    ctx.history()
+        .configure(crate::application::history::HistorySettings::disabled())
+        .expect("disable history");
+
+    let exposure = Exposure::all();
+    let security = WebSecurity::build(
+        WebAccess::default(),
+        #[cfg(feature = "config")]
+        None,
+    )
+    .expect("security");
+    let state = make_app_state_with_ctx(exposure, security, true, ctx);
+    let params = super::services::HistoryQueryParams {
+        server: None,
+        window: None,
+        limit: None,
+        ip: "127.0.0.1".into(),
+        token: "test".into(),
+    };
+
+    let status = match super::services::build_history_series_response(&state, params).await {
+        Ok(_) => StatusCode::OK,
+        Err(err) => err.into_response().status(),
+    };
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
 }
 
 #[tokio::test]

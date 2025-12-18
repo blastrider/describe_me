@@ -51,8 +51,9 @@ use axum::{
 };
 use tokio::sync::Notify;
 
+use crate::application::apply_history_settings;
 #[cfg(feature = "config")]
-use crate::application::config::runtime::WebAccessConfigExt;
+use crate::application::config::runtime::{HistoryConfigExt, WebAccessConfigExt};
 use crate::application::context::AppContext;
 use crate::application::exposure::Exposure;
 #[cfg(feature = "config")]
@@ -152,6 +153,13 @@ pub async fn serve_http<A: Into<SocketAddr>>(
     exposure: Exposure,
 ) -> Result<(), DescribeError> {
     let ctx = AppContext::new_default()?;
+    #[cfg(feature = "config")]
+    if let Some(cfg) = config.as_ref() {
+        if let Some(history_cfg) = cfg.history.as_ref() {
+            let settings = history_cfg.to_settings();
+            apply_history_settings(&ctx, settings)?;
+        }
+    }
     serve_http_with_context(
         addr,
         interval,
