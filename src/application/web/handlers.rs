@@ -127,13 +127,13 @@ pub(super) async fn updates_page(
     }
 
     state.updates_cache().ensure_fresh().await;
-    let updates = match state.updates_cache().peek().await {
+    let updates = match state.updates_cache().peek_shared().await {
         Some(info) => Some(info),
-        None => state.updates_cache().refresh_blocking().await,
+        None => state.updates_cache().refresh_blocking_shared().await,
     };
 
     let vm = UpdatesViewModel {
-        updates: updates.as_ref(),
+        updates: updates.as_deref(),
         message: None,
         csp_nonce: csp_nonce.as_str(),
     };
@@ -237,7 +237,7 @@ pub(super) async fn containers_api(
     let session = guard.into_session();
     let mut response = match state.latest_snapshot() {
         Some(value) => {
-            let Some(containers) = value.view.containers else {
+            let Some(containers) = value.view.containers.as_ref() else {
                 return Err(WebError::forbidden(
                     "Les conteneurs ne sont pas exposés ou non capturés.",
                 ));
@@ -251,7 +251,10 @@ pub(super) async fn containers_api(
 
             (
                 StatusCode::OK,
-                Json(ContainersApiResponse { age_ms, containers }),
+                Json(ContainersApiResponse {
+                    age_ms,
+                    containers: containers.clone(),
+                }),
             )
                 .into_response()
         }
