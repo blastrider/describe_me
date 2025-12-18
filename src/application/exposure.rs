@@ -595,10 +595,10 @@ fn sanitize_os_hint(raw: &str) -> Option<String> {
     if trimmed.is_empty() {
         return None;
     }
-    let mut base = trimmed.to_string();
+    let mut base = trimmed;
     for delim in ['(', '[', '{'] {
         if let Some(idx) = base.find(delim) {
-            base = base[..idx].trim().to_string();
+            base = base[..idx].trim();
         }
     }
     if base.is_empty() {
@@ -607,7 +607,7 @@ fn sanitize_os_hint(raw: &str) -> Option<String> {
 
     let mut words = base.split_whitespace();
     let vendor = words.next()?;
-    let version_token = find_version_token(&base);
+    let version_token = find_version_token(base);
 
     let mut result = String::from(vendor);
     if let Some(token) = version_token {
