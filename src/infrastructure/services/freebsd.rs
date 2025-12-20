@@ -1,10 +1,8 @@
 use crate::application::services::ServiceBackend;
 use crate::application::AppContext;
 use crate::domain::{DescribeError, ServiceInfo};
+use crate::infrastructure::freebsd::command::{base_command, run_command};
 use std::collections::HashSet;
-use std::process::{Command, Stdio};
-
-const SERVICE_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
 /// FreeBSD rc.d backend using `service` listings.
 #[derive(Debug, Default, Clone, Copy)]
@@ -36,36 +34,14 @@ fn gather_service_names() -> Result<Vec<String>, DescribeError> {
 }
 
 fn list_services_with_flag(flag: &str) -> Result<Vec<String>, DescribeError> {
-    let mut cmd = Command::new("service");
-    cmd.arg(flag)
-        .env_clear()
-        .env("PATH", SERVICE_PATH)
-        .stdin(Stdio::null());
-
-    let output = cmd
-        .output()
-        .map_err(|err| DescribeError::External(format!("service {flag}: {err}")))?;
-
-    if !output.status.success() {
-        return Err(DescribeError::External(format!(
-            "service {flag} exited with {status}",
-            status = output.status
-        )));
-    }
-
+    let output = run_command("service", [flag], &format!("service {flag}"))?;
     Ok(parse_service_list_output(&String::from_utf8_lossy(
         &output.stdout,
     )))
 }
 
 fn probe_service_status(name: &str) -> ServiceInfo {
-    let mut cmd = Command::new("service");
-    cmd.args([name, "onestatus"])
-        .env_clear()
-        .env("PATH", SERVICE_PATH)
-        .stdin(Stdio::null());
-
-    match cmd.output() {
+    match base_command("service").args([name, "onestatus"]).output() {
         Ok(output) => {
             let running = output.status.success();
             let stdout = String::from_utf8_lossy(&output.stdout);
