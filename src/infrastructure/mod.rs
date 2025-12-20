@@ -1,6 +1,9 @@
 pub mod sysinfo;
 pub mod system;
 
+#[cfg(target_os = "freebsd")]
+pub mod freebsd;
+
 #[cfg(feature = "systemd")]
 pub mod services;
 
@@ -17,6 +20,8 @@ pub mod rc {
 }
 
 pub mod logs;
+
+pub(crate) mod process;
 
 #[cfg(feature = "net")]
 pub mod net;
