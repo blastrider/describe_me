@@ -1,10 +1,11 @@
 use crate::application::net::{NetBackend, NetCollectionParams};
 use crate::application::AppContext;
 use crate::domain::{DescribeError, ListeningSocket, NetworkInterfaceTraffic};
-use std::collections::HashMap;
-use std::process::{Command, Stdio};
-
-const NET_COMMAND_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+use crate::infrastructure::freebsd::command::run_command;
+use crate::infrastructure::net::common::{
+    parse_interface_counters_table, parse_listening_row, parse_listening_table, Aggregation,
+    CounterMap, ListeningRowSpec,
+};
 
 /// FreeBSD backend relying on `sockstat` and `netstat`.
 #[derive(Debug, Default, Clone, Copy)]
@@ -30,79 +31,67 @@ impl NetBackend for FreeBsdNetBackend {
 fn collect_listening_sockets_freebsd(
     resolve_processes: bool,
 ) -> Result<Vec<ListeningSocket>, DescribeError> {
-    let mut cmd = Command::new("sockstat");
-    cmd.args(["-l", "-4", "-6"])
-        .env_clear()
-        .env("PATH", NET_COMMAND_PATH)
-        .stdin(Stdio::null());
-
-    let output = cmd
-        .output()
-        .map_err(|err| DescribeError::External(format!("sockstat: {err}")))?;
-
-    if !output.status.success() {
-        return Err(DescribeError::External(format!(
-            "sockstat exited with {status}",
-            status = output.status
-        )));
-    }
-
+    let output = run_command("sockstat", ["-l", "-4", "-6"], "sockstat")?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     Ok(parse_sockstat_output(&stdout, resolve_processes))
 }
 
 fn parse_sockstat_output(content: &str, resolve_processes: bool) -> Vec<ListeningSocket> {
-    let mut sockets = Vec::new();
+    let spec = ListeningRowSpec {
+        proto_col: Some(4),
+        local_addr_col: None,
+        local_port_col: None,
+        local_combined_col: Some(5),
+        remote_col: None,
+        state_col: None,
+        pid_col: Some(2),
+        cmd_col: Some(1),
+        inode_col: None,
+    };
 
-    for (idx, line) in content.lines().enumerate() {
-        if idx == 0 || line.trim().is_empty() {
-            continue; // header
-        }
-
-        let mut cols = line.split_whitespace();
-        let _user = cols.next();
-        let command = cols.next();
-        let pid_raw = cols.next();
-        let _fd = cols.next();
-        let proto_raw = cols.next().unwrap_or_default();
-        let proto = match proto_raw {
-            p if p.starts_with("tcp") => "tcp",
-            p if p.starts_with("udp") => "udp",
-            _ => continue,
-        }
-        .to_string();
-
-        let local = match cols.next() {
-            Some(val) if !val.is_empty() => val,
-            _ => continue,
-        };
-
-        let (addr, port) = match parse_host_port(local) {
-            Some(t) => t,
-            None => continue,
-        };
-
-        let pid = if resolve_processes {
-            pid_raw.and_then(|p| p.parse::<u32>().ok())
-        } else {
-            None
-        };
-        let process_name = if resolve_processes {
-            command.map(|s| s.to_string())
-        } else {
-            None
-        };
-
-        sockets.push(ListeningSocket {
-            proto,
-            addr,
-            port,
-            process: pid,
-            process_name,
-        });
-    }
-
-    sockets
+    parse_listening_table(
+        content,
+        |_, idx| idx == 0,
+        |cols| cols.len() >= 6,
+        |cols| {
+            parse_listening_row(
+                cols,
+                &spec,
+                |cols, spec| {
+                    spec.proto_col
+                        .and_then(|idx| cols.get(idx))
+                        .and_then(|raw| {
+                            if raw.starts_with("tcp") {
+                                Some("tcp".to_string())
+                            } else if raw.starts_with("udp") {
+                                Some("udp".to_string())
+                            } else {
+                                None
+                            }
+                        })
+                },
+                |cols, spec| {
+                    spec.local_combined_col
+                        .and_then(|idx| cols.get(idx))
+                        .and_then(|val| parse_host_port(val))
+                },
+                |cols, spec| {
+                    if !resolve_processes {
+                        return (None, None);
+                    }
+                    let pid = spec
+                        .pid_col
+                        .and_then(|idx| cols.get(idx))
+                        .and_then(|raw| raw.parse::<u32>().ok());
+                    let process_name = spec
+                        .cmd_col
+                        .and_then(|idx| cols.get(idx))
+                        .map(|s| s.to_string());
+                    (pid, process_name)
+                },
+            )
+        },
+    )
 }
 
 fn parse_host_port(raw: &str) -> Option<(String, u16)> {
@@ -120,124 +109,51 @@ fn parse_host_port(raw: &str) -> Option<(String, u16)> {
 }
 
 fn collect_network_traffic_freebsd() -> Result<Vec<NetworkInterfaceTraffic>, DescribeError> {
-    let mut cmd = Command::new("netstat");
-    cmd.args(["-ibn"])
-        .env_clear()
-        .env("PATH", NET_COMMAND_PATH)
-        .stdin(Stdio::null());
-
-    let output = cmd
-        .output()
-        .map_err(|err| DescribeError::External(format!("netstat -ibn: {err}")))?;
-
-    if !output.status.success() {
-        return Err(DescribeError::External(format!(
-            "netstat -ibn exited with {status}",
-            status = output.status
-        )));
-    }
-
+    let output = run_command("netstat", ["-ibn"], "netstat -ibn")?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     Ok(parse_netstat_ibn_output(&stdout))
 }
 
 fn parse_netstat_ibn_output(content: &str) -> Vec<NetworkInterfaceTraffic> {
-    let mut interfaces: HashMap<String, NetworkInterfaceTraffic> = HashMap::new();
+    let map = CounterMap {
+        rx_bytes: 5,
+        rx_packets: 3,
+        rx_errors: 4,
+        rx_dropped: Some(10),
+        tx_bytes: 8,
+        tx_packets: 6,
+        tx_errors: 7,
+        tx_dropped: Some(10),
+    };
 
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with("Name") {
-            continue;
-        }
-
-        let mut cols = trimmed.split_whitespace();
-        let name = match cols.next() {
-            Some(name) => name,
-            None => continue,
-        };
-        if name.is_empty() {
-            continue;
-        }
-
-        let _mtu = cols.next();
-        let _network = cols.next();
-        let _address = cols.next();
-        let (
-            Some(rx_packets_raw),
-            Some(rx_errors_raw),
-            Some(rx_bytes_raw),
-            Some(tx_packets_raw),
-            Some(tx_errors_raw),
-            Some(tx_bytes_raw),
-        ) = (
-            cols.next(),
-            cols.next(),
-            cols.next(),
-            cols.next(),
-            cols.next(),
-            cols.next(),
-        )
-        else {
-            continue;
-        };
-        let _coll = cols.next();
-        let drops_raw = cols.next(); // Column may be missing; `None` if so.
-
-        let rx_packets = parse_counter(Some(rx_packets_raw));
-        let rx_errors = parse_counter(Some(rx_errors_raw));
-        let rx_bytes = parse_counter(Some(rx_bytes_raw));
-        let tx_packets = parse_counter(Some(tx_packets_raw));
-        let tx_errors = parse_counter(Some(tx_errors_raw));
-        let tx_bytes = parse_counter(Some(tx_bytes_raw));
-        let drops = parse_counter(drops_raw);
-
-        let entry = interfaces
-            .entry(name.to_string())
-            .or_insert_with(|| NetworkInterfaceTraffic {
-                name: name.to_string(),
-                rx_bytes: 0,
-                rx_packets: 0,
-                rx_errors: 0,
-                rx_dropped: 0,
-                tx_bytes: 0,
-                tx_packets: 0,
-                tx_errors: 0,
-                tx_dropped: 0,
-            });
-
-        if let Some(v) = rx_bytes {
-            entry.rx_bytes = entry.rx_bytes.max(v);
-        }
-        if let Some(v) = rx_packets {
-            entry.rx_packets = entry.rx_packets.max(v);
-        }
-        if let Some(v) = rx_errors {
-            entry.rx_errors = entry.rx_errors.max(v);
-        }
-        if let Some(v) = tx_bytes {
-            entry.tx_bytes = entry.tx_bytes.max(v);
-        }
-        if let Some(v) = tx_packets {
-            entry.tx_packets = entry.tx_packets.max(v);
-        }
-        if let Some(v) = tx_errors {
-            entry.tx_errors = entry.tx_errors.max(v);
-        }
-        if let Some(v) = drops {
-            entry.rx_dropped = entry.rx_dropped.max(v);
-            // netstat does not provide separate TX drops; reuse best-effort value.
-            entry.tx_dropped = entry.tx_dropped.max(v);
-        }
-    }
-
-    interfaces.into_values().collect()
-}
-
-fn parse_counter(raw: Option<&str>) -> Option<u64> {
-    match raw {
-        Some(val) if !val.is_empty() && val != "-" => val.parse::<u64>().ok(),
-        _ => None,
-    }
+    parse_interface_counters_table(
+        content,
+        |line, _| {
+            let trimmed = line.trim();
+            trimmed.is_empty() || trimmed.starts_with("Name")
+        },
+        |line| {
+            let mut cols = line.split_whitespace();
+            let name = cols.next()?.trim();
+            if name.is_empty() {
+                return None;
+            }
+            let rest: Vec<&str> = cols.collect();
+            if rest.len() < 9 {
+                return None;
+            }
+            Some((name.to_string(), rest))
+        },
+        map,
+        |val, _iface| {
+            if val.is_empty() || val == "-" {
+                return Ok(None);
+            }
+            Ok(val.parse::<u64>().ok())
+        },
+        Aggregation::MaxPerInterface,
+    )
+    .unwrap_or_default()
 }
 
 #[cfg(test)]
