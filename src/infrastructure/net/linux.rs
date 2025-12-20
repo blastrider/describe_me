@@ -1,6 +1,10 @@
 use crate::application::net::{NetBackend, NetCollectionParams};
 use crate::application::AppContext;
 use crate::domain::{DescribeError, ListeningSocket, NetworkInterfaceTraffic};
+use crate::infrastructure::net::common::{
+    parse_interface_counters_table, parse_listening_row, parse_listening_table, Aggregation,
+    CounterMap, ListeningRowSpec,
+};
 use std::{
     collections::HashMap,
     fs, io,
@@ -127,54 +131,70 @@ fn parse_table_content(
     pid_cache: &mut HashMap<u32, Option<String>>,
     resolve_processes: bool,
 ) -> Vec<ListeningSocket> {
-    content
-        .lines()
-        .enumerate()
-        .filter_map(|(i, line)| {
-            if i == 0 || line.trim().is_empty() {
-                return None; // skip header
-            }
-            let cols: Vec<&str> = line.split_whitespace().collect();
+    let spec = ListeningRowSpec {
+        proto_col: None,
+        local_addr_col: None,
+        local_port_col: None,
+        local_combined_col: Some(1),
+        remote_col: Some(2),
+        state_col: Some(3),
+        pid_col: None,
+        cmd_col: None,
+        inode_col: Some(11),
+    };
+
+    parse_listening_table(
+        content,
+        |_, idx| idx == 0,
+        |cols| {
             if cols.len() < 12 {
-                return None;
+                return false;
             }
-            let local = cols[1]; // "HHHHHHHH:PPPP" (IPv4) or "HH..HH:PPPP" (IPv6)
-            let remote = cols[2];
-            let st = cols[3]; // "0A" LISTEN (tcp) / "07" UNCONN (udp)
-            let inode_str = cols[11]; // inode
-
-            if opts.required_state_hex.is_some_and(|req| st != req) {
-                return None;
+            if let Some(state_idx) = spec.state_col {
+                if let Some(req) = opts.required_state_hex {
+                    if cols.get(state_idx).map(|st| *st != req).unwrap_or(true) {
+                        return false;
+                    }
+                }
             }
-
-            if opts.require_wildcard_remote && !is_wildcard_remote(remote, opts.addr_kind) {
-                return None;
+            if opts.require_wildcard_remote {
+                if let Some(remote_idx) = spec.remote_col {
+                    if let Some(remote) = cols.get(remote_idx) {
+                        if !is_wildcard_remote(remote, opts.addr_kind) {
+                            return false;
+                        }
+                    } else {
+                        return false;
+                    }
+                }
             }
-
-            let (addr, port) = parse_host_port(local, opts.addr_kind)?;
-
-            // Inode -> PID
-            let pid = resolve_processes
-                .then(|| {
-                    inode_str
-                        .parse::<u64>()
-                        .ok()
-                        .and_then(|ino| inode_to_pid.get(&ino).copied())
-                })
-                .flatten();
-            let process_name = resolve_processes
-                .then(|| pid.and_then(|p| resolve_process_name(p, pid_cache)))
-                .flatten();
-
-            Some(ListeningSocket {
-                proto: opts.proto.to_string(),
-                addr,
-                port,
-                process: pid,
-                process_name,
-            })
-        })
-        .collect()
+            true
+        },
+        |cols| {
+            parse_listening_row(
+                cols,
+                &spec,
+                |_cols, _spec| Some(opts.proto.to_string()),
+                |cols, spec| {
+                    spec.local_combined_col
+                        .and_then(|idx| cols.get(idx))
+                        .and_then(|val| parse_host_port(val, opts.addr_kind))
+                },
+                |cols, spec| {
+                    if !resolve_processes {
+                        return (None, None);
+                    }
+                    let pid = spec
+                        .inode_col
+                        .and_then(|idx| cols.get(idx))
+                        .and_then(|raw| raw.parse::<u64>().ok())
+                        .and_then(|ino| inode_to_pid.get(&ino).copied());
+                    let process_name = pid.and_then(|p| resolve_process_name(p, pid_cache));
+                    (pid, process_name)
+                },
+            )
+        },
+    )
 }
 
 #[cfg(any(test, feature = "internals"))]
@@ -391,54 +411,42 @@ fn collect_network_traffic_from_path(
         }
     };
 
-    let mut interfaces = Vec::new();
+    let map = CounterMap {
+        rx_bytes: 0,
+        rx_packets: 1,
+        rx_errors: 2,
+        rx_dropped: Some(3),
+        tx_bytes: 8,
+        tx_packets: 9,
+        tx_errors: 10,
+        tx_dropped: Some(11),
+    };
 
-    for line in content.lines().skip(2) {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        let (iface_raw, stats_raw) = match trimmed.split_once(':') {
-            Some(parts) => parts,
-            None => continue,
-        };
-
-        let name = iface_raw.trim();
-        if name.is_empty() {
-            continue;
-        }
-
-        let fields: Vec<&str> = stats_raw.split_whitespace().collect();
-        if fields.len() < 16 {
-            continue;
-        }
-
-        let parse_field = |idx: usize| -> Result<u64, DescribeError> {
-            fields[idx].parse::<u64>().map_err(|err| {
+    parse_interface_counters_table(
+        &content,
+        |_, idx| idx < 2,
+        |line| {
+            let (iface_raw, stats_raw) = line.split_once(':')?;
+            let name = iface_raw.trim();
+            if name.is_empty() {
+                return None;
+            }
+            let fields: Vec<&str> = stats_raw.split_whitespace().collect();
+            if fields.len() < 16 {
+                return None;
+            }
+            Some((name.to_string(), fields))
+        },
+        map,
+        |val, iface| {
+            val.parse::<u64>().map(Some).map_err(|err| {
                 DescribeError::Parse(format!(
-                    "invalid counter '{}' for interface {name}: {err}",
-                    fields[idx]
+                    "invalid counter '{val}' for interface {iface}: {err}"
                 ))
             })
-        };
-
-        let entry = NetworkInterfaceTraffic {
-            name: name.to_string(),
-            rx_bytes: parse_field(0)?,
-            rx_packets: parse_field(1)?,
-            rx_errors: parse_field(2)?,
-            rx_dropped: parse_field(3)?,
-            tx_bytes: parse_field(8)?,
-            tx_packets: parse_field(9)?,
-            tx_errors: parse_field(10)?,
-            tx_dropped: parse_field(11)?,
-        };
-
-        interfaces.push(entry);
-    }
-
-    Ok(interfaces)
+        },
+        Aggregation::Append,
+    )
 }
 
 #[cfg(test)]
