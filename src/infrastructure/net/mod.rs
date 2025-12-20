@@ -11,6 +11,8 @@ pub mod linux;
 #[cfg(target_os = "freebsd")]
 pub mod freebsd;
 
+pub mod common;
+
 #[cfg(target_os = "linux")]
 pub type PlatformNetBackend = linux::LinuxNetBackend;
 
