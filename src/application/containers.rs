@@ -17,6 +17,10 @@ use tracing::warn;
 #[cfg(feature = "serde")]
 use crate::application::extensions::{run_ad_hoc_plugin, PluginExecutionError};
 #[cfg(feature = "serde")]
+use crate::application::shared::cache::{
+    finish_refresh, should_start_refresh, RefreshState, RefreshUpdate,
+};
+#[cfg(feature = "serde")]
 use crate::application::sync::lock_expect;
 
 /// Chemin par défaut du binaire plugin conteneurs.
@@ -153,38 +157,32 @@ const fn default_contract_version() -> u16 {
 }
 
 #[cfg(feature = "serde")]
-#[derive(Debug, Clone)]
-struct CachedContainers {
-    snapshot: ContainersSnapshot,
-    fetched_at: Instant,
-}
+type ContainersCacheState = RefreshState<ContainersSnapshot>;
 
 #[cfg(feature = "serde")]
 #[derive(Default, Debug, Clone)]
 struct ContainersCache {
-    last_success: Option<CachedContainers>,
+    state: ContainersCacheState,
 }
 
 #[cfg(feature = "serde")]
 impl ContainersCache {
+    #[allow(dead_code)]
     fn fresh_snapshot(&self, now: Instant) -> Option<ContainersSnapshot> {
-        let cached = self.last_success.as_ref()?;
-        if now.duration_since(cached.fetched_at) < CONTAINERS_CACHE_TTL {
-            Some(cached.snapshot.clone())
-        } else {
-            None
+        match (self.state.data.as_ref(), self.state.last_success) {
+            (Some(snapshot), Some(ts)) if now.duration_since(ts) < CONTAINERS_CACHE_TTL => {
+                Some(snapshot.clone())
+            }
+            _ => None,
         }
     }
 
     fn reuse_stale(&self) -> Option<ContainersSnapshot> {
-        self.last_success.as_ref().map(|c| c.snapshot.clone())
+        self.state.data.clone()
     }
 
     fn store(&mut self, snapshot: ContainersSnapshot, now: Instant) {
-        self.last_success = Some(CachedContainers {
-            snapshot,
-            fetched_at: now,
-        });
+        finish_refresh(&mut self.state, now, RefreshUpdate::Replace(Some(snapshot)));
     }
 }
 
@@ -222,8 +220,15 @@ impl ContainersCacheService {
         let now = Instant::now();
         {
             let guard = lock_expect(self.cache.lock(), "ContainersCacheService");
-            if let Some(snapshot) = guard.fresh_snapshot(now) {
-                return Ok(snapshot);
+            if !should_start_refresh(
+                &guard.state,
+                now,
+                CONTAINERS_CACHE_TTL,
+                Duration::from_secs(0),
+            ) {
+                if let Some(snapshot) = guard.state.data.clone() {
+                    return Ok(snapshot);
+                }
             }
         }
 
