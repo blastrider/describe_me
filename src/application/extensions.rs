@@ -11,9 +11,8 @@ use std::io::{self, Read};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
 use std::thread;
-use std::time::{Duration, Instant, UNIX_EPOCH};
+use std::time::{Duration, UNIX_EPOCH};
 use thiserror::Error;
 
 #[cfg(unix)]
@@ -25,6 +24,7 @@ use crate::application::error::{serialize_error_body, ErrorBody};
 use crate::application::logging::LogEvent;
 #[cfg(feature = "config")]
 use crate::domain::{DescribeConfig, ExtensionsConfig, PluginDefinition};
+use crate::infrastructure::process::{run_with_timeout, CaptureLimits, RunError};
 pub use policy::PluginPolicy;
 
 #[derive(Debug)]
@@ -142,25 +142,52 @@ pub fn execute_process(spec: &PluginProcess<'_>) -> Result<PluginOutput, PluginE
 
     let command_str = spec.path.display().to_string();
 
-    let mut command = Command::new(&spec.path);
-    command
-        .args(spec.args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    command.env_clear();
-
-    for (key, value) in &spec.env {
-        command.env(key, value);
-    }
+    let limits = CaptureLimits {
+        stdout_max: STDOUT_LIMIT_BYTES,
+        stderr_max: STDERR_LIMIT_BYTES,
+    };
 
     #[cfg(unix)]
     const ETXTBSY: i32 = 26;
     let mut spawn_attempts = 0;
-    let mut child = loop {
-        match command.spawn() {
-            Ok(child) => break child,
-            Err(err) => {
+
+    loop {
+        let mut command = Command::new(&spec.path);
+        command
+            .args(spec.args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        command.env_clear();
+
+        for (key, value) in &spec.env {
+            command.env(key, value);
+        }
+
+        let poll_interval = Duration::from_millis(20);
+        match run_with_timeout(command, spec.timeout, Some(limits), poll_interval) {
+            Ok(output) => {
+                if !output.status.success() {
+                    return Err(PluginExecutionError::Exit {
+                        command: command_str.clone(),
+                        code: output.status.code(),
+                        stderr: bytes_to_string(output.stderr),
+                    });
+                }
+
+                if output.stdout.is_empty() {
+                    return Ok(PluginOutput::new());
+                }
+
+                let parsed = serde_json::from_slice(&output.stdout).map_err(|source| {
+                    PluginExecutionError::Json {
+                        command: command_str.clone(),
+                        source,
+                    }
+                })?;
+                return Ok(parsed);
+            }
+            Err(RunError::Spawn(err)) => {
                 #[cfg(unix)]
                 let is_text_busy = err.raw_os_error() == Some(ETXTBSY);
                 #[cfg(not(unix))]
@@ -171,218 +198,46 @@ pub fn execute_process(spec: &PluginProcess<'_>) -> Result<PluginOutput, PluginE
                     thread::sleep(Duration::from_millis(5));
                     continue;
                 }
+
                 return Err(PluginExecutionError::Spawn {
                     command: command_str.clone(),
                     source: err,
                 });
             }
-        }
-    };
-
-    let (stdout_tx, stdout_rx) = mpsc::channel();
-    let stdout_handle = child
-        .stdout
-        .take()
-        .map(|r| spawn_reader(r, STDOUT_LIMIT_BYTES, stdout_tx));
-
-    let (stderr_tx, stderr_rx) = mpsc::channel();
-    let stderr_handle = child
-        .stderr
-        .take()
-        .map(|r| spawn_reader(r, STDERR_LIMIT_BYTES, stderr_tx));
-
-    let mut stdout_result: Option<Result<Vec<u8>, StreamReadError>> = None;
-    let mut stderr_result: Option<Result<Vec<u8>, StreamReadError>> = None;
-    let mut limit_error: Option<PluginExecutionError> = None;
-    let mut killed = false;
-
-    let timeout = spec.timeout;
-    let started = Instant::now();
-    loop {
-        if stdout_result.is_none() {
-            if let Ok(res) = stdout_rx.try_recv() {
-                stdout_result = Some(res);
-            }
-        }
-        if stderr_result.is_none() {
-            if let Ok(res) = stderr_rx.try_recv() {
-                stderr_result = Some(res);
-            }
-        }
-
-        if limit_error.is_none() {
-            if let Some(Err(StreamReadError::LimitExceeded { limit, observed })) =
-                stdout_result.as_ref()
-            {
-                limit_error = Some(PluginExecutionError::OutputLimitExceeded {
-                    stream: "stdout",
-                    limit: *limit,
-                    observed: *observed,
+            Err(RunError::Timeout) => {
+                return Err(PluginExecutionError::Timeout {
+                    command: command_str.clone(),
+                    timeout: spec.timeout,
                 });
             }
-            if let Some(Err(StreamReadError::LimitExceeded { limit, observed })) =
-                stderr_result.as_ref()
-            {
-                limit_error = Some(PluginExecutionError::OutputLimitExceeded {
-                    stream: "stderr",
-                    limit: *limit,
-                    observed: *observed,
+            Err(RunError::Stdout(err)) => {
+                return Err(PluginExecutionError::Stdout {
+                    command: command_str.clone(),
+                    source: err,
                 });
             }
-            if limit_error.is_some() && !killed {
-                let _ = child.kill();
-                killed = true;
+            Err(RunError::Stderr(err)) => {
+                return Err(PluginExecutionError::Stderr {
+                    command: command_str.clone(),
+                    source: err,
+                });
             }
-        }
-
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let stdout_bytes =
-                    collect_stream(stdout_handle, stdout_result, stdout_rx, "stdout")
-                        .map_err(|err| map_stream_error(err, "stdout", &command_str))?;
-                let stderr_bytes =
-                    collect_stream(stderr_handle, stderr_result, stderr_rx, "stderr")
-                        .map_err(|err| map_stream_error(err, "stderr", &command_str))?;
-
-                if let Some(err) = limit_error {
-                    return Err(err);
-                }
-
-                if !status.success() {
-                    return Err(PluginExecutionError::Exit {
-                        command: command_str.clone(),
-                        code: status.code(),
-                        stderr: bytes_to_string(stderr_bytes),
-                    });
-                }
-
-                if stdout_bytes.is_empty() {
-                    return Ok(PluginOutput::new());
-                }
-
-                let output = serde_json::from_slice(&stdout_bytes).map_err(|source| {
-                    PluginExecutionError::Json {
-                        command: command_str.clone(),
-                        source,
-                    }
-                })?;
-                return Ok(output);
-            }
-            Ok(None) => {
-                if started.elapsed() >= timeout {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    drop(stdout_rx);
-                    drop(stderr_rx);
-                    return Err(PluginExecutionError::Timeout {
-                        command: command_str.clone(),
-                        timeout,
-                    });
-                }
-                thread::sleep(Duration::from_millis(20));
-            }
-            Err(err) => {
-                let _ = child.kill();
+            Err(RunError::Wait(err)) => {
                 return Err(PluginExecutionError::Wait {
                     command: command_str.clone(),
                     source: err,
                 });
             }
-        }
-    }
-}
-
-#[derive(Debug)]
-enum StreamReadError {
-    Io(io::Error),
-    LimitExceeded { limit: usize, observed: usize },
-}
-
-fn read_bounded<R: Read>(mut reader: R, limit: usize) -> Result<Vec<u8>, StreamReadError> {
-    let mut buffer = Vec::with_capacity(8192);
-    let mut chunk = [0u8; 8192];
-    loop {
-        let read = reader.read(&mut chunk).map_err(StreamReadError::Io)?;
-        if read == 0 {
-            break;
-        }
-        buffer.extend_from_slice(&chunk[..read]);
-        if buffer.len() > limit {
-            return Err(StreamReadError::LimitExceeded {
-                limit,
-                observed: buffer.len(),
-            });
-        }
-    }
-    Ok(buffer)
-}
-
-fn spawn_reader<R: Read + Send + 'static>(
-    reader: R,
-    limit: usize,
-    tx: mpsc::Sender<Result<Vec<u8>, StreamReadError>>,
-) -> thread::JoinHandle<()> {
-    thread::spawn(move || {
-        let _ = tx.send(read_bounded(reader, limit));
-    })
-}
-
-fn collect_stream(
-    handle: Option<thread::JoinHandle<()>>,
-    initial: Option<Result<Vec<u8>, StreamReadError>>,
-    rx: mpsc::Receiver<Result<Vec<u8>, StreamReadError>>,
-    stream: &'static str,
-) -> Result<Vec<u8>, StreamReadError> {
-    if handle.is_none() {
-        return initial.unwrap_or_else(|| Ok(Vec::new()));
-    }
-
-    let result = match initial {
-        Some(res) => res,
-        None => rx.recv().map_err(|_| {
-            StreamReadError::Io(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                format!("{stream} reader channel closed"),
-            ))
-        })?,
-    };
-
-    if let Some(join_handle) = handle {
-        if join_handle.join().is_err() {
-            return Err(StreamReadError::Io(io::Error::other(
-                "reader thread panicked",
-            )));
-        }
-    }
-
-    result
-}
-
-fn map_stream_error(
-    err: StreamReadError,
-    stream: &'static str,
-    command: &str,
-) -> PluginExecutionError {
-    match err {
-        StreamReadError::Io(source) => match stream {
-            "stdout" => PluginExecutionError::Stdout {
-                command: command.to_string(),
-                source,
-            },
-            "stderr" => PluginExecutionError::Stderr {
-                command: command.to_string(),
-                source,
-            },
-            _ => PluginExecutionError::Wait {
-                command: command.to_string(),
-                source,
-            },
-        },
-        StreamReadError::LimitExceeded { limit, observed } => {
-            PluginExecutionError::OutputLimitExceeded {
+            Err(RunError::OutputLimitExceeded {
                 stream,
                 limit,
                 observed,
+            }) => {
+                return Err(PluginExecutionError::OutputLimitExceeded {
+                    stream,
+                    limit,
+                    observed,
+                });
             }
         }
     }
