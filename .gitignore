@@ -9,3 +9,5 @@
 /images
 /docker/data/state/*
 /data
+AGENTS.md
+.codex
