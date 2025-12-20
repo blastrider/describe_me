@@ -1,12 +1,12 @@
 use crate::domain::{UpdatePackage, UpdatesInfo};
+use crate::infrastructure::process::{run_with_timeout, OutputCapture, RunError};
 use crate::SharedSlice;
 use std::fs;
-use std::io::{self, Read};
+use std::io;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::thread;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use tracing::{debug, trace, warn};
@@ -58,76 +58,40 @@ fn run_command(cmd: Command, label: &str) -> io::Result<Output> {
 }
 
 fn run_command_with_timeout(cmd: Command, timeout: Duration, label: &str) -> io::Result<Output> {
-    let mut cmd = cmd;
-    let start = Instant::now();
-    let mut child = cmd.spawn()?;
-
-    let stdout_handle = child.stdout.take().map(|mut stdout| {
-        thread::spawn(move || {
-            let mut buf = Vec::new();
-            let _ = stdout.read_to_end(&mut buf);
-            buf
-        })
-    });
-    let stderr_handle = child.stderr.take().map(|mut stderr| {
-        thread::spawn(move || {
-            let mut buf = Vec::new();
-            let _ = stderr.read_to_end(&mut buf);
-            buf
-        })
-    });
-
-    let join_output = |handle: Option<thread::JoinHandle<Vec<u8>>>| -> Vec<u8> {
-        handle.and_then(|h| h.join().ok()).unwrap_or_default()
-    };
-
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let stdout = join_output(stdout_handle);
-                let stderr = join_output(stderr_handle);
-                let output = Output {
-                    status,
-                    stdout,
-                    stderr,
-                };
-                let elapsed = start.elapsed();
-                debug!(
-                    "update_command_completed command={} status={} duration_ms={}",
-                    label,
-                    output.status,
-                    elapsed.as_millis()
-                );
-                return Ok(output);
-            }
-            Ok(None) => {
-                if start.elapsed() >= timeout {
-                    warn!(
-                        "update_command_timeout command={} timeout_s={}",
-                        label,
-                        timeout.as_secs()
-                    );
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    let _ = join_output(stdout_handle);
-                    let _ = join_output(stderr_handle);
-                    return Err(io::Error::new(io::ErrorKind::TimedOut, "command timed out"));
-                }
-                thread::sleep(Duration::from_millis(50));
-            }
-            Err(err) => {
-                debug!(
-                    error = %err,
-                    "update_command_wait_failed command={}",
-                    label
-                );
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = join_output(stdout_handle);
-                let _ = join_output(stderr_handle);
-                return Err(err);
-            }
+    let started = Instant::now();
+    let poll_interval = Duration::from_millis(50);
+    match run_with_timeout(cmd, timeout, None, poll_interval) {
+        Ok(OutputCapture {
+            status,
+            stdout,
+            stderr,
+            ..
+        }) => {
+            debug!(
+                "update_command_completed command={} status={} duration_ms={}",
+                label,
+                status,
+                started.elapsed().as_millis()
+            );
+            Ok(Output {
+                status,
+                stdout,
+                stderr,
+            })
         }
+        Err(RunError::Timeout) => {
+            warn!(
+                "update_command_timeout command={} timeout_s={}",
+                label,
+                timeout.as_secs()
+            );
+            Err(io::Error::new(io::ErrorKind::TimedOut, "command timed out"))
+        }
+        Err(RunError::Spawn(err))
+        | Err(RunError::Wait(err))
+        | Err(RunError::Stdout(err))
+        | Err(RunError::Stderr(err)) => Err(err),
+        Err(RunError::OutputLimitExceeded { .. }) => Err(io::Error::other("output limit exceeded")),
     }
 }
 
