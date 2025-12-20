@@ -1,3 +1,6 @@
+use crate::application::shared::cache::{
+    finish_refresh, should_start_refresh, RefreshState, RefreshUpdate,
+};
 use crate::domain::UpdatesInfo;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -12,7 +15,7 @@ pub struct UpdatesCache {
 }
 
 struct Inner {
-    state: Mutex<State>,
+    state: Mutex<RefreshState<Arc<UpdatesInfo>>>,
     notify: Notify,
 }
 
@@ -40,8 +43,7 @@ impl Drop for RefreshGuard {
         let inner = self.inner.as_ref();
         let reset_sync = |inner: &Inner| {
             if let Ok(mut state) = inner.state.try_lock() {
-                state.refreshing = false;
-                state.last_refresh = Some(Instant::now());
+                finish_refresh(&mut state, Instant::now(), RefreshUpdate::Retain);
                 drop(state);
                 inner.notify.notify_waiters();
                 return true;
@@ -65,13 +67,7 @@ impl Drop for RefreshGuard {
     }
 }
 
-#[derive(Default)]
-struct State {
-    data: Option<Arc<UpdatesInfo>>,
-    last_refresh: Option<Instant>,
-    last_success: Option<Instant>,
-    refreshing: bool,
-}
+type State = RefreshState<Arc<UpdatesInfo>>;
 
 impl UpdatesCache {
     pub fn new(success_ttl: Duration, failure_retry: Duration) -> Self {
@@ -98,23 +94,7 @@ impl UpdatesCache {
         let now = Instant::now();
         {
             let mut state = self.inner.state.lock().await;
-            if state.refreshing {
-                return;
-            }
-            let has_data = state.data.is_some();
-            let success_stale = state
-                .last_success
-                .map(|ts| now.duration_since(ts) > self.success_ttl)
-                .unwrap_or(true);
-            let cooldown_active = state
-                .last_refresh
-                .map(|ts| now.duration_since(ts) < self.failure_retry)
-                .unwrap_or(false);
-
-            if has_data && !success_stale {
-                return;
-            }
-            if cooldown_active {
+            if !should_start_refresh(&state, now, self.success_ttl, self.failure_retry) {
                 return;
             }
 
@@ -173,24 +153,22 @@ impl UpdatesCache {
     ) -> Option<Arc<UpdatesInfo>> {
         let now = Instant::now();
         let mut state = inner.state.lock().await;
-        state.refreshing = false;
-        match result {
+        let update = match result {
             Ok(updates) => {
                 let updates = updates.map(Arc::new);
                 if let Some(ref info) = updates {
                     debug!(pending = info.pending, "updates_cache_refresh_success");
-                    state.last_success = Some(now);
                 } else {
                     debug!("updates_cache_refresh_empty");
                 }
-                state.data = updates;
+                RefreshUpdate::Replace(updates)
             }
             Err(err) => {
                 warn!(error = ?err, "updates_cache_refresh_failed");
+                RefreshUpdate::Retain
             }
-        }
-        state.last_refresh = Some(now);
-        let data = state.data.clone();
+        };
+        let data = finish_refresh(&mut state, now, update);
         drop(state);
         inner.notify.notify_waiters();
         data
