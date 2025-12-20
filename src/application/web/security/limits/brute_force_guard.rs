@@ -42,12 +42,16 @@ impl BruteForceGuard {
         ip: IpAddr,
         token: TokenKey,
         now: Instant,
+        policy: &BruteForcePolicy,
     ) -> Option<Duration> {
         let mut delay = self.failures_ip.existing_block(ip, now).await;
 
         if token != TokenKey::Anonymous {
             delay = combine_delay(delay, self.failures_token.existing_block(token, now).await);
-            delay = combine_delay(delay, self.token_spread.existing_block(token, now).await);
+            delay = combine_delay(
+                delay,
+                self.token_spread.existing_block(token, now, policy).await,
+            );
         }
 
         delay
@@ -215,13 +219,22 @@ impl FailureRecord {
 
 #[derive(Debug)]
 struct TokenSpreadTracker {
-    inner: Mutex<HashMap<TokenKey, TokenSpread>>,
+    inner: Mutex<TokenSpreadState>,
+}
+
+#[derive(Debug)]
+struct TokenSpreadState {
+    entries: HashMap<TokenKey, TokenSpreadEntry>,
+    last_cleanup: Instant,
 }
 
 impl TokenSpreadTracker {
     fn new() -> Self {
         Self {
-            inner: Mutex::new(HashMap::new()),
+            inner: Mutex::new(TokenSpreadState {
+                entries: HashMap::new(),
+                last_cleanup: Instant::now(),
+            }),
         }
     }
 
@@ -232,21 +245,71 @@ impl TokenSpreadTracker {
         now: Instant,
         policy: &BruteForcePolicy,
     ) -> TokenSpreadOutcome {
-        let mut guard = self.inner.lock().await;
-        let spread = guard.entry(token).or_default();
-        spread.register(ip, now, policy)
+        let mut state = self.inner.lock().await;
+        self.cleanup_if_needed(&mut state, now, policy);
+        let entry = state
+            .entries
+            .entry(token)
+            .or_insert_with(|| TokenSpreadEntry {
+                spread: TokenSpread::default(),
+                last_seen: now,
+            });
+        entry.last_seen = now;
+        let outcome = entry.spread.register(ip, now, policy);
+        if entry.spread.is_clear() {
+            state.entries.remove(&token);
+        }
+        outcome
     }
 
-    async fn existing_block(&self, token: TokenKey, now: Instant) -> Option<Duration> {
-        let guard = self.inner.lock().await;
-        guard
+    async fn existing_block(
+        &self,
+        token: TokenKey,
+        now: Instant,
+        policy: &BruteForcePolicy,
+    ) -> Option<Duration> {
+        let mut state = self.inner.lock().await;
+        self.cleanup_if_needed(&mut state, now, policy);
+        state
+            .entries
             .get(&token)
-            .and_then(|spread| spread.locked_delay(now))
+            .and_then(|entry| entry.spread.locked_delay(now))
     }
 
     async fn clear(&self, token: TokenKey) {
-        let mut guard = self.inner.lock().await;
-        guard.remove(&token);
+        let mut state = self.inner.lock().await;
+        state.entries.remove(&token);
+    }
+
+    #[cfg(test)]
+    async fn len(&self) -> usize {
+        let state = self.inner.lock().await;
+        state.entries.len()
+    }
+
+    fn cleanup_if_needed(
+        &self,
+        state: &mut TokenSpreadState,
+        now: Instant,
+        policy: &BruteForcePolicy,
+    ) {
+        if now
+            .checked_duration_since(state.last_cleanup)
+            .map(|elapsed| elapsed < policy.token_spread_cleanup_interval())
+            .unwrap_or(false)
+        {
+            return;
+        }
+
+        state.last_cleanup = now;
+        let ttl = policy.token_spread_ttl();
+        state.entries.retain(|_, entry| {
+            let stale = now
+                .checked_duration_since(entry.last_seen)
+                .map(|elapsed| elapsed >= ttl)
+                .unwrap_or(false);
+            !stale && !entry.spread.is_clear()
+        });
     }
 }
 
@@ -255,6 +318,12 @@ struct TokenSpread {
     ips: HashSet<IpAddr>,
     failure_count: u32,
     locked_until: Option<Instant>,
+}
+
+#[derive(Debug)]
+struct TokenSpreadEntry {
+    spread: TokenSpread,
+    last_seen: Instant,
 }
 
 impl TokenSpread {
@@ -298,6 +367,10 @@ impl TokenSpread {
             .filter(|until| *until > now)
             .map(|until| until.saturating_duration_since(now))
     }
+
+    fn is_clear(&self) -> bool {
+        self.failure_count == 0 && self.locked_until.is_none() && self.ips.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -339,10 +412,63 @@ fn emit_security_incident(
 
     LogEvent::SecurityIncident {
         category: Cow::Borrowed(category),
-        route: Cow::Owned(route.as_str().to_string()),
+        route: Cow::Borrowed(route.as_str()),
         ip: ip.map(|addr| Cow::Owned(addr.to_string())),
         token: token.map(|key| Cow::Owned(key.to_string())),
         detail: detail.map(Cow::Owned),
     }
     .emit();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::Ipv4Addr;
+
+    #[tokio::test]
+    async fn token_spread_cleanup_expires_old_entries() {
+        let tracker = TokenSpreadTracker::new();
+        let policy = BruteForcePolicy::default()
+            .with_token_spread(Duration::from_secs(1), Duration::from_millis(1));
+        let now = Instant::now();
+
+        for i in 0..50u8 {
+            let token = TokenKey::Fingerprint(i as u64);
+            let ip = IpAddr::V4(Ipv4Addr::new(192, 0, 2, i));
+            let _ = tracker.register(token, ip, now, &policy).await;
+        }
+        assert!(tracker.len().await >= 50);
+
+        let later = now + Duration::from_secs(2);
+        let _ = tracker
+            .existing_block(TokenKey::Fingerprint(0), later, &policy)
+            .await;
+
+        assert_eq!(tracker.len().await, 0);
+    }
+
+    #[tokio::test]
+    async fn token_spread_preserves_recent_entry() {
+        let tracker = TokenSpreadTracker::new();
+        let policy = BruteForcePolicy::default()
+            .with_token_spread(Duration::from_secs(1), Duration::from_millis(1));
+        let now = Instant::now();
+        for i in 0..10u8 {
+            let token = TokenKey::Fingerprint(i as u64);
+            let ip = IpAddr::V4(Ipv4Addr::new(198, 51, 100, i));
+            let _ = tracker.register(token, ip, now, &policy).await;
+        }
+
+        let hot_token = TokenKey::Fingerprint(999);
+        let hot_ip = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1));
+        let _ = tracker.register(hot_token, hot_ip, now, &policy).await;
+        let later = now + Duration::from_secs(2);
+        let _ = tracker.register(hot_token, hot_ip, later, &policy).await;
+
+        assert_eq!(tracker.len().await, 1);
+        assert!(tracker
+            .existing_block(hot_token, later, &policy)
+            .await
+            .is_none());
+    }
 }

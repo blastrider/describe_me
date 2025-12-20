@@ -69,41 +69,42 @@ fn collect_listening_sockets_from_root(
 
     let mut out = Vec::new();
 
-    // TCPv4 LISTEN (st == "0A")
-    let tcp_path = net_dir.join("tcp");
-    match parse_table(
-        &tcp_path,
-        "tcp",
-        Some("0A"),
-        &inode_to_pid,
-        &mut pid_cache,
-        resolve_processes,
-    ) {
-        Ok(mut v) => out.append(&mut v),
-        Err(err) => debug!(path = %tcp_path.display(), error = %err, "skip tcp listening table"),
-    }
-    // UDPv4 "UNCONN" (st == "07") — sockets en attente (équivalent "listening" pour UDP)
-    let udp_path = net_dir.join("udp");
-    match parse_table(
-        &udp_path,
-        "udp",
-        Some("07"),
-        &inode_to_pid,
-        &mut pid_cache,
-        resolve_processes,
-    ) {
-        Ok(mut v) => out.append(&mut v),
-        Err(err) => debug!(path = %udp_path.display(), error = %err, "skip udp listening table"),
+    let tables = [
+        ("tcp", TableParseOpts::tcp(AddressKind::V4)),
+        ("tcp6", TableParseOpts::tcp(AddressKind::V6)),
+        ("udp", TableParseOpts::udp(AddressKind::V4)),
+        ("udp6", TableParseOpts::udp(AddressKind::V6)),
+    ];
+
+    for (file, opts) in tables {
+        let path = net_dir.join(file);
+        if opts.proto == "udp" {
+            debug_assert!(
+                opts.require_wildcard_remote,
+                "UDP listening requires wildcard remote to avoid client sockets"
+            );
+        }
+        match parse_table(
+            &path,
+            opts,
+            &inode_to_pid,
+            &mut pid_cache,
+            resolve_processes,
+        ) {
+            Ok(mut v) => out.append(&mut v),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                tracing::trace!(path = %path.display(), "listening table missing (likely IPv4-only system)");
+            }
+            Err(err) => debug!(path = %path.display(), error = %err, "skip listening table"),
+        }
     }
 
-    // NOTE: on pourra ajouter tcp6/udp6 plus tard (parsing IPv6), ici Linux v4 d’abord (risque parité OS indiqué).
     Ok(out)
 }
 
 fn parse_table(
     path: &Path,
-    proto: &str,
-    required_state_hex: Option<&str>,
+    opts: TableParseOpts<'_>,
     inode_to_pid: &HashMap<u64, u32>,
     pid_cache: &mut HashMap<u32, Option<String>>,
     resolve_processes: bool,
@@ -112,8 +113,7 @@ fn parse_table(
     let content = fs::read_to_string(path)?;
     Ok(parse_table_content(
         &content,
-        proto,
-        required_state_hex,
+        opts,
         inode_to_pid,
         pid_cache,
         resolve_processes,
@@ -122,82 +122,70 @@ fn parse_table(
 
 fn parse_table_content(
     content: &str,
-    proto: &str,
-    required_state_hex: Option<&str>,
+    opts: TableParseOpts<'_>,
     inode_to_pid: &HashMap<u64, u32>,
     pid_cache: &mut HashMap<u32, Option<String>>,
     resolve_processes: bool,
 ) -> Vec<ListeningSocket> {
-    let mut sockets = Vec::new();
-
-    for (i, line) in content.lines().enumerate() {
-        if i == 0 || line.trim().is_empty() {
-            continue; // skip header
-        }
-        let cols: Vec<&str> = line.split_whitespace().collect();
-        if cols.len() < 12 {
-            continue;
-        }
-        let local = cols[1]; // "HHHHHHHH:PPPP"
-        let _remote = cols[2];
-        let st = cols[3]; // "0A" LISTEN (tcp) / "07" UNCONN (udp)
-        let inode_str = cols[11]; // inode
-
-        if let Some(req) = required_state_hex {
-            if st != req {
-                continue;
+    content
+        .lines()
+        .enumerate()
+        .filter_map(|(i, line)| {
+            if i == 0 || line.trim().is_empty() {
+                return None; // skip header
             }
-        }
+            let cols: Vec<&str> = line.split_whitespace().collect();
+            if cols.len() < 12 {
+                return None;
+            }
+            let local = cols[1]; // "HHHHHHHH:PPPP" (IPv4) or "HH..HH:PPPP" (IPv6)
+            let remote = cols[2];
+            let st = cols[3]; // "0A" LISTEN (tcp) / "07" UNCONN (udp)
+            let inode_str = cols[11]; // inode
 
-        let (addr, port) = match parse_ipv4_host_port(local) {
-            Some(x) => x,
-            None => continue,
-        };
+            if opts.required_state_hex.is_some_and(|req| st != req) {
+                return None;
+            }
 
-        // Inode -> PID
-        let pid = if resolve_processes {
-            inode_str
-                .parse::<u64>()
-                .ok()
-                .and_then(|ino| inode_to_pid.get(&ino).copied())
-        } else {
-            None
-        };
-        let process_name = if resolve_processes {
-            pid.and_then(|p| resolve_process_name(p, pid_cache))
-        } else {
-            None
-        };
+            if opts.require_wildcard_remote && !is_wildcard_remote(remote, opts.addr_kind) {
+                return None;
+            }
 
-        sockets.push(ListeningSocket {
-            proto: proto.to_string(),
-            addr,
-            port,
-            process: pid,
-            process_name,
-        });
-    }
+            let (addr, port) = parse_host_port(local, opts.addr_kind)?;
 
-    sockets
+            // Inode -> PID
+            let pid = resolve_processes
+                .then(|| {
+                    inode_str
+                        .parse::<u64>()
+                        .ok()
+                        .and_then(|ino| inode_to_pid.get(&ino).copied())
+                })
+                .flatten();
+            let process_name = resolve_processes
+                .then(|| pid.and_then(|p| resolve_process_name(p, pid_cache)))
+                .flatten();
+
+            Some(ListeningSocket {
+                proto: opts.proto.to_string(),
+                addr,
+                port,
+                process: pid,
+                process_name,
+            })
+        })
+        .collect()
 }
 
 #[cfg(any(test, feature = "internals"))]
 pub fn parse_table_from_str(
     content: &str,
-    proto: &str,
-    required_state_hex: Option<&str>,
+    opts: TableParseOpts<'_>,
     inode_to_pid: &HashMap<u64, u32>,
     resolve_processes: bool,
 ) -> Vec<ListeningSocket> {
     let mut cache = HashMap::new();
-    parse_table_content(
-        content,
-        proto,
-        required_state_hex,
-        inode_to_pid,
-        &mut cache,
-        resolve_processes,
-    )
+    parse_table_content(content, opts, inode_to_pid, &mut cache, resolve_processes)
 }
 
 fn parse_ipv4_host_port(spec: &str) -> Option<(String, u16)> {
@@ -212,6 +200,97 @@ fn parse_ipv4_host_port(spec: &str) -> Option<(String, u16)> {
 
     let port = u16::from_str_radix(hex_port, 16).ok()?;
     Some((addr, port))
+}
+
+fn decode_procnet_ipv6(hex_ip: &str) -> Option<std::net::Ipv6Addr> {
+    if hex_ip.len() != 32 {
+        return None;
+    }
+    // Linux /proc/net/{tcp6,udp6}: IPv6 stored as 4x32-bit little-endian words
+    // (bytes reversed inside each 32-bit chunk, word order preserved).
+    // See fs/proc/net.c in the kernel for the layout.
+    let mut raw = [0u8; 16];
+    for (i, chunk) in hex_ip.as_bytes().chunks(2).enumerate() {
+        let hex = std::str::from_utf8(chunk).ok()?;
+        raw[i] = u8::from_str_radix(hex, 16).ok()?;
+    }
+
+    // /proc/net/*6 encodes IPv6 addresses in little-endian per 32-bit word.
+    let mut reordered = [0u8; 16];
+    for (chunk_idx, chunk) in raw.chunks_exact(4).enumerate() {
+        let base = chunk_idx * 4;
+        reordered[base] = chunk[3];
+        reordered[base + 1] = chunk[2];
+        reordered[base + 2] = chunk[1];
+        reordered[base + 3] = chunk[0];
+    }
+
+    Some(std::net::Ipv6Addr::from(reordered))
+}
+
+fn parse_ipv6_host_port(spec: &str) -> Option<(String, u16)> {
+    let (hex_ip, hex_port) = spec.split_once(':')?;
+    let addr = decode_procnet_ipv6(hex_ip)?.to_string();
+    let port = u16::from_str_radix(hex_port, 16).ok()?;
+    Some((addr, port))
+}
+
+fn parse_host_port(spec: &str, kind: AddressKind) -> Option<(String, u16)> {
+    match kind {
+        AddressKind::V4 => parse_ipv4_host_port(spec),
+        AddressKind::V6 => parse_ipv6_host_port(spec),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddressKind {
+    V4,
+    V6,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct TableParseOpts<'a> {
+    proto: &'a str,
+    required_state_hex: Option<&'a str>,
+    require_wildcard_remote: bool,
+    addr_kind: AddressKind,
+}
+
+impl<'a> TableParseOpts<'a> {
+    fn tcp(addr_kind: AddressKind) -> Self {
+        Self {
+            proto: "tcp",
+            required_state_hex: Some("0A"),
+            require_wildcard_remote: false,
+            addr_kind,
+        }
+    }
+
+    fn udp(addr_kind: AddressKind) -> Self {
+        Self {
+            proto: "udp",
+            required_state_hex: Some("07"),
+            require_wildcard_remote: true,
+            addr_kind,
+        }
+    }
+}
+
+#[cfg(any(test, feature = "internals"))]
+pub fn table_parse_opts_tcp(kind: AddressKind) -> TableParseOpts<'static> {
+    TableParseOpts::tcp(kind)
+}
+
+#[cfg(any(test, feature = "internals"))]
+pub fn table_parse_opts_udp(kind: AddressKind) -> TableParseOpts<'static> {
+    TableParseOpts::udp(kind)
+}
+
+fn is_wildcard_remote(remote: &str, kind: AddressKind) -> bool {
+    match kind {
+        AddressKind::V4 => remote == "00000000:0000",
+        AddressKind::V6 => remote == "00000000000000000000000000000000:0000",
+    }
 }
 
 fn build_inode_pid_map_from_root(proc_root: &Path) -> io::Result<HashMap<u64, u32>> {
@@ -393,8 +472,7 @@ mod tests {
         let (_file, path) = write_sample_table();
         let sockets = parse_table(
             &path,
-            "tcp",
-            Some("0A"),
+            TableParseOpts::tcp(AddressKind::V4),
             &HashMap::new(),
             &mut HashMap::new(),
             false,
@@ -415,8 +493,14 @@ mod tests {
         inode_to_pid.insert(12345, 4242);
         let mut cache = HashMap::new();
 
-        let sockets = parse_table(&path, "tcp", Some("0A"), &inode_to_pid, &mut cache, true)
-            .expect("parse table");
+        let sockets = parse_table(
+            &path,
+            TableParseOpts::tcp(AddressKind::V4),
+            &inode_to_pid,
+            &mut cache,
+            true,
+        )
+        .expect("parse table");
         assert_eq!(sockets.len(), 1);
         let sock = &sockets[0];
         assert_eq!(sock.process, Some(4242));
@@ -434,6 +518,127 @@ mod tests {
         let traffic =
             collect_network_traffic_from_path(Path::new("/nonexistent/proc/net/dev")).unwrap();
         assert!(traffic.is_empty());
+    }
+
+    #[test]
+    fn parse_udp_filters_non_wildcard_remote() {
+        let content = "\
+  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode
+  0: 0100007F:1F90 0100007F:0035 07 00000000:00000000 00:00000000 00:00000000 00000000 00000000 00000000 00000000 12345
+  1: 00000000:1F91 00000000:0000 07 00000000:00000000 00:00000000 00:00000000 00000000 00000000 00000000 00000000 12346";
+        let sockets = parse_table_from_str(
+            content,
+            TableParseOpts::udp(AddressKind::V4),
+            &HashMap::new(),
+            false,
+        );
+        assert_eq!(sockets.len(), 1);
+        assert_eq!(sockets[0].port, 8081);
+    }
+
+    #[test]
+    fn parse_tcp6_includes_ipv6_entries() {
+        let content = "\
+  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode
+  0: 00000000000000000000000000000000:1F90 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00:00000000 00000000 00000000 00000000 00000000 11111";
+        let sockets = parse_table_from_str(
+            content,
+            TableParseOpts::tcp(AddressKind::V6),
+            &HashMap::new(),
+            false,
+        );
+        assert_eq!(sockets.len(), 1);
+        assert_eq!(sockets[0].addr, "::");
+        assert_eq!(sockets[0].port, 8080);
+    }
+
+    #[test]
+    fn parse_udp6_filters_remote_and_parses_ipv6() {
+        let loopback_hex = "00000000000000000000000001000000";
+        let other_hex = "00000000000000000000000002000000";
+        let content = format!(
+            "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode
+  0: {loopback}:1F92 00000000000000000000000000000000:0000 07 00000000:00000000 00:00000000 00:00000000 00000000 00000000 00000000 00000000 11112
+  1: {other}:1F93 {loopback}:0035 07 00000000:00000000 00:00000000 00:00000000 00000000 00000000 00000000 00000000 11113",
+            loopback = loopback_hex,
+            other = other_hex
+        );
+        let sockets = parse_table_from_str(
+            &content,
+            TableParseOpts::udp(AddressKind::V6),
+            &HashMap::new(),
+            false,
+        );
+        assert_eq!(sockets.len(), 1);
+        assert_eq!(sockets[0].addr, "::1");
+        assert_eq!(sockets[0].port, 8082);
+    }
+
+    #[test]
+    fn parse_tcp6_parses_non_zero_ipv6() {
+        // procfs encodes 2001:db8::1 with per-word little endian order.
+        let encoded = "B80D0120000000000000000001000000";
+        let content = format!(
+            "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode
+  0: {encoded}:1F94 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00:00000000 00000000 00000000 00000000 00000000 22222"
+        );
+        let sockets = parse_table_from_str(
+            &content,
+            TableParseOpts::tcp(AddressKind::V6),
+            &HashMap::new(),
+            false,
+        );
+        assert_eq!(sockets.len(), 1);
+        assert_eq!(sockets[0].addr, "2001:db8::1");
+        assert_eq!(sockets[0].port, 8084);
+    }
+
+    #[test]
+    fn decode_procnet_ipv6_loopback() {
+        let addr = decode_procnet_ipv6("00000000000000000000000001000000").unwrap();
+        assert_eq!(addr.to_string(), "::1");
+    }
+
+    #[test]
+    fn decode_procnet_ipv6_roundtrip_known_address() {
+        use std::net::Ipv6Addr;
+        let target = Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 1);
+        let encoded = "B80D0120000000000000000001000000";
+        let decoded = decode_procnet_ipv6(encoded).unwrap();
+        assert_eq!(decoded, target);
+    }
+
+    #[test]
+    fn parse_tcp6_line_matches_expected_ipv6() {
+        // Ground truth: local 2001:db8::1 port 0050 (80), remote wildcard.
+        // procfs encodes each 32-bit word little-endian, word order preserved.
+        // 2001:0db8::1 in words: 2001 0db8 0000 0000 0000 0000 0000 0001
+        // Hex with per-word LE: B80D0120 00000000 00000000 01000000 => concatenated:
+        let content = "\
+  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode
+  0: B80D0120000000000000000001000000:0050 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00:00000000 00000000 00000000 00000000 00000000 33333";
+        let sockets = parse_table_from_str(
+            content,
+            TableParseOpts::tcp(AddressKind::V6),
+            &HashMap::new(),
+            false,
+        );
+        assert_eq!(sockets.len(), 1);
+        assert_eq!(sockets[0].addr, "2001:db8::1");
+        assert_eq!(sockets[0].port, 80);
+    }
+
+    // Helper used only inside tests to build procfs-encoded hex from an IPv6 address.
+    #[allow(dead_code)]
+    fn encode_procnet_ipv6(addr: std::net::Ipv6Addr) -> String {
+        let octets = addr.octets();
+        let mut encoded = String::new();
+        for chunk in octets.chunks(4) {
+            for b in chunk.iter().rev() {
+                encoded.push_str(&format!("{:02X}", b));
+            }
+        }
+        encoded
     }
 
     proptest! {
@@ -462,7 +667,12 @@ mod tests {
                 ));
             }
 
-            let parsed = parse_table_from_str(&content, "tcp", Some("0A"), &HashMap::new(), false);
+            let parsed = parse_table_from_str(
+                &content,
+                TableParseOpts::tcp(AddressKind::V4),
+                &HashMap::new(),
+                false,
+            );
             prop_assert_eq!(parsed.len(), entries.len());
             for (parsed_sock, (addr_bytes, port)) in parsed.iter().zip(entries.iter()) {
                 let expected_addr =

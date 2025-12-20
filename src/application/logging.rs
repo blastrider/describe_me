@@ -8,6 +8,8 @@
 //! catalogue discoverable, and simplifies future additions. See
 //! `docs/logging.md` for usage guidelines and examples.
 
+use crate::application::history::HistoryMode;
+use crate::domain::HistoryProfile;
 use std::borrow::Cow;
 use tracing::dispatcher;
 use tracing::{debug, error, info, warn};
@@ -21,6 +23,7 @@ pub fn init_logging() {
         return;
     }
 
+    #[allow(unused_variables)]
     let log_to_stderr = std::env::var_os("DESCRIBE_ME_LOG_STDERR").is_some()
         || std::env::var_os("DESCRIBE_ME_CONTAINER").is_some();
 
@@ -29,9 +32,10 @@ pub fn init_logging() {
         .unwrap();
 
     #[cfg(feature = "journald")]
-    if try_init_journald(&filter, log_to_stderr) {
-        return;
-    }
+    let filter = match try_init_journald(filter, log_to_stderr) {
+        Some(filter) => filter,
+        None => return,
+    };
 
     // Fallback: stderr lisible (pas d’ANSI forcé)
     let fmt_layer = tracing_subscriber::fmt::layer()
@@ -47,35 +51,35 @@ pub fn init_logging() {
 }
 
 #[cfg(feature = "journald")]
-fn try_init_journald(filter: &EnvFilter, log_to_stderr: bool) -> bool {
+fn try_init_journald(filter: EnvFilter, log_to_stderr: bool) -> Option<EnvFilter> {
     if !std::path::Path::new("/run/systemd/journal/socket").exists() {
-        return false;
+        return Some(filter);
     }
 
-    if let Ok(layer) = tracing_journald::layer() {
-        if log_to_stderr {
-            let fmt_layer = tracing_subscriber::fmt::layer()
-                .with_target(false)
-                .with_thread_ids(false)
-                .with_thread_names(false)
-                .with_writer(std::io::stderr);
+    let Ok(layer) = tracing_journald::layer() else {
+        return Some(filter);
+    };
 
-            return tracing_subscriber::registry()
-                .with(filter.clone())
-                .with(layer)
-                .with(fmt_layer)
-                .try_init()
-                .is_ok();
-        }
+    if log_to_stderr {
+        let fmt_layer = tracing_subscriber::fmt::layer()
+            .with_target(false)
+            .with_thread_ids(false)
+            .with_thread_names(false)
+            .with_writer(std::io::stderr);
 
-        return tracing_subscriber::registry()
-            .with(filter.clone())
+        let _ = tracing_subscriber::registry()
+            .with(filter)
             .with(layer)
-            .try_init()
-            .is_ok();
+            .with(fmt_layer)
+            .try_init();
+        return None;
     }
 
-    false
+    let _ = tracing_subscriber::registry()
+        .with(filter)
+        .with(layer)
+        .try_init();
+    None
 }
 
 /// Énumération centralisée des événements de log applicatifs.
@@ -159,6 +163,15 @@ pub enum LogEvent<'a> {
         points: u32,
         window_seconds: u64,
         truncated: bool,
+    },
+    HistoryConfig {
+        enabled: bool,
+        profile: HistoryProfile,
+        mode: HistoryMode,
+        retention_points: u32,
+        max_window_seconds: u32,
+        rounding_seconds: u64,
+        paranoid: bool,
     },
 }
 
@@ -382,6 +395,33 @@ impl LogEvent<'_> {
                     points,
                     window_seconds,
                     truncated
+                );
+            }
+            LogEvent::HistoryConfig {
+                enabled,
+                profile,
+                mode,
+                retention_points,
+                max_window_seconds,
+                rounding_seconds,
+                paranoid,
+            } => {
+                info!(
+                    enabled,
+                    profile = ?profile,
+                    mode = ?mode,
+                    retention_points,
+                    max_window_seconds,
+                    rounding_seconds,
+                    paranoid,
+                    "history_config enabled={} profile={:?} mode={:?} retention_points={} max_window_seconds={} rounding_seconds={} paranoid={}",
+                    enabled,
+                    profile,
+                    mode,
+                    retention_points,
+                    max_window_seconds,
+                    rounding_seconds,
+                    paranoid
                 );
             }
         }

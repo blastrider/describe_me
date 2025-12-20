@@ -195,7 +195,7 @@ pub(crate) struct SsePolicy {
 }
 
 impl SsePolicy {
-    fn default() -> Self {
+    pub(crate) fn default() -> Self {
         Self {
             route: RoutePolicy::new(Duration::from_secs(60), 10, 6, 40),
             max_active_per_ip: 1,
@@ -261,10 +261,12 @@ pub(crate) struct BruteForcePolicy {
     token_failure_threshold: u32,
     token_ip_spread: u32,
     sse_min_retry: Duration,
+    token_spread_ttl: Duration,
+    token_spread_cleanup_interval: Duration,
 }
 
 impl BruteForcePolicy {
-    fn default() -> Self {
+    pub(crate) fn default() -> Self {
         Self {
             window: Duration::from_secs(300),
             threshold: 3,
@@ -275,6 +277,8 @@ impl BruteForcePolicy {
             token_failure_threshold: 6,
             token_ip_spread: 3,
             sse_min_retry: Duration::from_secs(2),
+            token_spread_ttl: Duration::from_secs(45 * 60),
+            token_spread_cleanup_interval: Duration::from_secs(60),
         }
     }
 
@@ -294,6 +298,8 @@ impl BruteForcePolicy {
             token_failure_threshold: cfg.token_failure_threshold,
             token_ip_spread: cfg.token_ip_spread,
             sse_min_retry: duration_from_secs(cfg.sse_min_retry_seconds, 2),
+            token_spread_ttl: duration_from_secs(cfg.token_spread_ttl_seconds, 45 * 60),
+            token_spread_cleanup_interval: duration_from_secs(cfg.token_spread_cleanup_seconds, 60),
         }
     }
 
@@ -331,6 +337,23 @@ impl BruteForcePolicy {
 
     pub(crate) fn sse_min_retry(&self) -> Duration {
         self.sse_min_retry
+    }
+
+    pub(crate) fn token_spread_ttl(&self) -> Duration {
+        self.token_spread_ttl
+    }
+
+    pub(crate) fn token_spread_cleanup_interval(&self) -> Duration {
+        self.token_spread_cleanup_interval
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_token_spread(self, ttl: Duration, cleanup: Duration) -> Self {
+        Self {
+            token_spread_ttl: ttl,
+            token_spread_cleanup_interval: cleanup,
+            ..self
+        }
     }
 }
 

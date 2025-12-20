@@ -45,6 +45,7 @@ impl WebAccessConfigExt for WebAccessConfig {
             .updates_refresh_seconds
             .map(|secs| Duration::from_secs(secs.max(1)))
             .unwrap_or(crate::application::web::UPDATES_CACHE_SUCCESS_TTL);
+        let tls_enabled = web_access.tls.is_some();
 
         let security_arc = Arc::new(security);
 
@@ -59,6 +60,7 @@ impl WebAccessConfigExt for WebAccessConfig {
             session_cookie_secure,
             session_ttl,
             updates_refresh_ttl,
+            tls_enabled,
         };
         Ok((static_cfg, security_arc, logo))
     }

@@ -51,8 +51,9 @@ use axum::{
 };
 use tokio::sync::Notify;
 
+use crate::application::apply_history_settings;
 #[cfg(feature = "config")]
-use crate::application::config::runtime::WebAccessConfigExt;
+use crate::application::config::runtime::{HistoryConfigExt, WebAccessConfigExt};
 use crate::application::context::AppContext;
 use crate::application::exposure::Exposure;
 #[cfg(feature = "config")]
@@ -83,7 +84,7 @@ pub struct WebAccess {
     pub token: Option<String>,
     /// IP ou réseaux autorisés (ex: 192.0.2.10, 10.0.0.0/24, ::1).
     pub allow_ips: Vec<String>,
-    /// Origins autorisés (ex: https://admin.example.com) pour contourner les proxys terminant TLS.
+    /// Origins autorisés (ex: <https://admin.example.com>) pour contourner les proxys terminant TLS.
     pub allow_origins: Vec<String>,
     /// Proxys de confiance dont on accepte l'en-tête X-Forwarded-For.
     pub trusted_proxies: Vec<String>,
@@ -123,6 +124,7 @@ fn build_default_web_runtime(
     web_debug: bool,
     session_cookie_secure: bool,
 ) -> Result<(StaticWebConfig, Arc<WebSecurity>, LogoAsset), DescribeError> {
+    let tls_enabled = access.tls.is_some();
     let security = WebSecurity::build(access, None)?;
     let security_arc = Arc::new(security);
     let logo = LogoAsset::default();
@@ -137,6 +139,7 @@ fn build_default_web_runtime(
         session_cookie_secure,
         session_ttl: security_arc.session_ttl(),
         updates_refresh_ttl: UPDATES_CACHE_SUCCESS_TTL,
+        tls_enabled,
     };
     Ok((static_cfg, security_arc, logo))
 }
@@ -150,6 +153,13 @@ pub async fn serve_http<A: Into<SocketAddr>>(
     exposure: Exposure,
 ) -> Result<(), DescribeError> {
     let ctx = AppContext::new_default()?;
+    #[cfg(feature = "config")]
+    if let Some(cfg) = config.as_ref() {
+        if let Some(history_cfg) = cfg.history.as_ref() {
+            let settings = history_cfg.to_settings();
+            apply_history_settings(&ctx, settings)?;
+        }
+    }
     serve_http_with_context(
         addr,
         interval,
@@ -172,7 +182,7 @@ pub async fn serve_http_with_context<A: Into<SocketAddr>>(
     exposure: Exposure,
     ctx: AppContext,
 ) -> Result<(), DescribeError> {
-    let origin_policy = OriginPolicy::from_allowlist(access.allow_origins.clone())?;
+    let origin_policy = OriginPolicy::from_access(&access)?;
     let tls_settings = access.tls.clone();
     let session_cookie_secure = access.session_cookie_secure && tls_settings.is_some();
 
@@ -257,7 +267,7 @@ fn build_router(app_state: AppState, origin_policy: OriginPolicy) -> Router {
         .route("/api/description", post(update_description))
         .route("/api/tags", post(update_tags))
         .layer(OriginCheckLayer::new(origin_policy))
-        .layer(SecurityHeadersLayer::new())
+        .layer(SecurityHeadersLayer::new(app_state.static_cfg.clone()))
         .with_state(app_state)
 }
 

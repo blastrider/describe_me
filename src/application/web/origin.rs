@@ -1,25 +1,28 @@
 use crate::application::logging::LogEvent;
+use crate::application::web::security::IpMatcher;
 use crate::domain::DescribeError;
+use axum::extract::ConnectInfo;
 use axum::extract::Request;
-use axum::http::{header, StatusCode, Uri};
+use axum::http::{header, HeaderValue, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use futures_util::future::BoxFuture;
 use std::borrow::Cow;
 use std::collections::HashSet;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use tower::{Layer, Service};
+use tracing::debug;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct OriginPolicy {
     allowed: Arc<[AllowedOrigin]>,
+    trusted_proxies: Arc<[IpMatcher]>,
+    default_scheme: OriginScheme,
 }
 
 impl OriginPolicy {
     pub fn from_allowlist(raw: Vec<String>) -> Result<Self, DescribeError> {
-        if raw.is_empty() {
-            return Ok(Self::default());
-        }
         let mut seen = HashSet::new();
         let mut allow = Vec::with_capacity(raw.len());
         for value in raw {
@@ -35,7 +38,44 @@ impl OriginPolicy {
         }
         Ok(Self {
             allowed: allow.into(),
+            trusted_proxies: Vec::new().into(),
+            default_scheme: OriginScheme::Http,
         })
+    }
+
+    pub fn from_access(access: &super::WebAccess) -> Result<Self, DescribeError> {
+        let mut policy = Self::from_allowlist(access.allow_origins.clone())?;
+        let mut trusted = Vec::new();
+        for raw in &access.trusted_proxies {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let matcher = IpMatcher::parse(trimmed)
+                .map_err(|err| DescribeError::Config(format!("web.trusted_proxies: {err}")))?;
+            if !trusted.contains(&matcher) {
+                trusted.push(matcher);
+            }
+        }
+        policy.trusted_proxies = trusted.into();
+        policy.default_scheme = if access.tls.is_some() {
+            OriginScheme::Https
+        } else {
+            OriginScheme::Http
+        };
+        Ok(policy)
+    }
+
+    fn is_trusted_proxy<B>(&self, req: &Request<B>) -> bool {
+        if self.trusted_proxies.is_empty() {
+            return false;
+        }
+        let ip = req
+            .extensions()
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|info| info.0.ip());
+        let Some(ip) = ip else { return false };
+        self.trusted_proxies.iter().any(|rule| rule.matches(ip))
     }
 
     pub fn allows<B>(&self, req: &Request<B>) -> bool {
@@ -64,26 +104,25 @@ impl OriginPolicy {
             None => return false,
         };
 
-        let same_origin = origin_host.eq_ignore_ascii_case(host_authority.host())
+        if !self.allowed.is_empty() {
+            return self
+                .allowed
+                .iter()
+                .any(|allowed| allowed.matches(&origin_uri));
+        }
+
+        let request_scheme = request_scheme(req, self);
+        origin_uri
+            .scheme_str()
+            .map(|scheme| scheme.eq_ignore_ascii_case(&request_scheme))
+            .unwrap_or(false)
+            && origin_host.eq_ignore_ascii_case(host_authority.host())
             && origin_uri
                 .port_u16()
                 .or_else(|| default_port(origin_uri.scheme_str()))
                 == host_authority
                     .port_u16()
-                    .or_else(|| default_port(origin_uri.scheme_str()));
-
-        if !self.allowed.is_empty() {
-            if self
-                .allowed
-                .iter()
-                .any(|allowed| allowed.matches(&origin_uri))
-            {
-                return true;
-            }
-            return same_origin;
-        }
-
-        same_origin
+                    .or_else(|| default_port(Some(request_scheme.as_str())))
     }
 }
 
@@ -139,8 +178,9 @@ impl AllowedOrigin {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 enum OriginScheme {
+    #[default]
     Http,
     Https,
 }
@@ -158,6 +198,13 @@ impl OriginScheme {
         match self {
             OriginScheme::Http => other.eq_ignore_ascii_case("http"),
             OriginScheme::Https => other.eq_ignore_ascii_case("https"),
+        }
+    }
+
+    fn as_str(&self) -> &'static str {
+        match self {
+            OriginScheme::Http => "http",
+            OriginScheme::Https => "https",
         }
     }
 }
@@ -189,6 +236,59 @@ fn default_port(scheme: Option<&str>) -> Option<u16> {
         Some("http") => Some(80),
         _ => None,
     }
+}
+
+fn request_scheme<B>(req: &Request<B>, policy: &OriginPolicy) -> String {
+    if let Some(scheme) = req.uri().scheme_str() {
+        return scheme.to_ascii_lowercase();
+    }
+
+    let has_forwarded = req.headers().contains_key("x-forwarded-proto")
+        || req.headers().contains_key(header::FORWARDED);
+    if policy.is_trusted_proxy(req) {
+        if let Some(proto) = forwarded_proto(req.headers().get(header::FORWARDED)) {
+            return proto;
+        }
+        if let Some(proto) = proto_header_value(req.headers().get("x-forwarded-proto")) {
+            return proto;
+        }
+    } else if has_forwarded {
+        let ip = req
+            .extensions()
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|info| info.0.ip());
+        debug!(?ip, "forwarded_proto_ignored_untrusted");
+    }
+
+    policy.default_scheme.as_str().to_string()
+}
+
+fn proto_header_value(value: Option<&HeaderValue>) -> Option<String> {
+    value
+        .and_then(|val| val.to_str().ok())
+        .and_then(|text| text.split(',').next())
+        .map(|part| part.trim().to_ascii_lowercase())
+        .filter(|part| !part.is_empty())
+}
+
+fn forwarded_proto(value: Option<&HeaderValue>) -> Option<String> {
+    let text = value.and_then(|val| val.to_str().ok())?;
+    for segment in text.split(',') {
+        for directive in segment.split(';') {
+            let mut kv = directive.splitn(2, '=');
+            let key = kv.next().map(|k| k.trim().to_ascii_lowercase());
+            if key.as_deref() != Some("proto") {
+                continue;
+            }
+            if let Some(raw_val) = kv.next() {
+                let trimmed = raw_val.trim().trim_matches('"').trim_matches('\'');
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_ascii_lowercase());
+                }
+            }
+        }
+    }
+    None
 }
 
 #[allow(dead_code)]

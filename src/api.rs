@@ -24,10 +24,13 @@ pub mod metadata {
 
 pub mod history {
     //! Historique local des mesures et requêtes associées.
+    pub use crate::application::apply_history_settings;
     pub use crate::application::history::{
         HistoryMode, HistoryPoint, HistoryQueryError, HistorySeries, HistoryService,
         HistorySettings, MetricAggregate,
     };
+    #[cfg(feature = "config")]
+    pub use crate::application::history_settings_from_config;
     pub use crate::domain::HistoryProfile;
 }
 
@@ -72,7 +75,9 @@ pub mod net {
 pub mod web {
     //! Serveur web SSE.
     #[cfg(feature = "web")]
-    pub use crate::application::web::{serve_http, WebAccess, WebTlsConfig};
+    pub use crate::application::web::{
+        serve_http, serve_http_with_context, WebAccess, WebTlsConfig,
+    };
 }
 
 pub mod containers {

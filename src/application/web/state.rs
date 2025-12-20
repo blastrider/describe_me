@@ -145,13 +145,14 @@ pub struct StaticWebConfig {
     pub session_cookie_secure: bool,
     pub session_ttl: Duration,
     pub updates_refresh_ttl: Duration,
+    pub tls_enabled: bool,
 }
 
 #[derive(Clone)]
 pub(crate) struct RuntimeState {
     pub shutdown: Arc<Notify>,
     pub updates_cache: UpdatesCache,
-    pub snapshot_cache: Arc<RwLock<Option<CachedSnapshot>>>,
+    pub snapshot_cache: Arc<RwLock<Option<Arc<CachedSnapshot>>>>,
 }
 
 #[derive(Clone)]
@@ -175,18 +176,18 @@ impl AppState {
             self.runtime.snapshot_cache.write(),
             "AppState.snapshot_cache",
         );
-        *guard = Some(CachedSnapshot {
+        *guard = Some(Arc::new(CachedSnapshot {
             view,
             captured_at: Instant::now(),
-        });
+        }));
     }
 
-    pub fn latest_snapshot(&self) -> Option<CachedSnapshot> {
+    pub fn latest_snapshot(&self) -> Option<Arc<CachedSnapshot>> {
         let guard = lock_expect(
             self.runtime.snapshot_cache.read(),
             "AppState.snapshot_cache",
         );
-        guard.clone()
+        guard.as_ref().map(Arc::clone)
     }
 
     pub fn ctx(&self) -> Arc<AppContext> {
@@ -222,6 +223,12 @@ impl AppState {
     }
 
     #[cfg(feature = "config")]
+    pub(crate) fn config_ref(&self) -> Option<&DescribeConfig> {
+        self.static_cfg.config.as_ref()
+    }
+
+    #[cfg(feature = "config")]
+    #[allow(dead_code)]
     pub fn config(&self) -> Option<DescribeConfig> {
         self.static_cfg.config.clone()
     }

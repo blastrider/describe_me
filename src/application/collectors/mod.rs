@@ -68,3 +68,6 @@ pub(crate) fn log_system_error(location: &'static str, err: &(impl Display + ?Si
     }
     .emit();
 }
+
+#[cfg(test)]
+pub(crate) mod tests_common;

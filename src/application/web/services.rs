@@ -32,6 +32,13 @@ pub async fn build_history_series_response(
     state: &AppState,
     params: HistoryQueryParams,
 ) -> Result<HistorySeriesDto, WebError> {
+    let HistoryQueryParams {
+        server,
+        window,
+        limit,
+        ip,
+        token,
+    } = params;
     if state.exposure().redacted {
         return Err(WebError::forbidden(
             "L'historique est masqué lorsque l'exposition est redacted.",
@@ -51,7 +58,7 @@ pub async fn build_history_series_response(
         ));
     }
 
-    let requested_server = if let Some(id) = params.server.clone() {
+    let requested_server = if let Some(id) = server {
         id
     } else if let Some(default_id) = state.ctx().history().default_server_id() {
         default_id
@@ -62,12 +69,11 @@ pub async fn build_history_series_response(
     };
 
     let max_window_secs = settings.max_window_seconds.max(1) as u64;
-    let requested_window = params.window.filter(|v| *v > 0).unwrap_or(max_window_secs);
+    let requested_window = window.filter(|v| *v > 0).unwrap_or(max_window_secs);
     let window_secs = requested_window.min(max_window_secs);
     let retention_cap = settings.retention_points.max(16) as usize;
     let default_limit = retention_cap.min(256);
-    let limit = params
-        .limit
+    let limit = limit
         .filter(|v| *v > 0)
         .unwrap_or(default_limit)
         .min(retention_cap);
@@ -107,15 +113,14 @@ pub async fn build_history_series_response(
 
     let allow_disk = state.exposure().disk_partitions();
     let point_count = series.points.len() as u32;
-    let server_id = series.server_id.clone();
     let window_seconds = series.window_seconds;
     let truncated = series.truncated;
     let dto = HistorySeriesDto::from_series_with_filter(series, allow_disk);
 
     LogEvent::HistoryQuery {
-        ip: Cow::Owned(params.ip.clone()),
-        token: Cow::Owned(params.token.clone()),
-        server: Cow::Owned(server_id),
+        ip: Cow::Owned(ip),
+        token: Cow::Owned(token),
+        server: Cow::Borrowed(dto.server_id.as_str()),
         points: point_count,
         window_seconds,
         truncated,

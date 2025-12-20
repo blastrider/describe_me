@@ -15,6 +15,7 @@ const HISTORY_DB_FILE: &str = "history.redb";
 const SERVER_ID_FILE: &str = "history.identity";
 const ENCODING_VERSION: u8 = 1;
 const NO_VALUE: u16 = u16::MAX;
+const HISTORY_MAX_ITEMS: usize = 10_000;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct HistorySample {
@@ -218,10 +219,13 @@ impl HistoryBuffer {
         if data[0] != ENCODING_VERSION {
             return Self::default();
         }
-        let count = u32::from_le_bytes(data[1..5].try_into().unwrap()) as usize;
+        let claimed = u32::from_le_bytes(data[1..5].try_into().unwrap()) as usize;
+        let max_by_len = data.len().saturating_sub(5) / 14;
+        let capped = claimed.min(HISTORY_MAX_ITEMS).min(max_by_len);
         let mut offset = 5;
-        let mut points = Vec::with_capacity(count);
-        for _ in 0..count {
+        // Corrupted storage hardening: cap allocation and parse length.
+        let mut points = Vec::with_capacity(capped);
+        for _ in 0..capped {
             if data.len() < offset + 14 {
                 break;
             }
@@ -357,5 +361,34 @@ mod tests {
         assert_eq!(decoded.points[0].mem_pct, None);
         assert_eq!(decoded.points[0].disk_pct, Some(80.0));
         assert_eq!(decoded.points[1].cpu_pct, Some(55.0));
+    }
+
+    #[test]
+    fn buffer_caps_allocation_on_corrupted_count() {
+        let mut data = Vec::new();
+        data.push(ENCODING_VERSION);
+        data.extend_from_slice(&u32::MAX.to_le_bytes());
+        let decoded = HistoryBuffer::from_slice(&data);
+        assert!(decoded.points.is_empty());
+        assert!(decoded.points.capacity() <= HISTORY_MAX_ITEMS);
+    }
+
+    #[test]
+    fn buffer_parses_with_capped_count() {
+        let mut buffer = HistoryBuffer::default();
+        buffer.push(
+            HistorySample {
+                timestamp: 1,
+                cpu_pct: Some(10.0),
+                mem_pct: None,
+                disk_pct: Some(20.0),
+            },
+            4,
+        );
+        let mut encoded = buffer.encode();
+        encoded[1..5].copy_from_slice(&(u32::MAX).to_le_bytes());
+        let decoded = HistoryBuffer::from_slice(&encoded);
+        assert_eq!(decoded.points.len(), 1);
+        assert_eq!(decoded.points[0].timestamp, 1);
     }
 }

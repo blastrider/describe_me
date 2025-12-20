@@ -59,12 +59,12 @@ fn parse_sockstat_output(content: &str, resolve_processes: bool) -> Vec<Listenin
             continue; // header
         }
 
-        let cols: Vec<&str> = line.split_whitespace().collect();
-        if cols.len() < 6 {
-            continue;
-        }
-
-        let proto_raw = cols.get(4).copied().unwrap_or_default();
+        let mut cols = line.split_whitespace();
+        let _user = cols.next();
+        let command = cols.next();
+        let pid_raw = cols.next();
+        let _fd = cols.next();
+        let proto_raw = cols.next().unwrap_or_default();
         let proto = match proto_raw {
             p if p.starts_with("tcp") => "tcp",
             p if p.starts_with("udp") => "udp",
@@ -72,8 +72,8 @@ fn parse_sockstat_output(content: &str, resolve_processes: bool) -> Vec<Listenin
         }
         .to_string();
 
-        let local = match cols.get(5) {
-            Some(val) if !val.is_empty() => *val,
+        let local = match cols.next() {
+            Some(val) if !val.is_empty() => val,
             _ => continue,
         };
 
@@ -83,12 +83,12 @@ fn parse_sockstat_output(content: &str, resolve_processes: bool) -> Vec<Listenin
         };
 
         let pid = if resolve_processes {
-            cols.get(2).and_then(|p| p.parse::<u32>().ok())
+            pid_raw.and_then(|p| p.parse::<u32>().ok())
         } else {
             None
         };
         let process_name = if resolve_processes {
-            cols.get(1).map(|s| s.to_string())
+            command.map(|s| s.to_string())
         } else {
             None
         };
@@ -150,23 +150,46 @@ fn parse_netstat_ibn_output(content: &str) -> Vec<NetworkInterfaceTraffic> {
             continue;
         }
 
-        let cols: Vec<&str> = trimmed.split_whitespace().collect();
-        if cols.len() < 10 {
-            continue;
-        }
-
-        let name = cols[0];
+        let mut cols = trimmed.split_whitespace();
+        let name = match cols.next() {
+            Some(name) => name,
+            None => continue,
+        };
         if name.is_empty() {
             continue;
         }
 
-        let rx_packets = parse_counter(cols.get(4));
-        let rx_errors = parse_counter(cols.get(5));
-        let rx_bytes = parse_counter(cols.get(6));
-        let tx_packets = parse_counter(cols.get(7));
-        let tx_errors = parse_counter(cols.get(8));
-        let tx_bytes = parse_counter(cols.get(9));
-        let drops = parse_counter(cols.get(11)); // Column may be missing; `None` if so.
+        let _mtu = cols.next();
+        let _network = cols.next();
+        let _address = cols.next();
+        let (
+            Some(rx_packets_raw),
+            Some(rx_errors_raw),
+            Some(rx_bytes_raw),
+            Some(tx_packets_raw),
+            Some(tx_errors_raw),
+            Some(tx_bytes_raw),
+        ) = (
+            cols.next(),
+            cols.next(),
+            cols.next(),
+            cols.next(),
+            cols.next(),
+            cols.next(),
+        )
+        else {
+            continue;
+        };
+        let _coll = cols.next();
+        let drops_raw = cols.next(); // Column may be missing; `None` if so.
+
+        let rx_packets = parse_counter(Some(rx_packets_raw));
+        let rx_errors = parse_counter(Some(rx_errors_raw));
+        let rx_bytes = parse_counter(Some(rx_bytes_raw));
+        let tx_packets = parse_counter(Some(tx_packets_raw));
+        let tx_errors = parse_counter(Some(tx_errors_raw));
+        let tx_bytes = parse_counter(Some(tx_bytes_raw));
+        let drops = parse_counter(drops_raw);
 
         let entry = interfaces
             .entry(name.to_string())
@@ -210,9 +233,9 @@ fn parse_netstat_ibn_output(content: &str) -> Vec<NetworkInterfaceTraffic> {
     interfaces.into_values().collect()
 }
 
-fn parse_counter(raw: Option<&&str>) -> Option<u64> {
+fn parse_counter(raw: Option<&str>) -> Option<u64> {
     match raw {
-        Some(val) if !val.is_empty() && *val != "-" => val.parse::<u64>().ok(),
+        Some(val) if !val.is_empty() && val != "-" => val.parse::<u64>().ok(),
         _ => None,
     }
 }

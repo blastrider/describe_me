@@ -3,7 +3,8 @@ use anyhow::{bail, Result};
 #[cfg(feature = "net")]
 use describe_me_lib::domain::{ListeningSocket, NetworkInterfaceTraffic};
 use describe_me_lib::{
-    paginate_slice, AppContext, HistoryProfile, HistorySettings, LogEvent, PageRequest,
+    apply_history_settings, paginate_slice, AppContext, HistoryProfile, HistorySettings, LogEvent,
+    PageRequest,
 };
 #[cfg(all(unix, feature = "cli"))]
 use nix::unistd::Uid;
@@ -20,7 +21,9 @@ use super::exposure::apply_cli_exposure_flags;
 #[cfg(feature = "web")]
 use super::exposure::apply_web_exposure_flags;
 #[cfg(feature = "config")]
-use describe_me_lib::api::config::runtime::HistoryConfigExt;
+use describe_me_lib::history_settings_from_config;
+#[cfg(feature = "config")]
+use describe_me_lib::DescribeConfig;
 
 const SERVICES_PAGE_MAX: usize = 500;
 const SOCKETS_PAGE_MAX: usize = 500;
@@ -63,6 +66,43 @@ fn summary_line(view: &describe_me_lib::SnapshotView) -> String {
         .map(|s| format!(" containers={}/{}", s.running, s.total))
         .unwrap_or_default();
     format!("updates={pending} reboot={reboot}{containers}")
+}
+
+fn apply_cli_history_overrides(
+    cli: &Cli,
+    mut history_settings: HistorySettings,
+) -> HistorySettings {
+    match cli.history.selection() {
+        HistorySelection::Disabled => history_settings.disable(),
+        HistorySelection::Profile(profile) => {
+            let resolved = match profile {
+                HistoryProfileArg::Default => HistoryProfile::Default,
+                HistoryProfileArg::Ops => HistoryProfile::Ops,
+                HistoryProfileArg::Paranoid => HistoryProfile::Paranoid,
+            };
+            history_settings = HistorySettings::for_profile(resolved);
+        }
+        HistorySelection::ConfigOrDefault => {}
+    }
+
+    if let Some(retention) = cli.history.retention {
+        history_settings.set_retention_points(retention);
+    }
+
+    history_settings
+}
+
+#[cfg(feature = "config")]
+fn resolve_history_settings(cli: &Cli, cfg: Option<&DescribeConfig>) -> HistorySettings {
+    let from_config = cfg
+        .and_then(history_settings_from_config)
+        .unwrap_or_else(HistorySettings::disabled);
+    apply_cli_history_overrides(cli, from_config)
+}
+
+#[cfg(not(feature = "config"))]
+fn resolve_history_settings(cli: &Cli) -> HistorySettings {
+    apply_cli_history_overrides(cli, HistorySettings::disabled())
 }
 
 fn handle_command(cmd: CliCommand, ctx: &AppContext) -> Result<()> {
@@ -392,33 +432,12 @@ pub fn run(mut cli: Cli) -> Result<()> {
 
     let mut exposure = describe_me_lib::Exposure::default();
 
-    let mut history_settings = HistorySettings::disabled();
-
     #[cfg(feature = "config")]
-    if let Some(cfg) = cfg.as_ref() {
-        if let Some(history_cfg) = cfg.history.as_ref() {
-            history_settings = history_cfg.to_settings();
-        }
-    }
+    let history_settings = resolve_history_settings(&cli, cfg.as_ref());
+    #[cfg(not(feature = "config"))]
+    let history_settings = resolve_history_settings(&cli);
 
-    match cli.history.selection() {
-        HistorySelection::Disabled => history_settings.disable(),
-        HistorySelection::Profile(profile) => {
-            let resolved = match profile {
-                HistoryProfileArg::Default => HistoryProfile::Default,
-                HistoryProfileArg::Ops => HistoryProfile::Ops,
-                HistoryProfileArg::Paranoid => HistoryProfile::Paranoid,
-            };
-            history_settings = HistorySettings::for_profile(resolved);
-        }
-        HistorySelection::ConfigOrDefault => {}
-    }
-
-    if let Some(retention) = cli.history.retention {
-        history_settings.set_retention_points(retention);
-    }
-
-    ctx.history().configure(history_settings)?;
+    apply_history_settings(&ctx, history_settings)?;
 
     #[cfg(all(feature = "web", feature = "config"))]
     let web_cfg = cfg.as_ref().and_then(|cfg| cfg.web.as_ref());
@@ -545,25 +564,24 @@ pub fn run(mut cli: Cli) -> Result<()> {
             );
         }
 
-        #[cfg(feature = "config")]
-        let cfg_for_web = cfg.clone();
-
         let access = web_access;
         let exposure_for_web = web_exposure;
+        let ctx_for_web = ctx;
 
         // runtime tokio local pour ne pas imposer #[tokio::main]
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?;
         rt.block_on(async move {
-            describe_me_lib::serve_http(
+            describe_me_lib::serve_http_with_context(
                 addr,
                 tick,
                 #[cfg(feature = "config")]
-                cfg_for_web,
+                cfg,
                 web_debug,
                 access,
                 exposure_for_web,
+                ctx_for_web,
             )
             .await
         })?;

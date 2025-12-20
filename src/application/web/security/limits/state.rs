@@ -143,8 +143,11 @@ impl SecurityState {
         ip: IpAddr,
         token: TokenKey,
         now: Instant,
+        policy: &SecurityPolicy,
     ) -> Option<Duration> {
-        self.brute_force.existing_block(ip, token, now).await
+        self.brute_force
+            .existing_block(ip, token, now, policy.brute_force())
+            .await
     }
 
     pub(crate) async fn note_failure(
@@ -186,7 +189,7 @@ pub(crate) async fn ensure_not_blocked(
     now: Instant,
 ) -> Result<(), SecurityRejection> {
     if let Some(delay) = state
-        .check_existing_block(request.remote_ip, request.token_key, now)
+        .check_existing_block(request.remote_ip, request.token_key, now, policy)
         .await
     {
         let delay = policy.adjust_retry(request.route, delay);
@@ -256,7 +259,7 @@ fn emit_security_incident(
 ) {
     LogEvent::SecurityIncident {
         category: Cow::Borrowed(category),
-        route: Cow::Owned(route.as_str().to_string()),
+        route: Cow::Borrowed(route.as_str()),
         ip: ip.map(|addr| Cow::Owned(addr.to_string())),
         token: token.map(|key| Cow::Owned(key.to_string())),
         detail: detail.map(Cow::Owned),

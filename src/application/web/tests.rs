@@ -1,20 +1,30 @@
 use super::{csp, handlers, origin, *};
-use crate::application::test_support::{make_secured_app_state, make_test_app_state};
-use crate::application::web::csp::{
-    apply_security_headers, CspNonce, HEADER_STRICT_TRANSPORT_SECURITY,
+use crate::application::context::AppContext;
+use crate::application::exposure::Exposure;
+use crate::application::test_support::{
+    dummy_snapshot, make_app_state_with_ctx, make_secured_app_state, make_test_app_state,
 };
+use crate::application::web::csp::{
+    apply_security_headers, is_request_https, CspNonce, HEADER_STRICT_TRANSPORT_SECURITY,
+};
+use crate::application::web::state::StaticWebConfig;
+use crate::application::web::{LogoAsset, WebAccess, WebSecurity};
 use crate::domain::{MetadataValidationError, ServerDescription, DESCRIPTION_MAX_BYTES};
 use axum::body::to_bytes;
 use axum::extract::{ConnectInfo, FromRequestParts, State};
 use axum::http::header::{ORIGIN, SET_COOKIE};
+use axum::http::Method;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Extension;
+use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::Arc;
 use std::time::Duration;
 
-fn build_request_with_headers(origin: Option<&str>, host: &str) -> AxumRequest {
+fn build_request(origin: Option<&str>, host: &str, uri: &str, method: Method) -> AxumRequest {
     let mut builder = axum::http::Request::builder()
-        .uri("http://internal/")
+        .method(method)
+        .uri(uri)
         .header(header::HOST, host);
     if let Some(origin_value) = origin {
         builder = builder.header(ORIGIN, origin_value);
@@ -22,11 +32,42 @@ fn build_request_with_headers(origin: Option<&str>, host: &str) -> AxumRequest {
     builder.body(axum::body::Body::empty()).unwrap()
 }
 
+fn build_request_with_headers(origin: Option<&str>, host: &str, scheme: &str) -> AxumRequest {
+    build_request(origin, host, &format!("{scheme}://internal/"), Method::GET)
+}
+
+fn test_static_cfg(trusted_proxies: Vec<String>, tls_enabled: bool) -> Arc<StaticWebConfig> {
+    let access = WebAccess {
+        trusted_proxies,
+        ..WebAccess::default()
+    };
+    let security = WebSecurity::build(
+        access,
+        #[cfg(feature = "config")]
+        None,
+    )
+    .expect("security");
+
+    Arc::new(StaticWebConfig {
+        interval: Duration::from_secs(1),
+        #[cfg(feature = "config")]
+        config: None,
+        web_debug: false,
+        security: Arc::new(security),
+        exposure: Exposure::all(),
+        logo: LogoAsset::default(),
+        session_cookie_secure: false,
+        session_ttl: Duration::from_secs(60),
+        updates_refresh_ttl: Duration::from_secs(60),
+        tls_enabled,
+    })
+}
+
 #[test]
 fn nonce_is_inserted_in_csp_header() {
     let mut headers = HeaderMap::new();
     let nonce = csp::CspNonce::new("abcd1234".into());
-    csp::apply_security_headers(&mut headers, &nonce);
+    csp::apply_security_headers(&mut headers, &nonce, true);
     let value = headers
         .get(csp::HEADER_CONTENT_SECURITY_POLICY)
         .and_then(|val| val.to_str().ok())
@@ -56,6 +97,7 @@ fn origin_allowlist_accepts_configured_origin() {
     let request = build_request_with_headers(
         Some("https://public.example.com"),
         "internal.example.lan:8080",
+        "https",
     );
     let policy =
         origin::OriginPolicy::from_allowlist(vec!["https://public.example.com".to_string()])
@@ -65,7 +107,8 @@ fn origin_allowlist_accepts_configured_origin() {
 
 #[test]
 fn origin_allowlist_blocks_unlisted_origin() {
-    let request = build_request_with_headers(Some("https://evil.example.com"), "internal:8080");
+    let request =
+        build_request_with_headers(Some("https://evil.example.com"), "internal:8080", "https");
     let policy =
         origin::OriginPolicy::from_allowlist(vec!["https://public.example.com".to_string()])
             .expect("origin policy");
@@ -74,21 +117,81 @@ fn origin_allowlist_blocks_unlisted_origin() {
 
 #[test]
 fn origin_defaults_to_same_host_port() {
-    let request = build_request_with_headers(Some("http://internal:8080"), "internal:8080");
+    let request = build_request_with_headers(Some("http://internal:8080"), "internal:8080", "http");
     let policy = origin::OriginPolicy::from_allowlist(Vec::new()).expect("origin policy");
     assert!(origin::is_origin_allowed(&request, &policy));
 }
 
 #[test]
-fn origin_allowlist_allows_same_origin_even_if_unlisted() {
+fn origin_allows_origin_form_same_origin_without_scheme() {
+    let request = build_request(Some("http://internal"), "internal", "/api/x", Method::POST);
+    let policy = origin::OriginPolicy::from_allowlist(Vec::new()).expect("origin policy");
+    assert!(origin::is_origin_allowed(&request, &policy));
+}
+
+#[test]
+fn origin_allowlist_blocks_same_origin_when_unlisted() {
     let request = build_request_with_headers(
         Some("https://internal.example.lan:18443"),
         "internal.example.lan:18443",
+        "https",
     );
     let policy =
         origin::OriginPolicy::from_allowlist(vec!["https://public.example.com".to_string()])
             .expect("origin policy");
+    assert!(!origin::is_origin_allowed(&request, &policy));
+}
+
+#[test]
+fn origin_rejects_scheme_mismatch() {
+    let request =
+        build_request_with_headers(Some("https://internal:8080"), "internal:8080", "http");
+    let policy = origin::OriginPolicy::from_allowlist(Vec::new()).expect("origin policy");
+    assert!(!origin::is_origin_allowed(&request, &policy));
+}
+
+#[test]
+fn origin_ignores_forwarded_proto_without_trusted_proxy() {
+    let mut request = build_request(Some("https://internal"), "internal", "/api/x", Method::POST);
+    request
+        .headers_mut()
+        .insert("x-forwarded-proto", HeaderValue::from_static("https"));
+    let policy = origin::OriginPolicy::from_access(&WebAccess::default()).expect("origin policy");
+    assert!(!origin::is_origin_allowed(&request, &policy));
+}
+
+#[test]
+fn origin_accepts_forwarded_proto_from_trusted_proxy() {
+    let mut request = build_request(Some("https://internal"), "internal", "/api/x", Method::PUT);
+    request
+        .headers_mut()
+        .insert("x-forwarded-proto", HeaderValue::from_static("https"));
+    request
+        .extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from((
+            Ipv4Addr::new(203, 0, 113, 5),
+            4242,
+        ))));
+    let access = WebAccess {
+        trusted_proxies: vec!["203.0.113.5".to_string()],
+        ..WebAccess::default()
+    };
+    let policy = origin::OriginPolicy::from_access(&access).expect("origin policy");
     assert!(origin::is_origin_allowed(&request, &policy));
+}
+
+#[test]
+fn origin_allows_implicit_port_for_scheme() {
+    let request = build_request_with_headers(Some("https://internal"), "internal", "https");
+    let policy = origin::OriginPolicy::from_allowlist(Vec::new()).expect("origin policy");
+    assert!(origin::is_origin_allowed(&request, &policy));
+}
+
+#[test]
+fn origin_rejects_implicit_port_with_scheme_mismatch() {
+    let request = build_request_with_headers(Some("https://internal"), "internal", "http");
+    let policy = origin::OriginPolicy::from_allowlist(Vec::new()).expect("origin policy");
+    assert!(!origin::is_origin_allowed(&request, &policy));
 }
 
 #[test]
@@ -193,7 +296,7 @@ fn response_marked_no_store_sets_cache_header() {
 fn hsts_header_is_added() {
     let mut headers = HeaderMap::new();
     let nonce = CspNonce::new("abc".into());
-    apply_security_headers(&mut headers, &nonce);
+    apply_security_headers(&mut headers, &nonce, true);
     let value = headers
         .get(HEADER_STRICT_TRANSPORT_SECURITY)
         .expect("Strict-Transport-Security header");
@@ -201,6 +304,80 @@ fn hsts_header_is_added() {
         value.to_str().unwrap(),
         "max-age=31536000; includeSubDomains"
     );
+}
+
+#[test]
+fn hsts_header_skipped_on_plain_http() {
+    let mut headers = HeaderMap::new();
+    let nonce = CspNonce::new("abc".into());
+    apply_security_headers(&mut headers, &nonce, false);
+    assert!(
+        headers.get(HEADER_STRICT_TRANSPORT_SECURITY).is_none(),
+        "HSTS should not be set on HTTP"
+    );
+}
+
+#[test]
+fn is_request_https_accepts_tls_mode_without_headers() {
+    let cfg = test_static_cfg(Vec::new(), true);
+    let req = axum::http::Request::builder()
+        .uri("http://internal/")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    assert!(is_request_https(&req, &cfg));
+}
+
+#[test]
+fn is_request_https_rejects_untrusted_forwarded_proto() {
+    let cfg = test_static_cfg(Vec::new(), false);
+    let mut req = axum::http::Request::builder()
+        .uri("http://internal/")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    req.extensions_mut()
+        .insert(ConnectInfo(std::net::SocketAddr::from((
+            std::net::Ipv4Addr::new(198, 51, 100, 10),
+            8080,
+        ))));
+    req.headers_mut()
+        .insert("x-forwarded-proto", HeaderValue::from_static("https"));
+    assert!(!is_request_https(&req, &cfg));
+}
+
+#[test]
+fn is_request_https_accepts_trusted_forwarded_proto() {
+    let cfg = test_static_cfg(vec!["127.0.0.1".into()], false);
+    let mut req = axum::http::Request::builder()
+        .uri("http://internal/")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    req.extensions_mut()
+        .insert(ConnectInfo(std::net::SocketAddr::from((
+            [127, 0, 0, 1],
+            8080,
+        ))));
+    req.headers_mut()
+        .insert("x-forwarded-proto", HeaderValue::from_static("https"));
+    assert!(is_request_https(&req, &cfg));
+}
+
+#[test]
+fn is_request_https_reads_forwarded_proto() {
+    let cfg = test_static_cfg(vec!["192.0.2.10".into()], false);
+    let mut req = axum::http::Request::builder()
+        .uri("http://internal/")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    req.extensions_mut()
+        .insert(ConnectInfo(std::net::SocketAddr::from((
+            [192, 0, 2, 10],
+            8080,
+        ))));
+    req.headers_mut().insert(
+        header::FORWARDED,
+        HeaderValue::from_static("for=1.1.1.1;proto=https"),
+    );
+    assert!(is_request_https(&req, &cfg));
 }
 
 #[test]
@@ -509,6 +686,67 @@ async fn metrics_return_cached_snapshot() {
     assert!(text.contains("describe_me_cpu_count 4"));
     assert!(text.contains("describe_me_snapshot_age_seconds"));
     assert!(text.contains("describe_me_disk_bytes_total 10000"));
+}
+
+#[tokio::test]
+async fn history_endpoint_available_when_enabled() {
+    let ctx = AppContext::in_memory();
+    ctx.history().record_snapshot(&dummy_snapshot());
+
+    let exposure = Exposure::all();
+    let security = WebSecurity::build(
+        WebAccess::default(),
+        #[cfg(feature = "config")]
+        None,
+    )
+    .expect("security");
+    let state = make_app_state_with_ctx(exposure, security, true, ctx);
+
+    let params = super::services::HistoryQueryParams {
+        server: None,
+        window: Some(60),
+        limit: Some(32),
+        ip: "127.0.0.1".into(),
+        token: "test".into(),
+    };
+
+    let dto = super::services::build_history_series_response(&state, params)
+        .await
+        .expect("history service");
+    assert!(
+        !dto.points.is_empty(),
+        "expected at least one history point when enabled"
+    );
+}
+
+#[tokio::test]
+async fn history_endpoint_returns_503_when_disabled() {
+    let ctx = AppContext::in_memory();
+    ctx.history()
+        .configure(crate::application::history::HistorySettings::disabled())
+        .expect("disable history");
+
+    let exposure = Exposure::all();
+    let security = WebSecurity::build(
+        WebAccess::default(),
+        #[cfg(feature = "config")]
+        None,
+    )
+    .expect("security");
+    let state = make_app_state_with_ctx(exposure, security, true, ctx);
+    let params = super::services::HistoryQueryParams {
+        server: None,
+        window: None,
+        limit: None,
+        ip: "127.0.0.1".into(),
+        token: "test".into(),
+    };
+
+    let status = match super::services::build_history_series_response(&state, params).await {
+        Ok(_) => StatusCode::OK,
+        Err(err) => err.into_response().status(),
+    };
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
 }
 
 #[tokio::test]

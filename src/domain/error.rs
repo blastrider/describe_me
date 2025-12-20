@@ -31,8 +31,7 @@ macro_rules! unsupported_feature {
         $crate::domain::DescribeError::Unsupported(concat!(
             "feature ",
             $feature,
-            " is not supported on ",
-            env!("CARGO_CFG_TARGET_OS")
+            " is not supported on this platform"
         ))
     };
 }

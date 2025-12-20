@@ -1,5 +1,4 @@
 use super::args::{CaptureOpts, CliConfig, ExposureOpts, WebExposureOpts};
-use describe_me_lib::ExposureFlagSource;
 
 #[cfg(feature = "config")]
 pub fn apply_cli_exposure_flags(
@@ -95,107 +94,143 @@ fn capture_context(capture: &CaptureOpts) -> describe_me_lib::ExposureCaptureCon
     }
 }
 
-impl ExposureFlagSource for ExposureOpts {
-    fn expose_hostname(&self) -> bool {
-        self.expose_hostname
-    }
-
-    fn expose_os(&self) -> bool {
-        self.expose_os
-    }
-
-    fn expose_kernel(&self) -> bool {
-        self.expose_kernel
-    }
-
-    fn expose_services(&self) -> bool {
-        self.expose_services
-    }
-
-    fn expose_disk_partitions(&self) -> bool {
-        self.expose_disk_partitions
-    }
-
-    fn expose_network_traffic(&self) -> bool {
-        self.expose_network_traffic
-    }
-
-    fn expose_containers_summary(&self) -> bool {
-        self.expose_containers_summary
-    }
-
-    fn expose_containers_details(&self) -> bool {
-        self.expose_containers_details
-    }
-
-    fn expose_updates(&self) -> bool {
-        self.expose_updates
-    }
-
-    fn expose_extensions(&self) -> bool {
-        self.expose_extensions
-    }
-
-    fn expose_all(&self) -> bool {
-        self.expose_all
-    }
-
-    fn no_redacted(&self) -> bool {
-        self.no_redacted
-    }
-}
+describe_me_lib::impl_exposure_flag_source!(
+    ExposureOpts,
+    base: this,
+    expose_all: { this_field(expose_all) },
+    no_redacted: { this_field(no_redacted) },
+    expose_listening_sockets: { const(false) },
+);
 
 struct WebExposureWithRedaction<'a> {
     opts: &'a WebExposureOpts,
     no_redacted: bool,
 }
 
-impl ExposureFlagSource for WebExposureWithRedaction<'_> {
-    fn expose_hostname(&self) -> bool {
-        self.opts.expose_hostname
+describe_me_lib::impl_exposure_flag_source!(
+    WebExposureWithRedaction<'_>,
+    base: field(opts),
+    expose_all: { base_field(expose_all) },
+    no_redacted: { this_field(no_redacted) },
+    expose_listening_sockets: { const(false) },
+);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn exposure_opts_fixture() -> ExposureOpts {
+        ExposureOpts {
+            expose_hostname: true,
+            expose_os: false,
+            expose_kernel: true,
+            expose_services: false,
+            expose_disk_partitions: true,
+            expose_network_traffic: false,
+            expose_containers_summary: true,
+            expose_containers_details: false,
+            expose_updates: true,
+            expose_extensions: false,
+            no_redacted: true,
+            expose_all: false,
+        }
     }
 
-    fn expose_os(&self) -> bool {
-        self.opts.expose_os
+    fn web_exposure_opts_fixture() -> WebExposureOpts {
+        WebExposureOpts {
+            expose_hostname: false,
+            expose_os: true,
+            expose_kernel: false,
+            expose_services: true,
+            expose_disk_partitions: false,
+            expose_network_traffic: true,
+            expose_containers_summary: false,
+            expose_containers_details: true,
+            expose_updates: false,
+            expose_extensions: true,
+            expose_all: true,
+        }
     }
 
-    fn expose_kernel(&self) -> bool {
-        self.opts.expose_kernel
+    fn assert_cli_overrides(overrides: &describe_me_lib::ExposureOverrides, opts: &ExposureOpts) {
+        assert_eq!(overrides.expose_hostname, opts.expose_hostname);
+        assert_eq!(overrides.expose_os, opts.expose_os);
+        assert_eq!(overrides.expose_kernel, opts.expose_kernel);
+        assert_eq!(overrides.expose_services, opts.expose_services);
+        assert_eq!(
+            overrides.expose_disk_partitions,
+            opts.expose_disk_partitions
+        );
+        assert_eq!(
+            overrides.expose_network_traffic,
+            opts.expose_network_traffic
+        );
+        assert_eq!(
+            overrides.expose_containers_summary,
+            opts.expose_containers_summary
+        );
+        assert_eq!(
+            overrides.expose_containers_details,
+            opts.expose_containers_details
+        );
+        assert_eq!(overrides.expose_updates, opts.expose_updates);
+        assert_eq!(overrides.expose_extensions, opts.expose_extensions);
+        assert_eq!(overrides.expose_all, opts.expose_all);
+        assert_eq!(overrides.no_redacted, opts.no_redacted);
+        assert!(!overrides.expose_listening_sockets);
     }
 
-    fn expose_services(&self) -> bool {
-        self.opts.expose_services
+    fn assert_web_overrides(
+        overrides: &describe_me_lib::ExposureOverrides,
+        opts: &WebExposureOpts,
+    ) {
+        assert_eq!(overrides.expose_hostname, opts.expose_hostname);
+        assert_eq!(overrides.expose_os, opts.expose_os);
+        assert_eq!(overrides.expose_kernel, opts.expose_kernel);
+        assert_eq!(overrides.expose_services, opts.expose_services);
+        assert_eq!(
+            overrides.expose_disk_partitions,
+            opts.expose_disk_partitions
+        );
+        assert_eq!(
+            overrides.expose_network_traffic,
+            opts.expose_network_traffic
+        );
+        assert_eq!(
+            overrides.expose_containers_summary,
+            opts.expose_containers_summary
+        );
+        assert_eq!(
+            overrides.expose_containers_details,
+            opts.expose_containers_details
+        );
+        assert_eq!(overrides.expose_updates, opts.expose_updates);
+        assert_eq!(overrides.expose_extensions, opts.expose_extensions);
+        assert_eq!(overrides.expose_all, opts.expose_all);
+        assert!(!overrides.expose_listening_sockets);
     }
 
-    fn expose_disk_partitions(&self) -> bool {
-        self.opts.expose_disk_partitions
-    }
+    #[test]
+    fn exposure_flag_sources_map_flags_and_redaction() {
+        let opts = exposure_opts_fixture();
+        let overrides = describe_me_lib::ExposureOverrides::from_flags(&opts);
+        assert_cli_overrides(&overrides, &opts);
 
-    fn expose_network_traffic(&self) -> bool {
-        self.opts.expose_network_traffic
-    }
+        let web_opts = web_exposure_opts_fixture();
+        let wrapper = WebExposureWithRedaction {
+            opts: &web_opts,
+            no_redacted: false,
+        };
+        let overrides = describe_me_lib::ExposureOverrides::from_flags(&wrapper);
+        assert_web_overrides(&overrides, &web_opts);
+        assert!(!overrides.no_redacted);
 
-    fn expose_containers_summary(&self) -> bool {
-        self.opts.expose_containers_summary
-    }
-
-    fn expose_containers_details(&self) -> bool {
-        self.opts.expose_containers_details
-    }
-
-    fn expose_updates(&self) -> bool {
-        self.opts.expose_updates
-    }
-
-    fn expose_extensions(&self) -> bool {
-        self.opts.expose_extensions
-    }
-
-    fn expose_all(&self) -> bool {
-        self.opts.expose_all
-    }
-
-    fn no_redacted(&self) -> bool {
-        self.no_redacted
+        let wrapper = WebExposureWithRedaction {
+            opts: &web_opts,
+            no_redacted: true,
+        };
+        let overrides = describe_me_lib::ExposureOverrides::from_flags(&wrapper);
+        assert_web_overrides(&overrides, &web_opts);
+        assert!(overrides.no_redacted);
     }
 }

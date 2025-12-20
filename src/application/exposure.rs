@@ -192,6 +192,186 @@ pub trait ExposureFlagSource {
     }
 }
 
+#[doc(hidden)]
+#[macro_export]
+macro_rules! impl_exposure_flag_source {
+    (@value $this:ident $base:ident { const($value:expr) }) => {{
+        let _ = &$this;
+        let _ = &$base;
+        $value
+    }};
+    (@value $this:ident $base:ident { this_field($field:ident) }) => {{
+        let _ = &$base;
+        $this.$field
+    }};
+    (@value $this:ident $base:ident { base_field($field:ident) }) => {{
+        let _ = &$this;
+        $base.$field
+    }};
+    (@value $this:ident $base:ident { not_this_field($field:ident) }) => {{
+        let _ = &$base;
+        !$this.$field
+    }};
+    (@value $this:ident $base:ident { not_base_field($field:ident) }) => {{
+        let _ = &$this;
+        !$base.$field
+    }};
+    (
+        $ty:ty,
+        base: this,
+        expose_all: $expose_all:tt,
+        no_redacted: $no_redacted:tt,
+        expose_listening_sockets: $expose_listening_sockets:tt $(,)?
+    ) => {
+        impl $crate::ExposureFlagSource for $ty {
+            fn expose_hostname(&self) -> bool {
+                let base = self;
+                base.expose_hostname
+            }
+
+            fn expose_os(&self) -> bool {
+                let base = self;
+                base.expose_os
+            }
+
+            fn expose_kernel(&self) -> bool {
+                let base = self;
+                base.expose_kernel
+            }
+
+            fn expose_services(&self) -> bool {
+                let base = self;
+                base.expose_services
+            }
+
+            fn expose_disk_partitions(&self) -> bool {
+                let base = self;
+                base.expose_disk_partitions
+            }
+
+            fn expose_network_traffic(&self) -> bool {
+                let base = self;
+                base.expose_network_traffic
+            }
+
+            fn expose_containers_summary(&self) -> bool {
+                let base = self;
+                base.expose_containers_summary
+            }
+
+            fn expose_containers_details(&self) -> bool {
+                let base = self;
+                base.expose_containers_details
+            }
+
+            fn expose_updates(&self) -> bool {
+                let base = self;
+                base.expose_updates
+            }
+
+            fn expose_extensions(&self) -> bool {
+                let base = self;
+                base.expose_extensions
+            }
+
+            fn expose_all(&self) -> bool {
+                let this = self;
+                let base = self;
+                $crate::impl_exposure_flag_source!(@value this base $expose_all)
+            }
+
+            fn no_redacted(&self) -> bool {
+                let this = self;
+                let base = self;
+                $crate::impl_exposure_flag_source!(@value this base $no_redacted)
+            }
+
+            fn expose_listening_sockets(&self) -> bool {
+                let this = self;
+                let base = self;
+                $crate::impl_exposure_flag_source!(@value this base $expose_listening_sockets)
+            }
+        }
+    };
+    (
+        $ty:ty,
+        base: field($base_field:ident),
+        expose_all: $expose_all:tt,
+        no_redacted: $no_redacted:tt,
+        expose_listening_sockets: $expose_listening_sockets:tt $(,)?
+    ) => {
+        impl $crate::ExposureFlagSource for $ty {
+            fn expose_hostname(&self) -> bool {
+                let base = self.$base_field;
+                base.expose_hostname
+            }
+
+            fn expose_os(&self) -> bool {
+                let base = self.$base_field;
+                base.expose_os
+            }
+
+            fn expose_kernel(&self) -> bool {
+                let base = self.$base_field;
+                base.expose_kernel
+            }
+
+            fn expose_services(&self) -> bool {
+                let base = self.$base_field;
+                base.expose_services
+            }
+
+            fn expose_disk_partitions(&self) -> bool {
+                let base = self.$base_field;
+                base.expose_disk_partitions
+            }
+
+            fn expose_network_traffic(&self) -> bool {
+                let base = self.$base_field;
+                base.expose_network_traffic
+            }
+
+            fn expose_containers_summary(&self) -> bool {
+                let base = self.$base_field;
+                base.expose_containers_summary
+            }
+
+            fn expose_containers_details(&self) -> bool {
+                let base = self.$base_field;
+                base.expose_containers_details
+            }
+
+            fn expose_updates(&self) -> bool {
+                let base = self.$base_field;
+                base.expose_updates
+            }
+
+            fn expose_extensions(&self) -> bool {
+                let base = self.$base_field;
+                base.expose_extensions
+            }
+
+            fn expose_all(&self) -> bool {
+                let this = self;
+                let base = self.$base_field;
+                $crate::impl_exposure_flag_source!(@value this base $expose_all)
+            }
+
+            fn no_redacted(&self) -> bool {
+                let this = self;
+                let base = self.$base_field;
+                $crate::impl_exposure_flag_source!(@value this base $no_redacted)
+            }
+
+            fn expose_listening_sockets(&self) -> bool {
+                let this = self;
+                let base = self.$base_field;
+                $crate::impl_exposure_flag_source!(@value this base $expose_listening_sockets)
+            }
+        }
+    };
+}
+
 impl ExposureOverrides {
     /// Construit des overrides explicites à partir d'un fournisseur de flags (CLI, web...).
     pub fn from_flags(flags: &impl ExposureFlagSource) -> Self {
@@ -214,59 +394,13 @@ impl ExposureOverrides {
 }
 
 #[cfg(feature = "config")]
-impl ExposureFlagSource for crate::domain::ExposureConfig {
-    fn expose_hostname(&self) -> bool {
-        self.expose_hostname
-    }
-
-    fn expose_os(&self) -> bool {
-        self.expose_os
-    }
-
-    fn expose_kernel(&self) -> bool {
-        self.expose_kernel
-    }
-
-    fn expose_services(&self) -> bool {
-        self.expose_services
-    }
-
-    fn expose_disk_partitions(&self) -> bool {
-        self.expose_disk_partitions
-    }
-
-    fn expose_network_traffic(&self) -> bool {
-        self.expose_network_traffic
-    }
-
-    fn expose_containers_summary(&self) -> bool {
-        self.expose_containers_summary
-    }
-
-    fn expose_containers_details(&self) -> bool {
-        self.expose_containers_details
-    }
-
-    fn expose_updates(&self) -> bool {
-        self.expose_updates
-    }
-
-    fn expose_extensions(&self) -> bool {
-        self.expose_extensions
-    }
-
-    fn expose_all(&self) -> bool {
-        false
-    }
-
-    fn no_redacted(&self) -> bool {
-        !self.redacted
-    }
-
-    fn expose_listening_sockets(&self) -> bool {
-        self.expose_listening_sockets
-    }
-}
+impl_exposure_flag_source!(
+    crate::domain::ExposureConfig,
+    base: this,
+    expose_all: { const(false) },
+    no_redacted: { not_this_field(redacted) },
+    expose_listening_sockets: { this_field(expose_listening_sockets) },
+);
 
 /// Contexte de capture qui force certains champs (sockets, trafic, conteneurs).
 #[derive(Debug, Clone, Copy, Default)]
@@ -595,10 +729,10 @@ fn sanitize_os_hint(raw: &str) -> Option<String> {
     if trimmed.is_empty() {
         return None;
     }
-    let mut base = trimmed.to_string();
+    let mut base = trimmed;
     for delim in ['(', '[', '{'] {
         if let Some(idx) = base.find(delim) {
-            base = base[..idx].trim().to_string();
+            base = base[..idx].trim();
         }
     }
     if base.is_empty() {
@@ -607,7 +741,7 @@ fn sanitize_os_hint(raw: &str) -> Option<String> {
 
     let mut words = base.split_whitespace();
     let vendor = words.next()?;
-    let version_token = find_version_token(&base);
+    let version_token = find_version_token(base);
 
     let mut result = String::from(vendor);
     if let Some(token) = version_token {

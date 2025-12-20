@@ -71,6 +71,21 @@ fn build_app_state(
     security: WebSecurity,
     session_cookie_secure: bool,
 ) -> AppState {
+    make_app_state_with_ctx(
+        exposure,
+        security,
+        session_cookie_secure,
+        AppContext::in_memory(),
+    )
+}
+
+/// Construit un AppState en injectant un AppContext custom (ex: historique configuré).
+pub fn make_app_state_with_ctx(
+    exposure: Exposure,
+    security: WebSecurity,
+    session_cookie_secure: bool,
+    ctx: AppContext,
+) -> AppState {
     let session_ttl = security.session_ttl();
     let static_cfg = StaticWebConfig {
         interval: Duration::from_secs(1),
@@ -83,11 +98,12 @@ fn build_app_state(
         session_cookie_secure,
         session_ttl,
         updates_refresh_ttl: Duration::from_secs(1),
+        tls_enabled: false,
     };
     let runtime = RuntimeState {
         shutdown: Arc::new(tokio::sync::Notify::new()),
         updates_cache: UpdatesCache::new(Duration::from_secs(1), Duration::from_secs(1)),
         snapshot_cache: Arc::new(std::sync::RwLock::new(None)),
     };
-    AppState::new(Arc::new(AppContext::in_memory()), static_cfg, runtime)
+    AppState::new(Arc::new(ctx), static_cfg, runtime)
 }
