@@ -1,0 +1,125 @@
+=== CODE DUPLICATION AUDIT ===
+Repo: describe_me
+Iteration: 6
+Date: 2025-12-18
+Notes: Sixth pass; DUP-0001 resolved via shared cache helper extraction.
+
+--- SUMMARY ---
+Total groups: 8
+High impact groups: 3
+Medium impact groups: 5
+Low impact groups: 0
+
+--- GROUPS ---
+[DUP-0001] Cache refresh/TTL gating duplicated across updates and containers (RESOLVED)
+Type: STRUCTURAL
+Impact: HIGH
+Confidence: HIGH
+Why it’s duplicate: Both caches gate refreshes with Instant-based TTL and cooldowns, reuse stale data on errors, and toggle a refreshing flag before spawning/blocking work; divergence risks inconsistent staleness handling.
+Locations:
+- src/application/shared/cache.rs:1-109  (RefreshState / should_start_refresh / finish_refresh)
+- src/application/web/updates_cache.rs:1-199  (refactored to shared helper)
+- src/application/containers.rs:1-520  (refactored to shared helper)
+Notes:
+- Shared helper centralizes TTL gating, refresh state updates, and guard reset; original behavior retained with notify paths unchanged.
+Common signature (optional):
+- Inputs: internal mutex/arc, TTL durations, optional cached payload
+- Output/side-effects: returns cached or refreshed data, flips refreshing flag, updates timestamps
+Suggested extraction:
+- Proposed helper/module name: src/application/shared/cache.rs::RefreshGuardedCache<T>::refresh(...)
+- Parameters to pass: cache storage handle, freshness TTL, cooldown/backoff durations, refresh async/blocking function
+- Notes/risks: Async vs blocking execution paths need unification; error typing differs (DescribeError vs ContainersCaptureError).
+
+[DUP-0002] Exposure flag getters copied for each source (config, CLI, web)
+Type: NEAR
+Impact: MEDIUM
+Confidence: HIGH
+Why it’s duplicate: Three impls of ExposureFlagSource manually mirror the same flag accessors and boolean negation for redaction across config, CLI, and web wrappers.
+Locations:
+- src/application/exposure.rs:216-268  (impl ExposureFlagSource for ExposureConfig)
+- src/bin/describe_me/exposure.rs:98-146  (impl ExposureFlagSource for ExposureOpts)
+- src/bin/describe_me/exposure.rs:153-200  (impl ExposureFlagSource for WebExposureWithRedaction)
+Suggested extraction:
+- Proposed helper/module name: src/application/exposure.rs::build_exposure_overrides(flags)
+- Parameters to pass: struct/trait object with shared flag layout, optional redaction override
+- Notes/risks: Ensure cfg(feature = "config") gating still compiles; adding new flags would be centralized.
+
+[DUP-0003] FreeBSD command invocation boilerplate repeated for sockstat/netstat/service
+Type: NEAR
+Impact: MEDIUM
+Confidence: MEDIUM
+Why it’s duplicate: Each backend builds a Command with env_clear, identical PATH, stdin null, runs .output(), checks status, and maps failures into DescribeError or fallback ServiceInfo; logic duplicated across network and service probes.
+Locations:
+- src/infrastructure/net/freebsd.rs:30-52  (collect_listening_sockets_freebsd)
+- src/infrastructure/net/freebsd.rs:122-138  (collect_network_traffic_freebsd)
+- src/infrastructure/services/freebsd.rs:38-54  (list_services_with_flag)
+- src/infrastructure/services/freebsd.rs:61-86  (probe_service_status)
+Suggested extraction:
+- Proposed helper/module name: src/infrastructure/freebsd/command.rs::run_freebsd_tool(cmd, args, path_env)
+- Parameters to pass: binary name/path, args array, PATH string, error label for DescribeError
+- Notes/risks: Return types differ (Vec vs ServiceInfo); consider two helpers (one for DescribeError, one returning Output) built on shared command setup.
+
+[DUP-0004] Network traffic parsing duplicated across Linux procfs and FreeBSD netstat
+Type: STRUCTURAL
+Impact: HIGH
+Confidence: MEDIUM
+Why it’s duplicate: Both parsers skip headers, split rows to extract interface name and counters, build or update NetworkInterfaceTraffic, and apply defensive guards on missing data; divergence risks inconsistent stats across OS backends.
+Locations:
+- src/infrastructure/net/linux.rs:365-441  (collect_network_traffic_from_path)
+- src/infrastructure/net/freebsd.rs:122-234  (collect_network_traffic_freebsd / parse_netstat_ibn_output)
+Suggested extraction:
+- Proposed helper/module name: src/infrastructure/net/common.rs::parse_interface_counters(...)
+- Parameters to pass: raw table content, header skip count/predicate, column mapping (rx/tx bytes/packets/errors/drops)
+- Notes/risks: Column order differs (net/dev vs netstat); helper needs per-platform mapping to avoid misaligned counters.
+
+[DUP-0005] Listening socket row parsing duplicated between procfs and sockstat backends
+Type: STRUCTURAL
+Impact: MEDIUM
+Confidence: MEDIUM
+Why it’s duplicate: Both flows skip header lines, split whitespace columns, parse local addr/port, derive proto, resolve optional PID/name, and push ListeningSocket entries.
+Locations:
+- src/infrastructure/net/linux.rs:123-178  (parse_table_content)
+- src/infrastructure/net/freebsd.rs:54-105  (parse_sockstat_output)
+Suggested extraction:
+- Proposed helper/module name: src/infrastructure/net/common.rs::parse_listening_row(...)
+- Parameters to pass: column spec (local/proto/pid), address family parser, optional inode→pid resolver/command field
+- Notes/risks: Linux path enforces state/wildcard filters; helper should allow per-protocol predicates and process resolution strategies.
+
+[DUP-0006] Process execution with timeout/kill loop duplicated between updates and plugin runner
+Type: STRUCTURAL
+Impact: HIGH
+Confidence: MEDIUM
+Why it’s duplicate: Both spawn commands with stdin nulled, capture stdout/stderr via threads, poll try_wait with sleep, enforce a timeout, kill child on expiry, then join streams and return output or timeout error.
+Locations:
+- src/infrastructure/updates.rs:60-132  (run_command_with_timeout)
+- src/application/extensions.rs:140-293  (execute_process)
+Suggested extraction:
+- Proposed helper/module name: src/application/process.rs::run_with_timeout(...)
+- Parameters to pass: command builder/env, timeout, stdout/stderr limits, error mapping callbacks
+- Notes/risks: Plugin path enforces output size limits and identity checks; helper must allow optional stream limiting and different error enums.
+
+[DUP-0007] Sliding-window eviction logic duplicated in rate limiting and brute-force guard
+Type: NEAR
+Impact: MEDIUM
+Confidence: MEDIUM
+Why it’s duplicate: Both structures track Instant queues, purge entries older than a window, and remove empty records after registration; subtle differences risk diverging blocking behavior.
+Locations:
+- src/application/web/security/limits/rate_limiter.rs:167-189  (RateCounter::register purge + cap check)
+- src/application/web/security/limits/brute_force_guard.rs:149-218  (FailureRecord::register/purge/backoff; purge window identical)
+Suggested extraction:
+- Proposed helper/module name: src/application/web/security/limits/sliding.rs::SlidingWindowQueue
+- Parameters to pass: window duration, max hits/threshold, backoff policy callback
+- Notes/risks: Backoff/quarantine logic differs; helper should expose hooks for penalty application without hard-coding policy.
+
+[DUP-0008] Exposure flag application logic duplicated for CLI and Web paths
+Type: NEAR
+Impact: MEDIUM
+Confidence: MEDIUM
+Why it’s duplicate: Both functions build an ExposureBuilder from an existing exposure, optionally apply config exposure, then apply overrides and capture context before returning the built exposure.
+Locations:
+- src/bin/describe_me/exposure.rs:5-36  (apply_cli_exposure_flags)
+- src/bin/describe_me/exposure.rs:38-76  (apply_web_exposure_flags)
+Suggested extraction:
+- Proposed helper/module name: src/bin/describe_me/exposure.rs::apply_exposure_common(...)
+- Parameters to pass: base exposure, overrides (CLI/Web), optional config exposure, capture context
+- Notes/risks: cfg(feature = "config"/"web") gating must remain; web version takes ownership vs CLI mutates in place.
