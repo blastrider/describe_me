@@ -4,6 +4,7 @@ mod context;
 mod history_config;
 #[cfg(feature = "systemd")]
 pub(crate) mod services;
+pub(crate) mod shared;
 pub mod sync;
 #[cfg(test)]
 pub mod test_support;
