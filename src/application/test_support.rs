@@ -1,17 +1,23 @@
 //! Helpers de support communs pour les tests applicatifs (snapshots, AppState).
 //! Ce module est compilé uniquement en configuration test.
 
+use crate::domain::SystemSnapshot;
+#[cfg(feature = "systemd")]
+use crate::SharedSlice;
+#[cfg(feature = "web")]
 use std::sync::Arc;
+#[cfg(feature = "web")]
 use std::time::Duration;
 
+#[cfg(feature = "web")]
 use crate::application::context::AppContext;
+#[cfg(feature = "web")]
 use crate::application::exposure::Exposure;
+#[cfg(feature = "web")]
 use crate::application::web::{
     state::AppState, state::StaticWebConfig, updates_cache::UpdatesCache, LogoAsset, RuntimeState,
     WebAccess, WebSecurity,
 };
-use crate::domain::SystemSnapshot;
-use crate::SharedSlice;
 
 /// Snapshot minimal cohérent pour les tests.
 pub fn dummy_snapshot() -> SystemSnapshot {
@@ -40,6 +46,7 @@ pub fn dummy_snapshot() -> SystemSnapshot {
 }
 
 /// AppState sans authentification forte (tests UI).
+#[cfg(feature = "web")]
 pub fn make_test_app_state(exposure: Exposure) -> AppState {
     let security = WebSecurity::build(
         WebAccess::default(),
@@ -51,6 +58,7 @@ pub fn make_test_app_state(exposure: Exposure) -> AppState {
 }
 
 /// AppState avec jeton obligatoire.
+#[cfg(feature = "web")]
 pub fn make_secured_app_state(exposure: Exposure) -> AppState {
     let access = WebAccess {
         token: Some(bcrypt::hash("secret", bcrypt::DEFAULT_COST).expect("hash token")),
@@ -66,6 +74,7 @@ pub fn make_secured_app_state(exposure: Exposure) -> AppState {
     build_app_state(exposure, security, false)
 }
 
+#[cfg(feature = "web")]
 fn build_app_state(
     exposure: Exposure,
     security: WebSecurity,
@@ -80,6 +89,7 @@ fn build_app_state(
 }
 
 /// Construit un AppState en injectant un AppContext custom (ex: historique configuré).
+#[cfg(feature = "web")]
 pub fn make_app_state_with_ctx(
     exposure: Exposure,
     security: WebSecurity,
@@ -104,6 +114,7 @@ pub fn make_app_state_with_ctx(
         shutdown: Arc::new(tokio::sync::Notify::new()),
         updates_cache: UpdatesCache::new(Duration::from_secs(1), Duration::from_secs(1)),
         snapshot_cache: Arc::new(std::sync::RwLock::new(None)),
+        extension_metrics: Arc::new(crate::application::metrics::ExtensionMetricsState::new()),
     };
     AppState::new(Arc::new(ctx), static_cfg, runtime)
 }
