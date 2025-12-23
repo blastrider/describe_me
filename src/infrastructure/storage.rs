@@ -18,6 +18,17 @@ static STATE_DIR_OVERRIDE: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
 #[cfg(test)]
 static STATE_DIR_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
+#[cfg(any(test, feature = "internals"))]
+pub trait MetadataBackend: Send + Sync {
+    fn set_description(&self, text: &str) -> Result<(), DescribeError>;
+    fn get_description(&self) -> Result<Option<String>, DescribeError>;
+    fn clear_description(&self) -> Result<(), DescribeError>;
+    fn set_tags_raw(&self, payload: &str) -> Result<(), DescribeError>;
+    fn get_tags_raw(&self) -> Result<Option<String>, DescribeError>;
+    fn clear_tags(&self) -> Result<(), DescribeError>;
+}
+
+#[cfg(not(any(test, feature = "internals")))]
 pub(crate) trait MetadataBackend: Send + Sync {
     fn set_description(&self, text: &str) -> Result<(), DescribeError>;
     fn get_description(&self) -> Result<Option<String>, DescribeError>;
@@ -27,10 +38,23 @@ pub(crate) trait MetadataBackend: Send + Sync {
     fn clear_tags(&self) -> Result<(), DescribeError>;
 }
 
+#[cfg(any(test, feature = "internals"))]
+pub trait MetadataBackendFactory: Send + Sync {
+    fn open_default(&self) -> Result<Box<dyn MetadataBackend>, DescribeError>;
+}
+
+#[cfg(not(any(test, feature = "internals")))]
 pub(crate) trait MetadataBackendFactory: Send + Sync {
     fn open_default(&self) -> Result<Box<dyn MetadataBackend>, DescribeError>;
 }
 
+#[cfg(any(test, feature = "internals"))]
+#[derive(Clone)]
+pub struct MetadataStore {
+    backend: Arc<dyn MetadataBackend>,
+}
+
+#[cfg(not(any(test, feature = "internals")))]
 #[derive(Clone)]
 pub(crate) struct MetadataStore {
     backend: Arc<dyn MetadataBackend>,
@@ -102,7 +126,7 @@ impl BackendRegistry {
         Ok(backend)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "internals"))]
     fn set_factory(&mut self, factory: Box<dyn MetadataBackendFactory>) {
         self.factory = factory;
         self.backend = None;
@@ -238,15 +262,15 @@ impl MetadataBackend for RedbBackend {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn set_metadata_backend_factory(factory: Box<dyn MetadataBackendFactory>) {
+#[cfg(any(test, feature = "internals"))]
+pub fn set_metadata_backend_factory(factory: Box<dyn MetadataBackendFactory>) {
     let lock = backend_registry();
     let mut guard = lock_expect(lock.lock(), "MetadataBackendRegistry");
     guard.set_factory(factory);
 }
 
-#[cfg(test)]
-pub(crate) fn reset_metadata_backend_factory_for_tests() {
+#[cfg(any(test, feature = "internals"))]
+pub fn reset_metadata_backend_factory_for_tests() {
     set_metadata_backend_factory(default_backend_factory());
 }
 
