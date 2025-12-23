@@ -1,5 +1,23 @@
 use super::args::{CaptureOpts, CliConfig, ExposureOpts, WebExposureOpts};
 
+fn apply_exposure_common<F>(
+    base: describe_me_lib::Exposure,
+    overrides: describe_me_lib::ExposureOverrides,
+    capture_ctx: Option<describe_me_lib::ExposureCaptureContext>,
+    apply_config: F,
+) -> describe_me_lib::Exposure
+where
+    F: FnOnce(&mut describe_me_lib::ExposureBuilder),
+{
+    let mut builder = describe_me_lib::ExposureBuilder::from_exposure(base);
+    apply_config(&mut builder);
+    builder.apply_overrides(&overrides);
+    if let Some(ctx) = capture_ctx {
+        builder.apply_capture(ctx);
+    }
+    builder.build()
+}
+
 #[cfg(feature = "config")]
 pub fn apply_cli_exposure_flags(
     exposure: &mut describe_me_lib::Exposure,
@@ -7,19 +25,24 @@ pub fn apply_cli_exposure_flags(
     cfg: Option<&describe_me_lib::DescribeConfig>,
     allow_config_exposure: bool,
 ) {
-    let mut builder = describe_me_lib::ExposureBuilder::from_exposure(std::mem::take(exposure));
+    let config_exposure = if allow_config_exposure {
+        cfg.and_then(|cfg| cfg.exposure.as_ref())
+    } else {
+        None
+    };
+    let overrides = overrides_from_cli(&cli.exposure);
+    let capture_ctx = Some(capture_context(&cli.capture));
 
-    if allow_config_exposure {
-        if let Some(cfg) = cfg {
-            if let Some(cfg_exp) = cfg.exposure.as_ref() {
+    *exposure = apply_exposure_common(
+        std::mem::take(exposure),
+        overrides,
+        capture_ctx,
+        |builder| {
+            if let Some(cfg_exp) = config_exposure {
                 builder.apply_config(cfg_exp);
             }
-        }
-    }
-
-    builder.apply_overrides(&overrides_from_cli(&cli.exposure));
-    builder.apply_capture(capture_context(&cli.capture));
-    *exposure = builder.build();
+        },
+    );
 }
 
 #[cfg(not(feature = "config"))]
@@ -28,10 +51,9 @@ pub fn apply_cli_exposure_flags(
     cli: &CliConfig,
     _allow_config_exposure: bool,
 ) {
-    let mut builder = describe_me_lib::ExposureBuilder::from_exposure(std::mem::take(exposure));
-    builder.apply_overrides(&overrides_from_cli(&cli.exposure));
-    builder.apply_capture(capture_context(&cli.capture));
-    *exposure = builder.build();
+    let overrides = overrides_from_cli(&cli.exposure);
+    let capture_ctx = Some(capture_context(&cli.capture));
+    *exposure = apply_exposure_common(std::mem::take(exposure), overrides, capture_ctx, |_| {});
 }
 
 #[cfg(all(feature = "web", feature = "config"))]
@@ -41,23 +63,19 @@ pub fn apply_web_exposure_flags(
     cfg: Option<&describe_me_lib::DescribeConfig>,
     allow_config_exposure: bool,
 ) -> describe_me_lib::Exposure {
-    let mut builder = describe_me_lib::ExposureBuilder::from_exposure(exposure);
+    let config_exposure = if allow_config_exposure {
+        cfg.and_then(|cfg| cfg.web.as_ref())
+            .and_then(|web_cfg| web_cfg.exposure.as_ref())
+    } else {
+        None
+    };
+    let overrides = overrides_from_web(&cli.web_exposure, cli.exposure.no_redacted);
 
-    if allow_config_exposure {
-        if let Some(cfg) = cfg {
-            if let Some(web_cfg) = cfg.web.as_ref() {
-                if let Some(web_exp) = web_cfg.exposure.as_ref() {
-                    builder.apply_config(web_exp);
-                }
-            }
+    apply_exposure_common(exposure, overrides, None, |builder| {
+        if let Some(web_exp) = config_exposure {
+            builder.apply_config(web_exp);
         }
-    }
-
-    builder.apply_overrides(&overrides_from_web(
-        &cli.web_exposure,
-        cli.exposure.no_redacted,
-    ));
-    builder.build()
+    })
 }
 
 #[cfg(all(feature = "web", not(feature = "config")))]
@@ -66,12 +84,8 @@ pub fn apply_web_exposure_flags(
     cli: &CliConfig,
     _allow_config_exposure: bool,
 ) -> describe_me_lib::Exposure {
-    let mut builder = describe_me_lib::ExposureBuilder::from_exposure(exposure);
-    builder.apply_overrides(&overrides_from_web(
-        &cli.web_exposure,
-        cli.exposure.no_redacted,
-    ));
-    builder.build()
+    let overrides = overrides_from_web(&cli.web_exposure, cli.exposure.no_redacted);
+    apply_exposure_common(exposure, overrides, None, |_| {})
 }
 
 fn overrides_from_cli(opts: &ExposureOpts) -> describe_me_lib::ExposureOverrides {
