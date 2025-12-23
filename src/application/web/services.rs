@@ -7,7 +7,7 @@ use crate::{
         history::HistoryQueryError,
         logging::LogEvent,
         logs::{self, HOST_LOGS_DEFAULT_LINES, HOST_LOGS_MAX_LINES},
-        metrics::render_prometheus_metrics,
+        metrics::render_prometheus_metrics_with_state,
     },
     domain::{HistorySeriesDto, HostLogsPage},
 };
@@ -133,8 +133,9 @@ pub async fn build_history_series_response(
 pub fn build_metrics_text(
     view: &crate::application::exposure::SnapshotView,
     age_secs: u64,
+    metrics_state: &crate::application::metrics::ExtensionMetricsState,
 ) -> String {
-    render_prometheus_metrics(view, age_secs)
+    render_prometheus_metrics_with_state(view, age_secs, Some(metrics_state))
 }
 
 pub async fn build_host_logs_response(params: LogsQueryParams) -> Result<HostLogsPage, WebError> {
