@@ -1,4 +1,5 @@
 mod collectors;
+#[cfg(feature = "config")]
 pub mod config;
 mod context;
 mod history_config;
@@ -15,13 +16,15 @@ use crate::application::exposure::{Exposure, SnapshotView};
 pub use crate::application::history_config::apply_history_settings;
 #[cfg(feature = "config")]
 pub use crate::application::history_config::history_settings_from_config;
+#[cfg(feature = "serde")]
 use crate::application::logging::LogEvent;
 #[cfg(feature = "config")]
 use crate::domain::DescribeConfig;
 #[cfg(any(feature = "systemd", feature = "config"))]
 use crate::domain::ServiceInfo;
 use crate::domain::{CaptureOptions, DescribeError, DiskUsage, SystemSnapshot};
-pub use context::AppContext;
+pub use context::{AppContext, MetadataStoreHealth};
+#[cfg(feature = "serde")]
 use std::borrow::Cow;
 use std::time::Instant;
 use tracing::debug;
@@ -154,7 +157,7 @@ pub fn load_config_from_path<P: AsRef<std::path::Path>>(
         .emit();
         DescribeError::Config(format!("read {}: {e}", path_ref.display()))
     })?;
-    toml::from_str::<DescribeConfig>(&data).map_err(|e| {
+    let cfg = toml::from_str::<DescribeConfig>(&data).map_err(|e| {
         let msg = e.to_string();
         LogEvent::ConfigError {
             path: Cow::Owned(path_ref.display().to_string()),
@@ -162,7 +165,16 @@ pub fn load_config_from_path<P: AsRef<std::path::Path>>(
         }
         .emit();
         DescribeError::Config(format!("toml parse: {e}"))
-    })
+    })?;
+    if let Err(err) = cfg.validate_plugin_names() {
+        LogEvent::ConfigError {
+            path: Cow::Owned(path_ref.display().to_string()),
+            error: Cow::Owned(err.to_string()),
+        }
+        .emit();
+        return Err(err);
+    }
+    Ok(cfg)
 }
 
 /// Filtre une liste de services selon la config.
@@ -208,12 +220,15 @@ pub mod web;
 pub mod health;
 
 pub mod containers;
+#[cfg(feature = "serde")]
 pub mod error;
 pub mod exposure;
+#[cfg(feature = "serde")]
 pub mod extensions;
 pub mod history;
 pub mod logging;
 pub mod logs;
 pub mod metadata;
+#[cfg(feature = "serde")]
 pub mod metrics;
 pub mod pagination;
