@@ -10,8 +10,9 @@ mod run;
 
 pub use cli::{parse, run};
 pub type Cli = cli::Cli;
+pub use run::RunOutcome;
 
-pub fn main() -> anyhow::Result<()> {
+pub fn main() -> anyhow::Result<RunOutcome> {
     let cli: Cli = parse()?;
     run(cli)
 }
