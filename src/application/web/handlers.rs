@@ -278,7 +278,11 @@ describe_me_up 0
     let mut response = match state.latest_snapshot() {
         Some(cached) => {
             let age_secs = cached.captured_at.elapsed().as_secs();
-            let payload = build_metrics_text(&cached.view, age_secs);
+            let payload = build_metrics_text(
+                &cached.view,
+                age_secs,
+                state.runtime.extension_metrics.as_ref(),
+            );
 
             Response::builder()
                 .status(StatusCode::OK)
