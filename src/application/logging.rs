@@ -114,6 +114,13 @@ pub enum LogEvent<'a> {
         path: Cow<'a, str>,
         error: Cow<'a, str>,
     },
+    MetadataStoreRetryFailed {
+        error: Cow<'a, str>,
+    },
+    MetadataStoreUpgraded {
+        migrated_description: bool,
+        migrated_tags: bool,
+    },
     SseStreamOpen {
         ip: Cow<'a, str>,
         token: Cow<'a, str>,
@@ -255,6 +262,24 @@ impl LogEvent<'_> {
                     "config_error path={} error={}",
                     path,
                     error
+                );
+            }
+            LogEvent::MetadataStoreRetryFailed { error } => {
+                warn!(
+                    error = error.as_ref(),
+                    "metadata_store_retry_failed error={}", error
+                );
+            }
+            LogEvent::MetadataStoreUpgraded {
+                migrated_description,
+                migrated_tags,
+            } => {
+                info!(
+                    migrated_description,
+                    migrated_tags,
+                    "metadata_store_upgraded migrated_description={} migrated_tags={}",
+                    migrated_description,
+                    migrated_tags
                 );
             }
             LogEvent::SseStreamOpen {
