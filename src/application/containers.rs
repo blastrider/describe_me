@@ -1,12 +1,17 @@
+#[cfg(feature = "serde")]
 use crate::domain::{ContainerInfo, ContainersSnapshot, ContainersSummary};
+#[cfg(feature = "serde")]
 use crate::SharedSlice;
+#[cfg(feature = "serde")]
 use describe_me_plugin_sdk::PluginOutput;
+#[cfg(feature = "serde")]
 use std::net::IpAddr;
 #[cfg(feature = "serde")]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 #[cfg(feature = "serde")]
 use std::time::Instant;
+#[cfg(feature = "serde")]
 use thiserror::Error;
 
 #[cfg(feature = "serde")]
@@ -24,9 +29,11 @@ use crate::application::shared::cache::{
 use crate::application::sync::lock_expect;
 
 /// Chemin par défaut du binaire plugin conteneurs.
+#[cfg(feature = "serde")]
 pub const CONTAINERS_PLUGIN_BINARY: &str =
     "/usr/lib/describe_me/plugins/describe-me-plugin-containers";
 /// Durée pendant laquelle on réutilise le dernier résultat pour éviter de relancer trop souvent.
+#[cfg(feature = "serde")]
 pub const CONTAINERS_CACHE_TTL: Duration = Duration::from_secs(30);
 
 /// Version du contrat JSON attendu depuis `describe-me-plugin-containers`.
@@ -497,7 +504,7 @@ fn normalize_token(raw: &str, field: &'static str, max_len: usize) -> Result<Str
     Ok(trimmed.to_string())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "serde"))]
 mod tests {
     use super::*;
 
