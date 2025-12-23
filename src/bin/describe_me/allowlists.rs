@@ -54,3 +54,52 @@ pub fn resolve_web_list(
     }
     Vec::new()
 }
+
+#[cfg(all(test, feature = "web"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_web_list_respects_precedence() {
+        struct Case<'a> {
+            name: &'a str,
+            cli: Option<&'a [String]>,
+            config: Option<&'a [String]>,
+            runtime: Option<&'a [String]>,
+            expected: Vec<String>,
+        }
+
+        let cli_values = vec!["1.1.1.1".to_string()];
+        let config_values = vec!["2.2.2.2".to_string()];
+        let runtime_values = vec!["3.3.3.3".to_string()];
+
+        let cases = [
+            Case {
+                name: "cli_overrides_config_and_runtime",
+                cli: Some(&cli_values),
+                config: Some(&config_values),
+                runtime: Some(&runtime_values),
+                expected: cli_values.clone(),
+            },
+            Case {
+                name: "config_used_when_cli_missing",
+                cli: None,
+                config: Some(&config_values),
+                runtime: Some(&runtime_values),
+                expected: config_values.clone(),
+            },
+            Case {
+                name: "runtime_used_when_cli_and_config_missing",
+                cli: None,
+                config: None,
+                runtime: Some(&runtime_values),
+                expected: runtime_values.clone(),
+            },
+        ];
+
+        for case in cases {
+            let resolved = resolve_web_list(case.cli, case.config, case.runtime);
+            assert_eq!(resolved, case.expected, "case={}", case.name);
+        }
+    }
+}

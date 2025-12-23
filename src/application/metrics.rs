@@ -11,6 +11,7 @@ use crate::application::exposure::SnapshotView;
 use crate::domain::ContainersSnapshot;
 #[cfg(feature = "net")]
 use crate::domain::NetworkInterfaceTraffic;
+use serde_json::Value;
 
 /// Rendu principal des métriques en texte Prometheus (version 0.0.4).
 pub fn render_prometheus_metrics(view: &SnapshotView, snapshot_age_secs: u64) -> String {
@@ -272,18 +273,129 @@ fn write_network_metrics(out: &mut String, traffic: &[NetworkInterfaceTraffic]) 
     }
 }
 
+const EXTENSION_METRICS_LIMIT: usize = 100;
+const EXTENSION_SIGNAL_MAX_LEN: usize = 64;
+
 fn write_extension_metrics(out: &mut String, view: &SnapshotView) {
-    if view.extensions.as_ref().is_none_or(|map| map.is_empty()) {
+    let Some(extensions) = view.extensions.as_ref() else {
+        return;
+    };
+    if extensions.is_empty() {
         return;
     }
-    // TODO(codex): exposer des métriques plugin génériques.
-    //
-    // Idée: parcourir `extensions` et publier les valeurs numériques simples
-    // sous forme `describe_me_extension_value{plugin="<name>", key="<path>"}`.
-    // Cette conversion doit être opt-in et limiter la cardinalité (ex: liste
-    // blanche de clés ou aplatissement partiel). Rien n'est exporté par défaut
-    // pour éviter les surprises.
-    let _ = out;
+
+    let mut header_written = false;
+    let mut dropped_header_written = false;
+
+    for (plugin, output) in extensions {
+        let mut emitted = 0usize;
+        let mut dropped = 0usize;
+        for (key, value) in output.as_map() {
+            let Some(num) = numeric_value(value) else {
+                continue;
+            };
+            let Some(signal) = normalize_signal_key(key) else {
+                dropped += 1;
+                continue;
+            };
+            if emitted >= EXTENSION_METRICS_LIMIT {
+                dropped += 1;
+                continue;
+            }
+            if !header_written {
+                write_metric_header(
+                    out,
+                    "describe_me_extension_value",
+                    "Numeric plugin outputs exposed with low-cardinality labels",
+                    "gauge",
+                );
+                header_written = true;
+            }
+            let labels = format!(
+                "extension=\"{}\",signal=\"{}\"",
+                escape_label_value(plugin),
+                escape_label_value(&signal)
+            );
+            write_metric_sample(out, "describe_me_extension_value", Some(&labels), num);
+            emitted += 1;
+        }
+        if dropped > 0 {
+            if !dropped_header_written {
+                write_metric_header(
+                    out,
+                    "describe_me_extension_dropped_total",
+                    "Number of numeric extension signals dropped during metrics export",
+                    "counter",
+                );
+                dropped_header_written = true;
+            }
+            let labels = format!("extension=\"{}\"", escape_label_value(plugin));
+            write_metric_sample(
+                out,
+                "describe_me_extension_dropped_total",
+                Some(&labels),
+                dropped,
+            );
+        }
+    }
+}
+
+enum NumericValue {
+    Unsigned(u64),
+    Signed(i64),
+    Float(f64),
+}
+
+impl std::fmt::Display for NumericValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NumericValue::Unsigned(v) => write!(f, "{v}"),
+            NumericValue::Signed(v) => write!(f, "{v}"),
+            NumericValue::Float(v) => write!(f, "{v}"),
+        }
+    }
+}
+
+fn numeric_value(value: &Value) -> Option<NumericValue> {
+    let Value::Number(num) = value else {
+        return None;
+    };
+    if let Some(v) = num.as_u64() {
+        return Some(NumericValue::Unsigned(v));
+    }
+    if let Some(v) = num.as_i64() {
+        return Some(NumericValue::Signed(v));
+    }
+    num.as_f64().map(NumericValue::Float)
+}
+
+fn normalize_signal_key(raw: &str) -> Option<String> {
+    if raw.is_empty() {
+        return None;
+    }
+    if !raw.is_ascii() {
+        return None;
+    }
+    let mut out = String::with_capacity(raw.len().min(EXTENSION_SIGNAL_MAX_LEN));
+    for ch in raw.chars() {
+        if out.len() >= EXTENSION_SIGNAL_MAX_LEN {
+            break;
+        }
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    let trimmed = out.trim_matches('_');
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.len() == out.len() {
+        Some(out)
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 fn escape_label_value(raw: &str) -> String {
@@ -303,6 +415,8 @@ mod tests {
     use crate::application::exposure::DiskUsageView;
     use crate::domain::{ContainersSummary, UpdatesInfo};
     use crate::shared::SharedSlice;
+    use describe_me_plugin_sdk::PluginOutput;
+    use std::collections::BTreeMap;
 
     #[test]
     fn renders_core_metrics() {
@@ -410,5 +524,122 @@ mod tests {
         assert!(rendered.contains("# TYPE describe_me_net_rx_bytes_total counter"));
         assert!(rendered.contains("describe_me_net_rx_bytes_total{iface=\"eth0\\\"test\"} 10"));
         assert!(rendered.contains("describe_me_net_tx_bytes_total{iface=\"eth0\\\"test\"} 20"));
+    }
+
+    #[test]
+    fn renders_numeric_extension_metrics() {
+        let mut plugin = PluginOutput::new();
+        plugin.insert("count", 3);
+        plugin.insert("ratio", 1.5);
+        plugin.insert("status", "ok");
+        plugin.insert("nested", serde_json::json!({"a": 1}));
+
+        let mut extensions = BTreeMap::new();
+        extensions.insert("demo".into(), plugin);
+
+        let view = SnapshotView {
+            redacted: false,
+            hostname: None,
+            os: None,
+            kernel: None,
+            uptime_seconds: 0,
+            cpu_count: 0,
+            load_average: (0.0, 0.0, 0.0),
+            total_memory_bytes: 0,
+            used_memory_bytes: 0,
+            total_swap_bytes: 0,
+            used_swap_bytes: 0,
+            server_description: None,
+            server_tags: Vec::new(),
+            disk_usage: None,
+            os_name: None,
+            kernel_release: None,
+            #[cfg(feature = "net")]
+            listening_sockets: None,
+            #[cfg(feature = "systemd")]
+            services_running: None,
+            #[cfg(feature = "systemd")]
+            services_summary: None,
+            containers: None,
+            updates: None,
+            #[cfg(feature = "net")]
+            network_traffic: None,
+            extensions: Some(extensions),
+        };
+
+        let rendered = render_prometheus_metrics(&view, 0);
+        assert!(
+            rendered.contains("describe_me_extension_value{extension=\"demo\",signal=\"count\"} 3")
+        );
+        assert!(rendered.contains("signal=\"ratio\""));
+        assert!(!rendered.contains("signal=\"status\""));
+        assert!(!rendered.contains("signal=\"nested\""));
+        assert!(!rendered.contains("describe_me_extension_dropped_total"));
+    }
+
+    #[test]
+    fn normalizes_extension_signal_keys() {
+        let cases = [
+            ("cpu.total", Some("cpu_total")),
+            ("a/b/c", Some("a_b_c")),
+            ("a b", Some("a_b")),
+            ("__ok__", Some("ok")),
+            ("été", None),
+            ("", None),
+        ];
+
+        for (raw, expected) in cases {
+            let normalized = normalize_signal_key(raw);
+            assert_eq!(normalized.as_deref(), expected, "raw={raw}");
+        }
+
+        let long_key = "a".repeat(EXTENSION_SIGNAL_MAX_LEN + 10);
+        let normalized = normalize_signal_key(&long_key).expect("normalized");
+        assert!(normalized.len() <= EXTENSION_SIGNAL_MAX_LEN);
+    }
+
+    #[test]
+    fn drops_excess_extension_metrics() {
+        let mut plugin = PluginOutput::new();
+        for idx in 0..(EXTENSION_METRICS_LIMIT + 5) {
+            plugin.insert(format!("k{idx:03}"), idx as u64);
+        }
+        let mut extensions = BTreeMap::new();
+        extensions.insert("demo".into(), plugin);
+
+        let view = SnapshotView {
+            redacted: false,
+            hostname: None,
+            os: None,
+            kernel: None,
+            uptime_seconds: 0,
+            cpu_count: 0,
+            load_average: (0.0, 0.0, 0.0),
+            total_memory_bytes: 0,
+            used_memory_bytes: 0,
+            total_swap_bytes: 0,
+            used_swap_bytes: 0,
+            server_description: None,
+            server_tags: Vec::new(),
+            disk_usage: None,
+            os_name: None,
+            kernel_release: None,
+            #[cfg(feature = "net")]
+            listening_sockets: None,
+            #[cfg(feature = "systemd")]
+            services_running: None,
+            #[cfg(feature = "systemd")]
+            services_summary: None,
+            containers: None,
+            updates: None,
+            #[cfg(feature = "net")]
+            network_traffic: None,
+            extensions: Some(extensions),
+        };
+
+        let rendered = render_prometheus_metrics(&view, 0);
+        assert!(rendered.contains("signal=\"k099\""));
+        assert!(!rendered.contains("signal=\"k100\""));
+        assert!(rendered.contains("describe_me_extension_dropped_total{extension=\"demo\"} 5"));
     }
 }
