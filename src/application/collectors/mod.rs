@@ -69,5 +69,5 @@ pub(crate) fn log_system_error(location: &'static str, err: &(impl Display + ?Si
     .emit();
 }
 
-#[cfg(test)]
+#[cfg(all(test, any(feature = "net", feature = "systemd")))]
 pub(crate) mod tests_common;
