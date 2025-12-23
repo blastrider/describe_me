@@ -58,6 +58,7 @@ Les binaires doivent s’appeler `describe-me-plugin-<nom>` et n’acceptent que
 ```toml
 [extensions]
 [[extensions.plugins]]
+# Format: [a-z0-9_-], 1..64 caractères, unique.
 name = "inventory"
 path = "/usr/lib/describe_me/plugins/describe-me-plugin-inventory"
 sha256 = "7f51e8..."
@@ -85,7 +86,28 @@ Lorsqu’un paquet Debian ou une image installe un plugin :
 
 En suivant ces étapes, tout nouveau module reste aligné sur la politique de sécurité : poignée de main stricte, binaire whiteliste, hash immuable et configuration explicite.
 
-## 8. Protocole minimal (interop Python/Go)
+## 8. Export Prometheus des extensions
+
+Les valeurs numériques exportées par un plugin peuvent être exposées via
+Prometheus sous `describe_me_extension_value`.
+
+- Seuls les champs numériques sont pris en compte (entier/float).
+- Les clés sont normalisées en `[A-Za-z0-9_]`, tronquées à 64 caractères et
+  les clés non-ASCII sont ignorées.
+- Les collisions après normalisation sont résolues de façon déterministe
+  (première clé triée par `(signal_normalisé, clé_brute)`), les doublons sont
+  comptés comme "droppés".
+- Le label `extension` utilise le nom du plugin validé (format [a-z0-9_-], max 64).
+- Un maximum de 100 signaux par plugin est exporté par scrape.
+- Les signaux ignorés sont comptabilisés dans
+  `describe_me_extension_dropped{extension="<nom>"}` (gauge par scrape, émis si >0)
+  même sans état partagé.
+- Le cumulatif `describe_me_extension_dropped_total{extension="<nom>"}` (counter)
+  n'est émis que si l'appelant fournit un état d'export (ex: serveur web).
+- Si trop de noms de plugins distincts apparaissent, l'excédent est agrégé sous
+  `extension="__overflow__"` pour éviter une croissance mémoire illimitée.
+
+## 9. Protocole minimal (interop Python/Go)
 
 - Le lanceur fournit quatre variables d’environnement :  
   `DESCRIBE_ME_HOST=describe_me`, `DESCRIBE_ME_PLUGIN_NAME=<nom>`,
@@ -117,7 +139,7 @@ sys.stdout.flush()
 sys.exit(0)
 ```
 
-## 9. Confinement et règles de chemin
+## 10. Confinement et règles de chemin
 
 - Par défaut, seuls les binaires situés sous `/usr/lib/describe_me/plugins/` sont autorisés. Les chemins sont **canonicalisés** (résolution symlinks) et les composants `..` sont refusés ; une cible finale hors du root (ex. symlink qui pointe ailleurs) est rejetée.
 - Les permissions Unix sont vérifiées : binaire régulier, bit exécutable requis (sauf override), et refus si group/world-writable.

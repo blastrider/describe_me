@@ -12,6 +12,7 @@ rust_log = "info,describe_me=info"
 state_dir = "/var/lib/describe-me"
 
 # Autorise la configuration à manipuler expose-* / web-expose-* (sinon CLI uniquement).
+# Priorité: CLI > runtime.allow_config_exposure > ENV DESCRIBE_ME_ALLOW_CONFIG_EXPOSURE.
 allow_config_exposure = true
 
 [runtime.cli]
@@ -55,6 +56,7 @@ include = ["sshd.service", "nginx.service", "docker.service"]
 # tableau de la forme [[extensions.plugins]].
 [[extensions.plugins]]
 # Nom affiché dans la sortie JSON/web (namespacing: extensions.<name>.*).
+# Format: [a-z0-9_-], 1..64 caractères, unique.
 name = "certificates-demo"
 # Binaire autorisé (chemin absolu sous /usr/lib/describe_me/plugins/).
 path = "/usr/lib/describe_me/plugins/describe-me-plugin-certificates"
