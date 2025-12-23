@@ -3,12 +3,12 @@ use crate::domain::DescribeError;
 pub const NON_ROOT_MESSAGE: &str = "exécution en root interdite";
 
 /// Returns `true` when running as effective UID 0 (Unix).
-#[cfg(unix)]
+#[cfg(all(unix, any(feature = "serde", feature = "systemd")))]
 pub fn running_as_root() -> bool {
     nix::unistd::geteuid().is_root()
 }
 
-#[cfg(not(unix))]
+#[cfg(any(not(unix), all(unix, not(any(feature = "serde", feature = "systemd")))))]
 pub fn running_as_root() -> bool {
     false
 }
