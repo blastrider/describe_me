@@ -1,15 +1,20 @@
+#[cfg(feature = "web")]
 use std::sync::Arc;
+#[cfg(feature = "web")]
 use std::time::Duration;
 
+#[cfg(feature = "web")]
 use crate::application::context::AppContext;
 use crate::application::exposure::Exposure;
 use crate::application::history::{HistoryMode, HistorySettings};
+#[cfg(feature = "web")]
 use crate::application::web::{LogoAsset, StaticWebConfig, WebAccess, WebSecurity};
 use crate::domain::HistoryProfile;
-use crate::domain::{
-    DescribeConfig, DescribeError, ExposureConfig, HistoryConfig, WebAccessConfig,
-};
+#[cfg(feature = "web")]
+use crate::domain::{DescribeConfig, DescribeError, WebAccessConfig};
+use crate::domain::{ExposureConfig, HistoryConfig};
 
+#[cfg(feature = "web")]
 pub trait WebAccessConfigExt {
     fn to_runtime(
         &self,
@@ -22,6 +27,7 @@ pub trait WebAccessConfigExt {
     ) -> Result<(StaticWebConfig, Arc<WebSecurity>, LogoAsset), DescribeError>;
 }
 
+#[cfg(feature = "web")]
 impl WebAccessConfigExt for WebAccessConfig {
     fn to_runtime(
         &self,
