@@ -242,11 +242,13 @@ pub async fn serve_http_with_context<A: Into<SocketAddr>>(
 fn build_runtime_state(shutdown: Arc<Notify>, updates_refresh_ttl: Duration) -> RuntimeState {
     let updates_cache = UpdatesCache::new(updates_refresh_ttl, UPDATES_CACHE_FAILURE_RETRY);
     let snapshot_cache = Arc::new(RwLock::new(None));
+    let extension_metrics = Arc::new(crate::application::metrics::ExtensionMetricsState::new());
 
     RuntimeState {
         shutdown,
         updates_cache,
         snapshot_cache,
+        extension_metrics,
     }
 }
 
