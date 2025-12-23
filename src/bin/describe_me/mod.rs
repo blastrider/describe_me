@@ -6,6 +6,7 @@ mod cmd_logs;
 mod cmd_metadata;
 mod cmd_plugin;
 pub mod exposure;
+mod run;
 
 pub use cli::{parse, run};
 pub type Cli = cli::Cli;
