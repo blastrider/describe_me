@@ -1,6 +1,7 @@
 use std::time::Duration;
 
-use anyhow::{bail, Result};
+use anyhow::Result;
+use describe_me_lib::domain::validate_plugin_name as validate_plugin_name_rule;
 use describe_me_lib::plugins::PluginPolicy;
 
 use crate::describe_me::args::{PluginCommand, PluginRunCommand};
@@ -29,17 +30,7 @@ pub fn run_plugin(cmd: PluginRunCommand) -> Result<()> {
 }
 
 fn validate_plugin_name(name: &str) -> Result<()> {
-    if name.trim().is_empty() {
-        bail!("Le nom du plugin ne peut pas être vide.");
-    }
-    if name
-        .chars()
-        .all(|c| matches!(c, 'a'..='z' | '0'..='9' | '-' | '_'))
-    {
-        Ok(())
-    } else {
-        bail!("Le nom du plugin doit uniquement contenir [a-z0-9_-].");
-    }
+    validate_plugin_name_rule(name).map_err(|err| anyhow::anyhow!(err.to_string()))
 }
 
 #[cfg(test)]
@@ -57,5 +48,7 @@ mod tests {
         assert!(validate_plugin_name("").is_err());
         assert!(validate_plugin_name("Bad/Name").is_err());
         assert!(validate_plugin_name("UPPERCASE").is_err());
+        let long_name = "a".repeat(describe_me_lib::domain::PLUGIN_NAME_MAX_LEN + 1);
+        assert!(validate_plugin_name(&long_name).is_err());
     }
 }
