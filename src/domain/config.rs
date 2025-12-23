@@ -1,7 +1,9 @@
+use super::error::DescribeError;
 use super::history_profile::HistoryProfile;
+use super::plugin::validate_plugin_name;
 #[cfg(feature = "serde")]
 use serde::Deserialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// Configuration haut-niveau.
 #[derive(Debug, Clone, Default)]
@@ -68,6 +70,7 @@ pub struct RuntimeConfig {
     /// Valeurs par défaut pour la CLI.
     pub cli: Option<CliDefaults>,
     /// Autorise l'application des drapeaux `expose-*`/`web-expose-*` depuis la configuration.
+    /// Priorité: CLI > runtime.allow_config_exposure > ENV DESCRIBE_ME_ALLOW_CONFIG_EXPOSURE.
     pub allow_config_exposure: bool,
     /// Répertoire personnalisé pour les données persistées (metadata.redb).
     pub state_dir: Option<String>,
@@ -162,6 +165,27 @@ impl PluginDefinition {
             sha256: sha256.into(),
             ..Self::default()
         }
+    }
+}
+
+impl DescribeConfig {
+    pub fn validate_plugin_names(&self) -> Result<(), DescribeError> {
+        let Some(extensions) = self.extensions.as_ref() else {
+            return Ok(());
+        };
+        let mut seen: HashMap<String, usize> = HashMap::new();
+        for (idx, plugin) in extensions.plugins.iter().enumerate() {
+            validate_plugin_name(plugin.name.as_str()).map_err(|err| {
+                DescribeError::Config(format!("extensions.plugins[{idx}].name: {err}"))
+            })?;
+            if let Some(previous) = seen.insert(plugin.name.clone(), idx) {
+                return Err(DescribeError::Config(format!(
+                    "extensions.plugins[{idx}].name: nom dupliqué \"{}\" (déjà présent à l'index {previous})",
+                    plugin.name
+                )));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -266,6 +290,68 @@ mod tests {
         let cfg: ExposureConfig =
             toml::from_str("expose_extensions = true").expect("deserialize exposure");
         assert!(cfg.expose_extensions);
+    }
+
+    #[test]
+    fn validate_plugin_names_rejects_duplicates() {
+        let cfg: DescribeConfig = toml::from_str(
+            r#"
+[extensions]
+[[extensions.plugins]]
+name = "demo"
+path = "/usr/lib/describe_me/plugins/describe-me-plugin-demo"
+sha256 = "7f51e83f0f1b8b1e7f51e83f0f1b8b1e7f51e83f0f1b8b1e7f51e83f0f1b8b1e"
+
+[[extensions.plugins]]
+name = "demo"
+path = "/usr/lib/describe_me/plugins/describe-me-plugin-demo2"
+sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+"#,
+        )
+        .expect("deserialize config");
+
+        let err = cfg.validate_plugin_names().expect_err("duplicate name");
+        assert!(matches!(err, DescribeError::Config(msg) if msg.contains("nom dupliqué")));
+    }
+
+    #[test]
+    fn validate_plugin_names_accepts_unique() {
+        let cfg: DescribeConfig = toml::from_str(
+            r#"
+[extensions]
+[[extensions.plugins]]
+name = "demo"
+path = "/usr/lib/describe_me/plugins/describe-me-plugin-demo"
+sha256 = "7f51e83f0f1b8b1e7f51e83f0f1b8b1e7f51e83f0f1b8b1e7f51e83f0f1b8b1e"
+
+[[extensions.plugins]]
+name = "demo2"
+path = "/usr/lib/describe_me/plugins/describe-me-plugin-demo2"
+sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+"#,
+        )
+        .expect("deserialize config");
+
+        cfg.validate_plugin_names().expect("valid plugin names");
+    }
+
+    #[test]
+    fn validate_plugin_names_rejects_invalid_chars() {
+        let cfg: DescribeConfig = toml::from_str(
+            r#"
+[extensions]
+[[extensions.plugins]]
+name = "demo bad"
+path = "/usr/lib/describe_me/plugins/describe-me-plugin-demo"
+sha256 = "7f51e83f0f1b8b1e7f51e83f0f1b8b1e7f51e83f0f1b8b1e7f51e83f0f1b8b1e"
+"#,
+        )
+        .expect("deserialize config");
+
+        let err = cfg.validate_plugin_names().expect_err("invalid name");
+        assert!(
+            matches!(err, DescribeError::Config(msg) if msg.contains("extensions.plugins[0].name"))
+        );
     }
 }
 
