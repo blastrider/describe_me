@@ -59,6 +59,7 @@ timeout_secs = 10
 ```
 
 - Les plugins doivent résider sous `/usr/lib/describe_me/plugins/`, être épinglés par un `sha256` vérifié avant chaque exécution et refuseront tout lancement hors protocole (`DESCRIBE_ME_HOST=describe_me`, `DESCRIBE_ME_PLUGIN_PROTO=v1`, jeton non vide). Toute divergence (chemin, hash, SHA, env) empêche le spawn du processus.
+- Prometheus : les sorties numériques des plugins sont exposées via `describe_me_extension_value`, avec `describe_me_extension_dropped` (gauge par scrape) et `describe_me_extension_dropped_total` (counter cumulatif si état partagé).
 
 - Exemple complet : `plugin-examples/certificates` parcourt un répertoire de PEM et renvoie des stats simples via le SDK.
 
