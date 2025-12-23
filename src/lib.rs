@@ -45,4 +45,15 @@ pub mod internals {
         count_apk_updates_for_tests, count_dnf_updates_for_tests,
         parse_apt_upgradable_line_for_tests,
     };
+
+    pub mod metadata {
+        //! Helpers d'injection metadata (non stable).
+        pub use crate::application::metadata::registry::{
+            init_metadata_store_for_internals, reset_metadata_store_for_tests,
+        };
+        pub use crate::infrastructure::storage::{
+            reset_metadata_backend_factory_for_tests, set_metadata_backend_factory,
+            MetadataBackend, MetadataBackendFactory, MetadataStore,
+        };
+    }
 }
