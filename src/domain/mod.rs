@@ -4,6 +4,7 @@ pub mod error;
 pub mod history_dto;
 pub mod history_profile;
 pub mod model;
+pub mod plugin;
 pub mod server_metadata;
 
 #[cfg(feature = "config")]
@@ -19,6 +20,9 @@ pub use model::{
     CaptureOptions, ContainerInfo, ContainersSnapshot, ContainersSummary, DiskPartition, DiskUsage,
     HostLogEntry, HostLogsPage, NetworkInterfaceTraffic, ServiceInfo, SystemSnapshot,
     UpdatePackage, UpdatesInfo,
+};
+pub use plugin::{
+    is_valid_plugin_name, validate_plugin_name, PluginNameError, PLUGIN_NAME_MAX_LEN,
 };
 pub use server_metadata::{
     MetadataValidationError, ServerDescription, ServerTag, TagsBatch, DESCRIPTION_MAX_BYTES,
