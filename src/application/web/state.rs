@@ -153,6 +153,7 @@ pub(crate) struct RuntimeState {
     pub shutdown: Arc<Notify>,
     pub updates_cache: UpdatesCache,
     pub snapshot_cache: Arc<RwLock<Option<Arc<CachedSnapshot>>>>,
+    pub extension_metrics: Arc<crate::application::metrics::ExtensionMetricsState>,
 }
 
 #[derive(Clone)]
