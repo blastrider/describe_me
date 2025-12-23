@@ -3,7 +3,7 @@
 //! Cette hiérarchie est découpée en plusieurs sous-modules:
 //! - `policy` : définit la configuration des limites.
 //! - `state` : implémente les compteurs et garde-fous associés.
-//! - `rate_limiter`, `brute_force_guard`, `token_affinity`, `sse_admission`, `global_slots`
+//! - `rate_limiter`, `brute_force_guard`, `sliding`, `token_affinity`, `sse_admission`, `global_slots`
 //!   : composants spécialisés réutilisables.
 //! - `engine` : orchestrateur interne (prépare la refactorisation).
 
@@ -12,6 +12,7 @@ mod engine;
 mod global_slots;
 mod policy;
 mod rate_limiter;
+mod sliding;
 mod sse_admission;
 mod state;
 mod token_affinity;

@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     hash::Hash,
     net::IpAddr,
     time::{Duration, Instant},
@@ -9,6 +9,7 @@ use tokio::sync::Mutex;
 
 use super::super::WebRoute;
 use super::policy::SecurityPolicy;
+use super::sliding::SlidingWindowQueue;
 use crate::application::web::security::TokenKey;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -149,45 +150,68 @@ where
         limit: u32,
     ) -> Option<Duration> {
         let mut guard = self.inner.lock().await;
-        let entry = guard.entry((route.into(), key)).or_default();
+        let route_key = route.into();
+        let entry = guard
+            .entry((route_key, key))
+            .or_insert_with(|| RateCounter::new(window));
         let delay = entry.register(now, window, limit);
         if entry.is_empty() {
-            guard.remove(&(route.into(), key));
+            guard.remove(&(route_key, key));
         }
         delay
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct RateCounter {
-    hits: VecDeque<Instant>,
+    hits: SlidingWindowQueue,
 }
 
 impl RateCounter {
+    fn new(window: Duration) -> Self {
+        Self {
+            hits: SlidingWindowQueue::new(window),
+        }
+    }
+
     fn register(&mut self, now: Instant, window: Duration, limit: u32) -> Option<Duration> {
         if limit == 0 {
             return None;
         }
-        while let Some(front) = self.hits.front() {
-            if now.duration_since(*front) >= window {
-                self.hits.pop_front();
-            } else {
-                break;
-            }
-        }
+        self.hits.set_window(window);
+        self.hits.purge(now);
         if self.hits.len() as u32 >= limit {
-            if let Some(oldest) = self.hits.front() {
-                let elapsed = now.duration_since(*oldest);
+            if let Some(oldest) = self.hits.oldest() {
+                let elapsed = now.duration_since(oldest);
                 let wait = window.saturating_sub(elapsed);
                 return Some(wait);
             }
             return Some(window);
         }
-        self.hits.push_back(now);
+        self.hits.push(now);
         None
     }
 
     fn is_empty(&self) -> bool {
         self.hits.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RateCounter;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn counter_does_not_register_when_limit_reached() {
+        let now = Instant::now();
+        let window = Duration::from_secs(10);
+        let mut counter = RateCounter::new(window);
+
+        assert!(counter.register(now, window, 1).is_none());
+        assert!(counter
+            .register(now + Duration::from_secs(1), window, 1)
+            .is_some());
+        assert_eq!(counter.hits.len(), 1);
     }
 }

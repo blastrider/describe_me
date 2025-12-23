@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet},
     net::IpAddr,
     time::{Duration, Instant},
 };
@@ -7,6 +7,7 @@ use std::{
 use tokio::sync::Mutex;
 
 use super::policy::BruteForcePolicy;
+use super::sliding::SlidingWindowQueue;
 use crate::application::logging::LogEvent;
 use crate::application::web::security::{TokenKey, WebRoute};
 
@@ -117,7 +118,9 @@ where
 
     async fn register(&self, key: K, now: Instant, policy: &BruteForcePolicy) -> Option<Duration> {
         let mut guard = self.inner.lock().await;
-        let record = guard.entry(key).or_default();
+        let record = guard
+            .entry(key)
+            .or_insert_with(|| FailureRecord::new(policy.window()));
         let delay = record
             .register(now, policy)
             .map(|until| until.saturating_duration_since(now));
@@ -138,16 +141,25 @@ where
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct FailureRecord {
-    attempts: VecDeque<Instant>,
+    attempts: SlidingWindowQueue,
     blocked_until: Option<Instant>,
     current_backoff: Duration,
 }
 
 impl FailureRecord {
+    fn new(window: Duration) -> Self {
+        Self {
+            attempts: SlidingWindowQueue::new(window),
+            blocked_until: None,
+            current_backoff: Duration::default(),
+        }
+    }
+
     fn register(&mut self, now: Instant, policy: &BruteForcePolicy) -> Option<Instant> {
-        self.purge(now, policy.window());
+        self.attempts.set_window(policy.window());
+        self.attempts.purge(now);
         if let Some(until) = self.blocked_until {
             if until > now {
                 return Some(until);
@@ -156,7 +168,7 @@ impl FailureRecord {
             }
         }
 
-        self.attempts.push_back(now);
+        self.attempts.push(now);
         if self.attempts.len() as u32 >= policy.threshold() {
             return self.apply_penalty(now, policy);
         }
@@ -194,16 +206,6 @@ impl FailureRecord {
         let until = now + next_backoff;
         self.blocked_until = Some(until);
         Some(until)
-    }
-
-    fn purge(&mut self, now: Instant, window: Duration) {
-        while let Some(front) = self.attempts.front() {
-            if now.duration_since(*front) >= window {
-                self.attempts.pop_front();
-            } else {
-                break;
-            }
-        }
     }
 
     fn is_clear(&self) -> bool {
@@ -470,5 +472,23 @@ mod tests {
             .existing_block(hot_token, later, &policy)
             .await
             .is_none());
+    }
+
+    #[test]
+    fn failure_record_applies_backoff_after_threshold() {
+        let policy = BruteForcePolicy::default();
+        let threshold = policy.threshold();
+        assert!(threshold > 0);
+
+        let now = Instant::now();
+        let mut record = FailureRecord::new(policy.window());
+
+        for _ in 1..threshold {
+            assert!(record.register(now, &policy).is_none());
+        }
+
+        let until = record.register(now, &policy);
+        assert!(until.is_some());
+        assert!(record.blocked_delay(now).is_some());
     }
 }
