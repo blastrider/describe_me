@@ -132,7 +132,9 @@ fn normalize_tag(raw: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::context::MetadataStoreHealth;
     use crate::infrastructure::storage::MetadataStore;
+    use std::time::{Duration, Instant};
     use tempfile::tempdir;
 
     fn with_temp_state_dir<F: FnOnce()>(f: F) {
@@ -154,6 +156,21 @@ mod tests {
         registry::reset_metadata_store_for_tests();
         crate::infrastructure::storage::clear_state_dir_override_for_tests();
         // tempdir drops here
+    }
+
+    fn wait_for_metadata_upgrade(store: &MetadataStore) {
+        let deadline = Instant::now() + Duration::from_millis(200);
+        while Instant::now() < deadline {
+            let _ = store.get_description();
+            if registry::metadata_store_health() == MetadataStoreHealth::Persistent {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(
+            registry::metadata_store_health(),
+            MetadataStoreHealth::Persistent
+        );
     }
 
     #[test]
@@ -206,11 +223,85 @@ mod tests {
     fn registry_returns_initialized_store() {
         with_temp_state_dir(|| {
             let store = MetadataStore::open_default().expect("store");
-            registry::init_metadata_store(store);
+            registry::init_metadata_store_for_internals(store);
             let handle = registry::metadata_store();
             handle.set_description("registry desc").expect("set");
             let stored = handle.get_description().expect("load");
             assert_eq!(stored.as_deref(), Some("registry desc"));
         });
+    }
+
+    #[test]
+    fn fallback_upgrades_and_migrates_metadata() {
+        let _guard = crate::infrastructure::storage::state_dir_test_lock();
+        registry::reset_metadata_store_for_tests();
+        crate::infrastructure::storage::clear_state_dir_override_for_tests();
+        crate::infrastructure::storage::reset_metadata_backend_factory_for_tests();
+        std::env::remove_var("DESCRIBE_ME_STATE_DIR");
+        std::env::remove_var("STATE_DIRECTORY");
+
+        let dir = tempdir().expect("tempdir");
+        let bad_path = dir.path().join("notadir");
+        std::fs::write(&bad_path, "x").expect("write file");
+        super::override_state_directory(&bad_path);
+        registry::reset_metadata_store_for_tests();
+
+        let store = registry::metadata_store();
+        store
+            .set_description("fallback desc")
+            .expect("set description");
+        store.set_tags_raw("prod\nweb").expect("set tags");
+
+        super::override_state_directory(dir.path());
+        wait_for_metadata_upgrade(&store);
+
+        let persistent = MetadataStore::open_default().expect("open");
+        assert_eq!(
+            persistent.get_description().expect("get").as_deref(),
+            Some("fallback desc")
+        );
+        assert_eq!(
+            persistent.get_tags_raw().expect("get").as_deref(),
+            Some("prod\nweb")
+        );
+
+        registry::reset_metadata_store_for_tests();
+        crate::infrastructure::storage::clear_state_dir_override_for_tests();
+    }
+
+    #[test]
+    fn existing_app_context_observes_metadata_upgrade() {
+        let _guard = crate::infrastructure::storage::state_dir_test_lock();
+        registry::reset_metadata_store_for_tests();
+        crate::infrastructure::storage::clear_state_dir_override_for_tests();
+        crate::infrastructure::storage::reset_metadata_backend_factory_for_tests();
+        std::env::remove_var("DESCRIBE_ME_STATE_DIR");
+        std::env::remove_var("STATE_DIRECTORY");
+
+        let dir = tempdir().expect("tempdir");
+        let bad_path = dir.path().join("notadir");
+        std::fs::write(&bad_path, "x").expect("write file");
+        super::override_state_directory(&bad_path);
+        registry::reset_metadata_store_for_tests();
+
+        let ctx = AppContext::new_default().expect("ctx");
+        assert_eq!(
+            ctx.metadata_store_health(),
+            MetadataStoreHealth::FallbackInMemory
+        );
+        set_server_description_with(&ctx, "ctx-desc").expect("set");
+
+        super::override_state_directory(dir.path());
+        wait_for_metadata_upgrade(&registry::metadata_store());
+
+        assert_eq!(ctx.metadata_store_health(), MetadataStoreHealth::Persistent);
+        let persistent = MetadataStore::open_default().expect("open");
+        assert_eq!(
+            persistent.get_description().expect("get").as_deref(),
+            Some("ctx-desc")
+        );
+
+        registry::reset_metadata_store_for_tests();
+        crate::infrastructure::storage::clear_state_dir_override_for_tests();
     }
 }
