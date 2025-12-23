@@ -23,6 +23,7 @@ mod policy;
 
 use crate::application::error::{serialize_error_body, ErrorBody};
 use crate::application::logging::LogEvent;
+use crate::domain::validate_plugin_name;
 #[cfg(feature = "config")]
 use crate::domain::{DescribeConfig, ExtensionsConfig, PluginDefinition};
 pub use policy::PluginPolicy;
@@ -88,6 +89,12 @@ pub enum PluginExecutionError {
     },
     #[error("validation {path}: {message}")]
     Validation { path: String, message: String },
+    #[error("nom de plugin invalide {name} pour {command}: {message}")]
+    InvalidName {
+        name: String,
+        command: String,
+        message: String,
+    },
     #[error("lecture binaire {path}: {source}")]
     BinaryIo {
         path: String,
@@ -407,6 +414,15 @@ pub fn execute_configured_plugins_with_policy(
     cfg: &DescribeConfig,
     policy: &PluginPolicy,
 ) -> (BTreeMap<String, PluginOutput>, Vec<PluginFailure>) {
+    if let Err(err) = cfg.validate_plugin_names() {
+        let failure = PluginFailure {
+            name: "config".into(),
+            command: "extensions.plugins".into(),
+            error: err.to_string(),
+            logged: false,
+        };
+        return (BTreeMap::new(), vec![failure]);
+    }
     let Some(extensions) = cfg.extensions.as_ref() else {
         return (BTreeMap::new(), Vec::new());
     };
@@ -451,7 +467,7 @@ fn run_extensions(
                     logged: false,
                 };
                 if is_prelaunch_error(&err) {
-                    emit_plugin_failure(&failure);
+                    emit_failure(&failure);
                     failure.logged = true;
                     sleep_bruteforce_jitter();
                 }
@@ -481,11 +497,19 @@ pub fn log_failures(failures: &[PluginFailure]) {
         if failure.logged {
             continue;
         }
-        emit_plugin_failure(failure);
+        emit_failure(failure);
     }
 }
 
-fn emit_plugin_failure(failure: &PluginFailure) {
+fn emit_failure(failure: &PluginFailure) {
+    if failure.command == "extensions.plugins" && failure.name == "config" {
+        LogEvent::ConfigError {
+            path: Cow::Owned(failure.command.clone()),
+            error: Cow::Owned(failure.error.clone()),
+        }
+        .emit();
+        return;
+    }
     LogEvent::PluginError {
         plugin: Cow::Owned(failure.name.clone()),
         command: Cow::Owned(failure.command.clone()),
@@ -516,6 +540,13 @@ pub fn run_ad_hoc_plugin_with_policy(
     timeout: Duration,
     policy: &PluginPolicy,
 ) -> Result<PluginOutput, PluginExecutionError> {
+    if let Err(err) = validate_plugin_name(plugin_name) {
+        return Err(PluginExecutionError::InvalidName {
+            name: plugin_name.to_string(),
+            command: binary_path.to_string(),
+            message: err.to_string(),
+        });
+    }
     match prepare_plugin_process(binary_path, plugin_name, args, timeout, policy) {
         Ok(spec) => execute_process(&spec),
         Err(err) => {
@@ -780,6 +811,7 @@ fn is_prelaunch_error(error: &PluginExecutionError) -> bool {
         PluginExecutionError::Validation { .. }
             | PluginExecutionError::BinaryIo { .. }
             | PluginExecutionError::ValidationFailed { .. }
+            | PluginExecutionError::InvalidName { .. }
     )
 }
 
@@ -1006,6 +1038,20 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, PluginExecutionError::Validation { .. }));
+    }
+
+    #[test]
+    fn run_ad_hoc_plugin_rejects_invalid_name() {
+        let err = run_ad_hoc_plugin_with_policy(
+            "/usr/lib/describe_me/plugins/describe-me-plugin-invalid",
+            "Bad/Name",
+            &[],
+            Duration::from_secs(1),
+            &PluginPolicy::default(),
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, PluginExecutionError::InvalidName { .. }));
     }
 
     #[test]
