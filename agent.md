@@ -20,6 +20,9 @@ When you touch:
 - Security: `src/security.rs` + web security modules
 - Plugins: `describe_me_plugin_sdk` + domain plugin config
 
+When doing a code review:
+- Read `snapshot/REVUE - INNLOG - 27-12-2025.md` first to avoid duplicating recommendations.
+
 ## 2) Output contract (what you must produce)
 
 For every change request, output:
