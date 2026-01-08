@@ -4,7 +4,7 @@ use crate::domain::{DescribeError, HostLogEntry, HostLogsPage};
 use std::collections::VecDeque;
 use std::env;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
 
 const DEFAULT_SYSLOG_PATH: &str = "/var/log/messages";
@@ -37,38 +37,72 @@ impl FreebsdSyslogBackend {
             });
         }
 
-        let file = File::open(&self.path).map_err(|err| {
+        let mut file = File::open(&self.path).map_err(|err| {
             DescribeError::External(format!("open {}: {err}", self.path.display()))
         })?;
-        let mut reader = BufReader::new(file);
 
-        let mut buffer = Vec::new();
-        let mut ring = VecDeque::with_capacity(lines);
-        let mut seen = 0usize;
+        let len = file
+            .metadata()
+            .map_err(|err| DescribeError::System(format!("stat {}: {err}", self.path.display())))?
+            .len();
+        if len == 0 {
+            return Ok(HostLogsPage {
+                entries: Vec::new(),
+                truncated: false,
+            });
+        }
 
-        loop {
-            buffer.clear();
-            let n = reader.read_until(b'\n', &mut buffer).map_err(|err| {
+        let ends_with_newline = {
+            let mut last = [0u8; 1];
+            file.seek(SeekFrom::End(-1)).map_err(|err| {
+                DescribeError::System(format!("seek {}: {err}", self.path.display()))
+            })?;
+            file.read_exact(&mut last).map_err(|err| {
                 DescribeError::System(format!("read {}: {err}", self.path.display()))
             })?;
-            if n == 0 {
-                break;
-            }
+            last[0] == b'\n'
+        };
 
-            while buffer
-                .last()
-                .map(|b| *b == b'\n' || *b == b'\r')
-                .unwrap_or(false)
-            {
-                buffer.pop();
-            }
+        let target_newlines = if ends_with_newline {
+            lines.saturating_add(1)
+        } else {
+            lines
+        };
 
-            let line = String::from_utf8_lossy(&buffer).to_string();
+        let mut pos = len;
+        let mut lines_found = 0usize;
+        let mut chunks: Vec<Vec<u8>> = Vec::new();
+        const CHUNK_SIZE: usize = 8 * 1024;
+
+        while pos > 0 && lines_found < target_newlines {
+            let read_size = (CHUNK_SIZE as u64).min(pos) as usize;
+            pos -= read_size as u64;
+            file.seek(SeekFrom::Start(pos)).map_err(|err| {
+                DescribeError::System(format!("seek {}: {err}", self.path.display()))
+            })?;
+            let mut buf = vec![0u8; read_size];
+            file.read_exact(&mut buf).map_err(|err| {
+                DescribeError::System(format!("read {}: {err}", self.path.display()))
+            })?;
+            lines_found += buf.iter().filter(|b| **b == b'\n').count();
+            chunks.push(buf);
+        }
+
+        chunks.reverse();
+        let mut bytes = Vec::new();
+        for chunk in chunks {
+            bytes.extend_from_slice(&chunk);
+        }
+
+        let mut ring = VecDeque::with_capacity(lines);
+        let mut raw_lines = 0usize;
+        for line in String::from_utf8_lossy(&bytes).lines() {
+            raw_lines += 1;
+            let line = line.trim_end_matches('\r');
             if ring.len() == lines {
                 ring.pop_front();
             }
-            ring.push_back(line);
-            seen += 1;
+            ring.push_back(line.to_string());
         }
 
         let entries = ring
@@ -77,7 +111,7 @@ impl FreebsdSyslogBackend {
             .collect::<Vec<_>>();
 
         Ok(HostLogsPage {
-            truncated: seen > lines,
+            truncated: if pos > 0 { true } else { raw_lines > lines },
             entries,
         })
     }
