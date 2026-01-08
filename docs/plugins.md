@@ -40,7 +40,7 @@ code de sortie fourni (`PluginErrorReport::with_exit_code`). L’API historique
 ```bash
 cargo build --release -p describe-me-plugin-inventory
 # Exécution via la CLI (injecte le handshake et le timeout)
-describe-me plugin run --name inventory --arg --probe --arg /etc/ssl/certs
+describe-me plugin run --name inventory --sha256 <hash> --arg --probe --arg /etc/ssl/certs
 ```
 
 Les binaires doivent s’appeler `describe-me-plugin-<nom>` et n’acceptent que des arguments sérialisables sur stdout en JSON.
@@ -51,7 +51,7 @@ Les binaires doivent s’appeler `describe-me-plugin-<nom>` et n’acceptent que
 2. Vérifier les permissions (`0755`) et la présence du bit exécutable.
 3. Calculer l’empreinte SHA-256 (ex. `sha256sum /usr/lib/describe_me/plugins/...`).
 
-`describe_me` refuse tout binaire hors de ce répertoire et vérifie l’empreinte avant chaque lancement.
+`describe_me` refuse tout binaire hors de ce répertoire et vérifie l’empreinte avant chaque lancement. La CLI requiert `--sha256` ou une configuration `extensions.plugins.sha256` pour autoriser l’exécution.
 
 ## 5. Déclarer le plugin dans la configuration
 
@@ -80,8 +80,9 @@ Lorsqu’un paquet Debian ou une image installe un plugin :
 
 ## 7. Diagnostic
 
-- `describe-me plugin run --name <nom>` permet de tester manuellement un plugin installé.
+- `describe-me plugin run --name <nom>` refuse l’exécution sans empreinte SHA-256 (`--sha256` ou configuration) et permet de tester manuellement un plugin installé.
 - Les erreurs (hash incorrect, permissions, timeout, JSON invalide, handshake manquant) sont visibles dans les logs (`LogEvent::PluginError`) et dans la sortie CLI.
+- En cas de timeout ou de dépassement de limites, la CLI tue le groupe de processus du plugin (SIGKILL) pour éviter les enfants orphelins.
 - En cas de rejet, `describe_me` applique un jitter (100–500 ms) pour ralentir les tentatives répétées.
 
 En suivant ces étapes, tout nouveau module reste aligné sur la politique de sécurité : poignée de main stricte, binaire whiteliste, hash immuable et configuration explicite.
