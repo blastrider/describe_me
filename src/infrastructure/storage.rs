@@ -1,7 +1,7 @@
 use std::env;
 use std::ffi::OsString;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use redb::{Database, ReadableTable, TableDefinition, TableError};
@@ -154,19 +154,41 @@ impl MetadataBackendFactory for RedbBackendFactory {
         let path = metadata_db_path();
         let path = path.as_path();
         if let Some(dir) = path.parent() {
+            ensure_not_symlink(dir, "répertoire état")?;
             fs::create_dir_all(dir).map_err(|err| {
                 DescribeError::System(format!(
                     "impossible de créer le répertoire état {}: {err}",
                     dir.display()
                 ))
             })?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o700));
+            }
         }
+        ensure_not_symlink(path, "fichier metadata")?;
         let db = if path.exists() {
             Database::open(path).map_err(map_db_err)?
         } else {
             Database::create(path).map_err(map_db_err)?
         };
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+        }
         Ok(Box::new(RedbBackend { db }))
+    }
+}
+
+fn ensure_not_symlink(path: &Path, context: &str) -> Result<(), DescribeError> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => Err(DescribeError::System(format!(
+            "{context} ne doit pas être un lien symbolique: {}",
+            path.display()
+        ))),
+        _ => Ok(()),
     }
 }
 
@@ -276,7 +298,8 @@ pub fn reset_metadata_backend_factory_for_tests() {
 
 pub(crate) fn metadata_db_path() -> PathBuf {
     if let Some(dir) = env::var_os("DESCRIBE_ME_STATE_DIR") {
-        return resolve_db_path(PathBuf::from(dir));
+        let path = PathBuf::from(dir);
+        return resolve_db_path(path);
     }
     if let Some(path) = state_dir_override() {
         return resolve_db_path(path);
@@ -286,36 +309,42 @@ pub(crate) fn metadata_db_path() -> PathBuf {
             return resolve_db_path(first);
         }
     }
-    resolve_state_dir().join(DB_FILE_NAME)
+    let resolved = resolve_state_dir().unwrap_or_else(|| env::temp_dir().join(APP_DIR_NAME));
+    resolve_db_path(resolved)
 }
 
-fn resolve_state_dir() -> PathBuf {
+fn resolve_state_dir() -> Option<PathBuf> {
     #[cfg(unix)]
     {
         if let Some(dir) = env::var_os("XDG_STATE_HOME") {
-            return PathBuf::from(dir).join(APP_DIR_NAME);
+            return Some(PathBuf::from(dir).join(APP_DIR_NAME));
         }
         if let Some(home) = env::var_os("HOME") {
-            return PathBuf::from(home)
-                .join(".local")
-                .join("state")
-                .join(APP_DIR_NAME);
+            return Some(
+                PathBuf::from(home)
+                    .join(".local")
+                    .join("state")
+                    .join(APP_DIR_NAME),
+            );
         }
     }
     #[cfg(not(unix))]
     {
         if let Some(dir) = env::var_os("LOCALAPPDATA") {
-            return PathBuf::from(dir).join(APP_DIR_NAME);
+            return Some(PathBuf::from(dir).join(APP_DIR_NAME));
         }
         if let Some(dir) = env::var_os("APPDATA") {
-            return PathBuf::from(dir).join(APP_DIR_NAME);
+            return Some(PathBuf::from(dir).join(APP_DIR_NAME));
         }
     }
-    env::temp_dir().join(APP_DIR_NAME)
+    tracing::warn!(
+        "Aucun répertoire d'état fiable (XDG/HOME/APPDATA) détecté, retombée sur un chemin temporaire."
+    );
+    None
 }
 
 fn resolve_db_path(base: PathBuf) -> PathBuf {
-    if base
+    let path = if base
         .file_name()
         .map(|name| name == DB_FILE_NAME)
         .unwrap_or(false)
@@ -324,7 +353,16 @@ fn resolve_db_path(base: PathBuf) -> PathBuf {
         base
     } else {
         base.join(DB_FILE_NAME)
+    };
+
+    if !path.is_absolute() {
+        tracing::warn!(
+            "Chemin state_dir non absolu ({}) résolu par rapport au répertoire courant.",
+            path.display()
+        );
     }
+
+    path
 }
 
 fn state_dir_override() -> Option<PathBuf> {
