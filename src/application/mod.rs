@@ -107,12 +107,14 @@ pub fn capture_snapshot_with_view(
     }
 
     #[cfg(feature = "config")]
-    if let Some(cfg) = _cfg {
-        let (extensions_map, failures) = extensions::execute_configured_plugins(cfg);
-        if !extensions_map.is_empty() {
-            snapshot.extensions = Some(extensions_map);
+    if exposure.extensions() {
+        if let Some(cfg) = _cfg {
+            let (extensions_map, failures) = extensions::execute_configured_plugins(cfg);
+            if !extensions_map.is_empty() {
+                snapshot.extensions = Some(extensions_map);
+            }
+            extensions::log_failures(&failures);
         }
-        extensions::log_failures(&failures);
     }
 
     let mut view = SnapshotView::new(&snapshot, exposure);
@@ -148,6 +150,26 @@ pub fn load_config_from_path<P: AsRef<std::path::Path>>(
     path: P,
 ) -> Result<DescribeConfig, DescribeError> {
     let path_ref = path.as_ref();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(path_ref) {
+            let mode = meta.permissions().mode();
+            // world-readable or world-writable
+            if mode & 0o007 != 0 || mode & 0o070 != 0 {
+                LogEvent::ConfigError {
+                    path: Cow::Owned(path_ref.display().to_string()),
+                    error: Cow::Borrowed("permissions trop ouvertes (attendu 0600 ou équivalent)"),
+                }
+                .emit();
+                return Err(DescribeError::Config(format!(
+                    "permissions trop ouvertes sur {} (mode {:o})",
+                    path_ref.display(),
+                    mode & 0o777
+                )));
+            }
+        }
+    }
     let data = std::fs::read_to_string(path_ref).map_err(|e| {
         let msg = e.to_string();
         LogEvent::ConfigError {
