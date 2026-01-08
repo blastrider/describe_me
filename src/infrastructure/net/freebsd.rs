@@ -1,10 +1,14 @@
 use crate::application::net::{NetBackend, NetCollectionParams};
 use crate::application::AppContext;
 use crate::domain::{DescribeError, ListeningSocket, NetworkInterfaceTraffic};
+use crate::infrastructure::command;
 use std::collections::HashMap;
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 const NET_COMMAND_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+const NET_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+const NET_COMMAND_MAX_OUTPUT: usize = 512 * 1024;
 
 /// FreeBSD backend relying on `sockstat` and `netstat`.
 #[derive(Debug, Default, Clone, Copy)]
@@ -36,9 +40,19 @@ fn collect_listening_sockets_freebsd(
         .env("PATH", NET_COMMAND_PATH)
         .stdin(Stdio::null());
 
-    let output = cmd
-        .output()
-        .map_err(|err| DescribeError::External(format!("sockstat: {err}")))?;
+    let output = command::run_command_with_timeout(
+        cmd,
+        NET_COMMAND_TIMEOUT,
+        NET_COMMAND_MAX_OUTPUT,
+        "sockstat",
+    )
+    .map_err(|err| DescribeError::External(format!("sockstat: {err}")))?;
+    if output.stdout_truncated || output.stderr_truncated {
+        return Err(DescribeError::External(
+            "sockstat output exceeded limit".into(),
+        ));
+    }
+    let output = output.output;
 
     if !output.status.success() {
         return Err(DescribeError::External(format!(
@@ -126,9 +140,19 @@ fn collect_network_traffic_freebsd() -> Result<Vec<NetworkInterfaceTraffic>, Des
         .env("PATH", NET_COMMAND_PATH)
         .stdin(Stdio::null());
 
-    let output = cmd
-        .output()
-        .map_err(|err| DescribeError::External(format!("netstat -ibn: {err}")))?;
+    let output = command::run_command_with_timeout(
+        cmd,
+        NET_COMMAND_TIMEOUT,
+        NET_COMMAND_MAX_OUTPUT,
+        "netstat -ibn",
+    )
+    .map_err(|err| DescribeError::External(format!("netstat -ibn: {err}")))?;
+    if output.stdout_truncated || output.stderr_truncated {
+        return Err(DescribeError::External(
+            "netstat -ibn output exceeded limit".into(),
+        ));
+    }
+    let output = output.output;
 
     if !output.status.success() {
         return Err(DescribeError::External(format!(
