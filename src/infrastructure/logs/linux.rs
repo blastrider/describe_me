@@ -1,8 +1,10 @@
 use crate::application::logs::{HostLogBackend, TailParams};
 use crate::application::AppContext;
 use crate::domain::{DescribeError, HostLogEntry, HostLogsPage};
+use crate::infrastructure::command;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 /// Journald backend executed via `journalctl`.
 ///
@@ -12,6 +14,11 @@ pub struct JournaldBackend {
     path: PathBuf,
     base_env: Vec<(String, String)>,
 }
+
+const JOURNALCTL_TIMEOUT: Duration = Duration::from_secs(5);
+const JOURNALCTL_MIN_OUTPUT: usize = 128 * 1024;
+const JOURNALCTL_MAX_OUTPUT: usize = 2 * 1024 * 1024;
+const JOURNALCTL_BYTES_PER_LINE: usize = 2048;
 
 impl Default for JournaldBackend {
     fn default() -> Self {
@@ -41,7 +48,7 @@ impl JournaldBackend {
             });
         }
 
-        if !self.path.exists() {
+        if self.path.is_absolute() && !self.path.exists() {
             return Err(DescribeError::External(format!(
                 "journalctl introuvable ({})",
                 self.path.display()
@@ -62,9 +69,18 @@ impl JournaldBackend {
             cmd.env(k, v);
         }
 
-        let output = cmd
-            .output()
-            .map_err(|err| DescribeError::External(format!("journalctl: {err}")))?;
+        let max_output = lines
+            .saturating_mul(JOURNALCTL_BYTES_PER_LINE)
+            .clamp(JOURNALCTL_MIN_OUTPUT, JOURNALCTL_MAX_OUTPUT);
+        let output =
+            command::run_command_with_timeout(cmd, JOURNALCTL_TIMEOUT, max_output, "journalctl")
+                .map_err(|err| DescribeError::External(format!("journalctl: {err}")))?;
+        if output.stdout_truncated || output.stderr_truncated {
+            return Err(DescribeError::External(
+                "journalctl output exceeded limit".into(),
+            ));
+        }
+        let output = output.output;
 
         if !output.status.success() {
             return Err(DescribeError::External(format!(
@@ -73,13 +89,19 @@ impl JournaldBackend {
             )));
         }
 
-        let stdout = String::from_utf8(output.stdout)
-            .map_err(|err| DescribeError::Parse(format!("journalctl utf8: {err}")))?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
 
-        let entries = stdout.lines().filter_map(parse_line).collect::<Vec<_>>();
+        let mut raw_lines = 0usize;
+        let entries = stdout
+            .lines()
+            .filter_map(|line| {
+                raw_lines += 1;
+                parse_line(line)
+            })
+            .collect::<Vec<_>>();
 
         Ok(HostLogsPage {
-            truncated: entries.len() >= lines,
+            truncated: raw_lines >= lines,
             entries,
         })
     }
@@ -93,14 +115,32 @@ impl HostLogBackend for JournaldBackend {
 }
 
 fn parse_line(line: &str) -> Option<HostLogEntry> {
-    let mut parts = line.splitn(3, ' ');
-    let timestamp = parts.next()?.trim();
-    let _host = parts.next()?; // on ignore l'hostname pour l'affichage
-    let rest = parts.next().unwrap_or("").trim_start();
+    let mut idx = 0usize;
+    let date = next_token(line, &mut idx)?;
+    let time = next_token(line, &mut idx)?;
+    let third = next_token(line, &mut idx)?;
 
-    if timestamp.is_empty() || rest.is_empty() {
+    let (tz, host) = if is_timezone_token(third) {
+        let host = next_token(line, &mut idx)?;
+        (Some(third), host)
+    } else {
+        (None, third)
+    };
+
+    if host.is_empty() {
         return None;
     }
+
+    let rest = line[idx..].trim_start();
+    if rest.is_empty() {
+        return None;
+    }
+
+    let timestamp = if let Some(tz) = tz {
+        format!("{date} {time} {tz}")
+    } else {
+        format!("{date} {time}")
+    };
 
     let (source, message) = if let Some((src, msg)) = rest.split_once(": ") {
         (Some(src.trim().to_string()), msg.trim().to_string())
@@ -109,15 +149,41 @@ fn parse_line(line: &str) -> Option<HostLogEntry> {
     };
 
     Some(HostLogEntry {
-        timestamp: timestamp.to_string(),
+        timestamp,
         source,
         message,
     })
 }
 
+fn next_token<'a>(line: &'a str, idx: &mut usize) -> Option<&'a str> {
+    let bytes = line.as_bytes();
+    while *idx < bytes.len() && bytes[*idx].is_ascii_whitespace() {
+        *idx += 1;
+    }
+    if *idx >= bytes.len() {
+        return None;
+    }
+    let start = *idx;
+    while *idx < bytes.len() && !bytes[*idx].is_ascii_whitespace() {
+        *idx += 1;
+    }
+    Some(&line[start..*idx])
+}
+
+fn is_timezone_token(token: &str) -> bool {
+    if token.eq_ignore_ascii_case("utc") || token == "Z" {
+        return true;
+    }
+    let mut chars = token.chars();
+    match chars.next() {
+        Some('+') | Some('-') => chars.all(|c| c.is_ascii_digit() || c == ':'),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::JournaldBackend;
+    use super::{parse_line, JournaldBackend};
 
     #[test]
     fn backend_uses_env_override() {
@@ -125,5 +191,23 @@ mod tests {
         let backend = JournaldBackend::new_from_env();
         assert_eq!(backend.path.display().to_string(), "/tmp/custom-journalctl");
         std::env::remove_var("DESCRIBE_ME_JOURNALCTL");
+    }
+
+    #[test]
+    fn parse_line_handles_inline_timezone() {
+        let line = "2025-01-27 12:34:56.123456+0100 host sshd[42]: login ok";
+        let entry = parse_line(line).expect("parsed");
+        assert_eq!(entry.timestamp, "2025-01-27 12:34:56.123456+0100");
+        assert_eq!(entry.source.as_deref(), Some("sshd[42]"));
+        assert_eq!(entry.message, "login ok");
+    }
+
+    #[test]
+    fn parse_line_handles_separate_timezone() {
+        let line = "2025-01-27 12:34:56.123456 +0100 host kernel: boot";
+        let entry = parse_line(line).expect("parsed");
+        assert_eq!(entry.timestamp, "2025-01-27 12:34:56.123456 +0100");
+        assert_eq!(entry.source.as_deref(), Some("kernel"));
+        assert_eq!(entry.message, "boot");
     }
 }
