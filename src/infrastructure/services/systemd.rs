@@ -1,15 +1,19 @@
 use crate::application::services::ServiceBackend;
 use crate::application::AppContext;
 use crate::domain::{DescribeError, ServiceInfo};
+use crate::infrastructure::command;
 use crate::security;
 use std::env;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::time::Duration;
 use tracing::warn;
 
 // Linux-only: shells out to /usr/bin/systemctl and inspects /proc to guard root usage.
 const SYSTEMCTL_PATH: &str = "/usr/bin/systemctl";
 const SYSTEMCTL_SAFE_PATH: &str = "/usr/bin:/bin";
+const SYSTEMCTL_TIMEOUT: Duration = Duration::from_secs(5);
+const SYSTEMCTL_MAX_OUTPUT: usize = 2 * 1024 * 1024;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SystemdBackend;
@@ -35,21 +39,33 @@ pub(crate) fn list_systemd_services() -> Result<Vec<ServiceInfo>, DescribeError>
     }
 
     // systemctl list-units --type=service --state=running --no-legend --plain
-    let output = Command::new(SYSTEMCTL_PATH)
-        .args([
-            "list-units",
-            "--type=service",
-            "--state=running",
-            "--no-legend",
-            "--plain",
-        ])
-        .env_clear()
-        .env("PATH", SYSTEMCTL_SAFE_PATH)
-        .env("LC_ALL", "C")
-        .env("SYSTEMD_COLORS", "0")
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|e| DescribeError::External(e.to_string()))?;
+    let mut cmd = Command::new(SYSTEMCTL_PATH);
+    cmd.args([
+        "list-units",
+        "--type=service",
+        "--state=running",
+        "--no-legend",
+        "--plain",
+    ])
+    .env_clear()
+    .env("PATH", SYSTEMCTL_SAFE_PATH)
+    .env("LC_ALL", "C")
+    .env("SYSTEMD_COLORS", "0")
+    .stdin(Stdio::null());
+
+    let output = command::run_command_with_timeout(
+        cmd,
+        SYSTEMCTL_TIMEOUT,
+        SYSTEMCTL_MAX_OUTPUT,
+        "systemctl list-units",
+    )
+    .map_err(|e| DescribeError::External(e.to_string()))?;
+    if output.stdout_truncated || output.stderr_truncated {
+        return Err(DescribeError::External(
+            "systemctl output exceeded limit".into(),
+        ));
+    }
+    let output = output.output;
 
     if !output.status.success() {
         return Err(DescribeError::External(format!(
