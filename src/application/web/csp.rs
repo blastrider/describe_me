@@ -48,11 +48,15 @@ use super::state::StaticWebConfig;
 #[derive(Clone)]
 pub struct SecurityHeadersLayer {
     static_cfg: Arc<StaticWebConfig>,
+    cors_allowlist: Arc<[String]>,
 }
 
 impl SecurityHeadersLayer {
-    pub fn new(static_cfg: Arc<StaticWebConfig>) -> Self {
-        Self { static_cfg }
+    pub fn new(static_cfg: Arc<StaticWebConfig>, cors_allowlist: Arc<[String]>) -> Self {
+        Self {
+            static_cfg,
+            cors_allowlist,
+        }
     }
 }
 
@@ -63,6 +67,7 @@ impl<S> Layer<S> for SecurityHeadersLayer {
         SecurityHeadersMiddleware {
             inner,
             static_cfg: self.static_cfg.clone(),
+            cors_allowlist: self.cors_allowlist.clone(),
         }
     }
 }
@@ -71,6 +76,7 @@ impl<S> Layer<S> for SecurityHeadersLayer {
 pub struct SecurityHeadersMiddleware<S> {
     inner: S,
     static_cfg: Arc<StaticWebConfig>,
+    cors_allowlist: Arc<[String]>,
 }
 
 impl<S, B> Service<Request<B>> for SecurityHeadersMiddleware<S>
@@ -92,22 +98,38 @@ where
         let csp_nonce = CspNonce::new(generate_csp_nonce());
         req.extensions_mut().insert(csp_nonce.clone());
         let is_https = is_request_https(&req, &self.static_cfg);
+        let cors_allowlist = self.cors_allowlist.clone();
 
         Box::pin(async move {
             let mut response = inner.call(req).await?;
-            apply_security_headers(response.headers_mut(), &csp_nonce, is_https);
+            apply_security_headers(
+                response.headers_mut(),
+                &csp_nonce,
+                is_https,
+                cors_allowlist.as_ref(),
+            );
             Ok(response)
         })
     }
 }
 
-pub(crate) fn apply_security_headers(headers: &mut HeaderMap, nonce: &CspNonce, is_https: bool) {
-    let csp_value = format!(
-        "default-src 'none'; connect-src 'self'; img-src 'self'; font-src 'self'; \
+pub(crate) fn apply_security_headers(
+    headers: &mut HeaderMap,
+    nonce: &CspNonce,
+    is_https: bool,
+    cors_allowlist: &[String],
+) {
+    let connect_src = connect_src_directive(cors_allowlist);
+    let mut csp_value = format!(
+        "default-src 'none'; {connect_src}; img-src 'self'; font-src 'self'; \
          style-src 'nonce-{nonce}'; script-src 'nonce-{nonce}'; script-src-attr 'none'; base-uri 'none'; form-action 'self'; \
-         frame-ancestors 'none'; object-src 'none'; block-all-mixed-content; upgrade-insecure-requests",
-        nonce = nonce.as_str()
+         frame-ancestors 'none'; object-src 'none'; block-all-mixed-content",
+        nonce = nonce.as_str(),
+        connect_src = connect_src,
     );
+    if is_https {
+        csp_value.push_str("; upgrade-insecure-requests");
+    }
 
     if let Ok(value) = HeaderValue::from_str(&csp_value) {
         headers.insert(HEADER_CONTENT_SECURITY_POLICY, value);
@@ -121,10 +143,12 @@ pub(crate) fn apply_security_headers(headers: &mut HeaderMap, nonce: &CspNonce, 
         HEADER_X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
     );
-    headers.insert(
-        HEADER_CROSS_ORIGIN_RESOURCE_POLICY,
-        HeaderValue::from_static("same-origin"),
-    );
+    if cors_allowlist.is_empty() {
+        headers.insert(
+            HEADER_CROSS_ORIGIN_RESOURCE_POLICY,
+            HeaderValue::from_static("same-origin"),
+        );
+    }
     headers.insert(
         HEADER_PERMISSIONS_POLICY,
         HeaderValue::from_static("geolocation=(), camera=(), microphone=()"),
@@ -135,14 +159,32 @@ pub(crate) fn apply_security_headers(headers: &mut HeaderMap, nonce: &CspNonce, 
             HeaderValue::from_static("max-age=31536000; includeSubDomains"),
         );
     }
-    headers.insert(
-        HEADER_CROSS_ORIGIN_OPENER_POLICY,
-        HeaderValue::from_static("same-origin"),
-    );
-    headers.insert(
-        HEADER_CROSS_ORIGIN_EMBEDDER_POLICY,
-        HeaderValue::from_static("require-corp"),
-    );
+    if cors_allowlist.is_empty() {
+        headers.insert(
+            HEADER_CROSS_ORIGIN_OPENER_POLICY,
+            HeaderValue::from_static("same-origin"),
+        );
+        headers.insert(
+            HEADER_CROSS_ORIGIN_EMBEDDER_POLICY,
+            HeaderValue::from_static("require-corp"),
+        );
+    }
+}
+
+fn connect_src_directive(cors_allowlist: &[String]) -> String {
+    if cors_allowlist.is_empty() {
+        return "connect-src 'self'".to_string();
+    }
+
+    let mut value = String::from("connect-src 'self'");
+    for origin in cors_allowlist {
+        if origin.is_empty() {
+            continue;
+        }
+        value.push(' ');
+        value.push_str(origin);
+    }
+    value
 }
 
 fn generate_csp_nonce() -> String {
