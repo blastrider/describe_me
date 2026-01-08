@@ -1,17 +1,17 @@
 use crate::domain::{UpdatePackage, UpdatesInfo};
 use crate::SharedSlice;
 use std::fs;
-use std::io::{self, Read};
+use std::io;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tempfile::TempDir;
-use tracing::{debug, trace, warn};
+use tracing::{debug, trace};
 
 const UPDATE_COMMAND_TIMEOUT: Duration = Duration::from_secs(20);
+const UPDATE_COMMAND_MAX_OUTPUT: usize = 8 * 1024 * 1024;
 const UPDATE_COMMAND_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
 #[cfg(target_os = "linux")]
@@ -47,6 +47,7 @@ fn hardened_command(program: &str) -> Command {
     let mut cmd = Command::new(program);
     cmd.env_clear();
     cmd.env("PATH", UPDATE_COMMAND_PATH);
+    cmd.env("LC_ALL", "C");
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
@@ -58,77 +59,19 @@ fn run_command(cmd: Command, label: &str) -> io::Result<Output> {
 }
 
 fn run_command_with_timeout(cmd: Command, timeout: Duration, label: &str) -> io::Result<Output> {
-    let mut cmd = cmd;
-    let start = Instant::now();
-    let mut child = cmd.spawn()?;
-
-    let stdout_handle = child.stdout.take().map(|mut stdout| {
-        thread::spawn(move || {
-            let mut buf = Vec::new();
-            let _ = stdout.read_to_end(&mut buf);
-            buf
-        })
-    });
-    let stderr_handle = child.stderr.take().map(|mut stderr| {
-        thread::spawn(move || {
-            let mut buf = Vec::new();
-            let _ = stderr.read_to_end(&mut buf);
-            buf
-        })
-    });
-
-    let join_output = |handle: Option<thread::JoinHandle<Vec<u8>>>| -> Vec<u8> {
-        handle.and_then(|h| h.join().ok()).unwrap_or_default()
-    };
-
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let stdout = join_output(stdout_handle);
-                let stderr = join_output(stderr_handle);
-                let output = Output {
-                    status,
-                    stdout,
-                    stderr,
-                };
-                let elapsed = start.elapsed();
-                debug!(
-                    "update_command_completed command={} status={} duration_ms={}",
-                    label,
-                    output.status,
-                    elapsed.as_millis()
-                );
-                return Ok(output);
-            }
-            Ok(None) => {
-                if start.elapsed() >= timeout {
-                    warn!(
-                        "update_command_timeout command={} timeout_s={}",
-                        label,
-                        timeout.as_secs()
-                    );
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    let _ = join_output(stdout_handle);
-                    let _ = join_output(stderr_handle);
-                    return Err(io::Error::new(io::ErrorKind::TimedOut, "command timed out"));
-                }
-                thread::sleep(Duration::from_millis(50));
-            }
-            Err(err) => {
-                debug!(
-                    error = %err,
-                    "update_command_wait_failed command={}",
-                    label
-                );
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = join_output(stdout_handle);
-                let _ = join_output(stderr_handle);
-                return Err(err);
-            }
-        }
+    let result = crate::infrastructure::command::run_command_with_timeout(
+        cmd,
+        timeout,
+        UPDATE_COMMAND_MAX_OUTPUT,
+        label,
+    )?;
+    if result.stdout_truncated || result.stderr_truncated {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "command output exceeded limit",
+        ));
     }
+    Ok(result.output)
 }
 
 struct TempXdg {
@@ -194,6 +137,7 @@ fn gather_apt_updates() -> Option<UpdatesInfo> {
 
     let mut cmd = hardened_command("apt-get");
     cmd.args(["-s", "upgrade"])
+        .env("LC_ALL", "C")
         .env("DEBIAN_FRONTEND", "noninteractive");
     let output = match run_command(cmd, "apt-get -s upgrade") {
         Ok(out) => out,
