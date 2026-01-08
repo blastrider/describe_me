@@ -6,6 +6,7 @@
 //! - `rate_limiter`, `brute_force_guard`, `sliding`, `token_affinity`, `sse_admission`, `global_slots`
 //!   : composants spécialisés réutilisables.
 //! - `engine` : orchestrateur interne (prépare la refactorisation).
+//! - `global_slots` : cap de concurrence par route; un flux SSE conserve un slot jusqu'à fermeture.
 
 mod brute_force_guard;
 mod engine;
@@ -22,7 +23,7 @@ pub(crate) use brute_force_guard::{BruteForceGuard, FailureOutcome};
 #[allow(unused_imports)]
 pub(crate) use engine::WebSecurityEngine;
 #[allow(unused_imports)]
-pub(crate) use global_slots::GlobalSlots;
+pub(crate) use global_slots::{GlobalSlots, GlobalSlotsByRoute};
 pub(crate) use policy::{SecurityPolicy, SsePolicy};
 #[allow(unused_imports)]
 pub(crate) use rate_limiter::{RateLimitDecision, RateLimiter};
