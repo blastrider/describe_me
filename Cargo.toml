@@ -38,12 +38,12 @@ crate-type = ["rlib"]
 default = []
 serde = ["dep:serde", "dep:serde_json", "dep:nix"]
 systemd = ["dep:nix"]
-cli = ["dep:anyhow", "dep:clap", "serde", "dep:nix", "dep:argon2", "dep:bcrypt", "dep:rand_core"]
+cli = ["dep:anyhow", "dep:clap", "serde", "dep:nix", "dep:argon2", "dep:bcrypt"]
 # pour tests/fuzz uniquement; n'active rien en prod
 internals = []
-config = ["serde", "dep:toml"]
+config = ["serde", "dep:toml", "dep:roxmltree"]
 net = []
-web = ["dep:tokio", "dep:axum", "dep:tokio-stream", "serde", "dep:argon2", "dep:bcrypt", "dep:rand_core", "dep:axum-server", "dep:serde_urlencoded", "dep:rustls", "dep:tokio-rustls", "dep:pem"]
+web = ["dep:tokio", "dep:axum", "dep:tokio-stream", "serde", "dep:argon2", "dep:bcrypt", "dep:axum-server", "dep:serde_urlencoded", "dep:rustls", "dep:tokio-rustls", "dep:pem"]
 journald = ["dep:tracing-journald"]  
 
 [dependencies]
@@ -60,8 +60,8 @@ tokio-stream = { version = "0.1", optional = true }
 argon2 = { version = "0.5", features = ["password-hash"], optional = true }
 bcrypt = { version = "0.15", optional = true }
 bitflags = "2.6"
-rand_core = { version = "0.6", features = ["getrandom"], optional = true }
-nix = { version = "0.29", default-features = false, features = ["user"], optional = true }
+rand_core = { version = "0.6", features = ["getrandom"] }
+nix = { version = "0.29", default-features = false, features = ["user", "signal", "process"], optional = true }
 tracing = "0.1"
 fastrand = "2.0"
 futures-util = "0.3"
@@ -75,6 +75,7 @@ tower = "0.4"
 hex = "0.4"
 sha2 = "0.10"
 tempfile = "3.10"
+roxmltree = { version = "0.20", optional = true }
 axum-server = { version = "0.7.3", default-features = false, optional = true }
 redb = "1.5"
 describe_me_plugin_sdk = { version = "0.1.0", path = "describe_me_plugin_sdk" }
