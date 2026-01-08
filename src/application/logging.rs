@@ -12,7 +12,7 @@ use crate::application::history::HistoryMode;
 use crate::domain::HistoryProfile;
 use std::borrow::Cow;
 use tracing::dispatcher;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 use tracing_subscriber::{prelude::*, EnvFilter};
 
 /// Initialise le logging :
@@ -149,11 +149,11 @@ pub enum LogEvent<'a> {
     AuthOk {
         ip: Cow<'a, str>,
         route: Cow<'a, str>,
-        token: Cow<'a, str>,
     },
     SecurityIncident {
         category: Cow<'a, str>,
         route: Cow<'a, str>,
+        request_path: Option<Cow<'a, str>>,
         ip: Option<Cow<'a, str>>,
         token: Option<Cow<'a, str>>,
         detail: Option<Cow<'a, str>>,
@@ -351,20 +351,19 @@ impl LogEvent<'_> {
                     limit, "sse_payload_oversize size={} limit={}", size, limit
                 );
             }
-            LogEvent::AuthOk { ip, route, token } => {
-                debug!(
+            LogEvent::AuthOk { ip, route } => {
+                trace!(
                     ip = ip.as_ref(),
                     route = route.as_ref(),
-                    token = token.as_ref(),
-                    "auth_ok ip={} route={} token={}",
+                    "auth_ok ip={} route={}",
                     ip,
-                    route,
-                    token
+                    route
                 );
             }
             LogEvent::SecurityIncident {
                 category,
                 route,
+                request_path,
                 ip,
                 token,
                 detail,
@@ -372,12 +371,14 @@ impl LogEvent<'_> {
                 warn!(
                     category = category.as_ref(),
                     route = route.as_ref(),
+                    request_path = request_path.as_ref().map(|s| s.as_ref()),
                     ip = ip.as_ref().map(|s| s.as_ref()),
                     token = token.as_ref().map(|s| s.as_ref()),
                     detail = detail.as_ref().map(|s| s.as_ref()),
-                    "security_incident category={} route={} ip={:?} token={:?} detail={:?}",
+                    "security_incident category={} route={} request_path={:?} ip={:?} token={:?} detail={:?}",
                     category,
                     route,
+                    request_path,
                     ip,
                     token,
                     detail
