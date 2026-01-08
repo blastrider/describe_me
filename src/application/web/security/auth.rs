@@ -1,8 +1,8 @@
 use super::session::SESSION_COOKIE_PREFIX;
 use super::{
     limits::{SecurityPolicy, SecurityState},
-    session::{SessionCandidate, SessionError, SessionManager},
-    IpMatcher, SecurityRejection, TokenKey, WebRoute,
+    session::{ClientClaim, SessionCandidate, SessionError, SessionManager},
+    IpMatcher, SecurityRejection, TokenFingerprint, TokenKey, WebRoute,
 };
 use crate::application::logging::LogEvent;
 use crate::application::web::SESSION_COOKIE_NAME;
@@ -15,22 +15,29 @@ use argon2::{
 use axum::{
     extract::ConnectInfo,
     http::{
-        header::{AUTHORIZATION, COOKIE},
+        header::{AUTHORIZATION, COOKIE, FORWARDED, USER_AGENT},
         request::Parts,
     },
 };
 use percent_encoding::percent_decode_str;
-use std::{borrow::Cow, net::SocketAddr, time::Instant};
+use sha2::{Digest, Sha256};
+use std::{borrow::Cow, net::SocketAddr, sync::Arc, time::Instant};
 use tracing::error;
+
+const MAX_FORWARDED_HEADER_LEN: usize = 1024;
+const MAX_FORWARDED_HOPS: usize = 32;
 
 #[derive(Debug, Clone)]
 pub(super) struct AuthRequest {
     pub(super) route: WebRoute,
+    pub(super) request_path: Arc<str>,
     pub(super) remote_ip: std::net::IpAddr,
     pub(super) credential: Credential,
     pub(super) token_key: TokenKey,
     pub(super) require_token: bool,
     pub(super) trusted_ip: bool,
+    pub(super) purge_session_cookie: bool,
+    pub(super) client_claim: Option<ClientClaim>,
 }
 
 #[derive(Debug, Clone)]
@@ -40,9 +47,17 @@ pub(super) enum Credential {
     Session(SessionCandidate),
 }
 
+#[derive(Debug, Clone)]
+struct CredentialExtraction {
+    credential: Credential,
+    token_key: TokenKey,
+    purge_session_cookie: bool,
+}
+
 #[derive(Clone)]
 pub(super) struct TokenVerifier {
     inner: TokenVerifierInner,
+    fingerprint: TokenFingerprint,
 }
 
 #[derive(Clone)]
@@ -58,6 +73,7 @@ impl TokenVerifier {
             return Err("hash de jeton vide".into());
         }
 
+        let fingerprint = fingerprint_token(trimmed);
         if trimmed.starts_with("$argon2id$") {
             let hash = PasswordHashString::new(trimmed)
                 .map_err(|err| format!("hash Argon2id invalide: {err}"))?;
@@ -69,6 +85,7 @@ impl TokenVerifier {
             }
             return Ok(TokenVerifier {
                 inner: TokenVerifierInner::Argon2id { hash },
+                fingerprint,
             });
         }
 
@@ -79,6 +96,7 @@ impl TokenVerifier {
                         inner: TokenVerifierInner::Bcrypt {
                             hash: trimmed.to_owned(),
                         },
+                        fingerprint,
                     });
                 }
                 Err(err) => {
@@ -113,6 +131,10 @@ impl TokenVerifier {
             TokenVerifierInner::Bcrypt { .. } => "bcrypt",
         }
     }
+
+    pub(super) fn fingerprint(&self) -> TokenFingerprint {
+        self.fingerprint
+    }
 }
 
 impl std::fmt::Debug for TokenVerifier {
@@ -133,17 +155,28 @@ pub(super) enum CredentialOverride {
     RawToken(String),
 }
 
+fn fingerprint_token(value: &str) -> TokenFingerprint {
+    let mut hasher = Sha256::new();
+    hasher.update(value.as_bytes());
+    let digest = hasher.finalize();
+    let mut fingerprint = [0u8; 16];
+    fingerprint.copy_from_slice(&digest[..16]);
+    fingerprint
+}
+
 #[allow(clippy::too_many_arguments)]
-pub(super) fn build_request(
+pub(super) async fn build_request(
     allow: &[IpMatcher],
     trusted_proxies: &[IpMatcher],
     sessions: &SessionManager,
     sessions_enabled: bool,
+    expected_fingerprint: Option<TokenFingerprint>,
     parts: &Parts,
     route: WebRoute,
     now: Instant,
     credential_override: Option<CredentialOverride>,
 ) -> Result<AuthRequest, SecurityRejection> {
+    let request_path: Arc<str> = parts.uri.path().to_owned().into();
     let remote_ip = parts
         .extensions
         .get::<ConnectInfo<SocketAddr>>()
@@ -152,6 +185,7 @@ pub(super) fn build_request(
             LogEvent::SecurityIncident {
                 category: Cow::Borrowed("missing_remote_ip"),
                 route: Cow::Borrowed(route.as_str()),
+                request_path: Some(Cow::Borrowed(request_path.as_ref())),
                 ip: None,
                 token: None,
                 detail: Some(Cow::Borrowed("connect_info_absent")),
@@ -173,6 +207,7 @@ pub(super) fn build_request(
         LogEvent::SecurityIncident {
             category: Cow::Borrowed("ip_not_allowlisted"),
             route: Cow::Borrowed(route.as_str()),
+            request_path: Some(Cow::Borrowed(request_path.as_ref())),
             ip: Some(Cow::Owned(remote_ip.to_string())),
             token: None,
             detail: None,
@@ -185,6 +220,7 @@ pub(super) fn build_request(
         LogEvent::SecurityIncident {
             category: Cow::Borrowed("forwarded_for_applied"),
             route: Cow::Borrowed(route.as_str()),
+            request_path: Some(Cow::Borrowed(request_path.as_ref())),
             ip: Some(Cow::Owned(remote_ip.to_string())),
             token: None,
             detail: Some(Cow::Owned(format!("source={source_ip}"))),
@@ -192,28 +228,55 @@ pub(super) fn build_request(
         .emit();
     }
 
+    let user_agent = parts
+        .headers
+        .get(USER_AGENT)
+        .and_then(|value| value.to_str().ok());
+    let client_claim = if sessions_enabled {
+        sessions.client_claim(remote_ip, user_agent)
+    } else {
+        None
+    };
+
     let has_override = credential_override.is_some();
-    let (credential, token_key) = match credential_override.as_ref() {
+    let extraction = match credential_override.as_ref() {
         Some(CredentialOverride::RawToken(raw)) => {
             let trimmed = raw.trim();
             if trimmed.is_empty() {
                 return Err(SecurityRejection::unauthorized(None));
             }
-            (
-                Credential::RawToken(trimmed.to_owned()),
-                TokenKey::from_value(trimmed),
-            )
+            CredentialExtraction {
+                credential: Credential::RawToken(trimmed.to_owned()),
+                token_key: TokenKey::from_value(trimmed),
+                purge_session_cookie: false,
+            }
         }
-        None => extract_credential(parts, sessions, sessions_enabled, route, remote_ip, now)?,
+        None => {
+            extract_credential(
+                parts,
+                sessions,
+                sessions_enabled,
+                expected_fingerprint,
+                client_claim,
+                route,
+                request_path.as_ref(),
+                remote_ip,
+                now,
+            )
+            .await?
+        }
     };
 
     Ok(AuthRequest {
         route,
+        request_path,
         remote_ip,
-        credential,
-        token_key,
+        credential: extraction.credential,
+        token_key: extraction.token_key,
         require_token: has_override || route.requires_token(),
         trusted_ip,
+        purge_session_cookie: extraction.purge_session_cookie,
+        client_claim,
     })
 }
 
@@ -231,7 +294,7 @@ pub(super) async fn verify_token(
 
     match request.credential.clone() {
         Credential::Session(candidate) => {
-            sessions.consume(candidate.id(), now).map_err(|err| {
+            sessions.consume(candidate.id(), now).await.map_err(|err| {
                 log_session_error(&err, request);
                 SecurityRejection::unauthorized(None)
             })?;
@@ -251,6 +314,7 @@ pub(super) async fn verify_token(
                     LogEvent::SecurityIncident {
                         category: Cow::Borrowed("token_hash_error"),
                         route: Cow::Borrowed(request.route.as_str()),
+                        request_path: Some(Cow::Borrowed(request.request_path.as_ref())),
                         ip: Some(Cow::Owned(request.remote_ip.to_string())),
                         token: Some(Cow::Owned(request.token_key.to_string())),
                         detail: Some(Cow::Owned(err_string(&err).to_string())),
@@ -261,7 +325,16 @@ pub(super) async fn verify_token(
             };
 
             if auth_ok {
-                Ok(Some(sessions.issue(request.token_key, now)))
+                Ok(Some(
+                    sessions
+                        .issue(
+                            request.token_key,
+                            expected.fingerprint(),
+                            request.client_claim,
+                            now,
+                        )
+                        .await,
+                ))
             } else {
                 Err(build_failure_rejection(state, policy, request, now, "auth_failure").await)
             }
@@ -279,59 +352,113 @@ pub(super) async fn verify_token(
     }
 }
 
-fn extract_credential(
+#[allow(clippy::too_many_arguments)]
+async fn extract_credential(
     parts: &Parts,
     sessions: &SessionManager,
-    _sessions_enabled: bool,
+    sessions_enabled: bool,
+    expected_fingerprint: Option<TokenFingerprint>,
+    client_claim: Option<ClientClaim>,
     route: WebRoute,
+    request_path: &str,
     remote_ip: std::net::IpAddr,
     now: Instant,
-) -> Result<(Credential, TokenKey), SecurityRejection> {
-    let mut encoded_session_cookie = None;
-    if let Some(cookie_header) = parts.headers.get(COOKIE) {
-        if let Ok(value) = cookie_header.to_str() {
-            for pair in value.split(';') {
-                let mut kv = pair.trim().splitn(2, '=');
-                let name = kv.next().map(str::trim);
-                let Some(raw_value) = kv.next() else {
-                    continue;
-                };
-                let trimmed = raw_value.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                if encoded_session_cookie.is_none() && name == Some(SESSION_COOKIE_NAME) {
-                    encoded_session_cookie = Some(trimmed.to_owned());
-                }
-            }
-        }
-    }
+) -> Result<CredentialExtraction, SecurityRejection> {
+    let mut purge_session_cookie = false;
 
-    if let Some(encoded) = encoded_session_cookie {
-        let decoded = match percent_decode_str(&encoded).decode_utf8() {
-            Ok(value) => value.into_owned(),
-            Err(_) => {
-                log_session_error_raw(
-                    &SessionError::InvalidFormat,
-                    route,
-                    remote_ip,
-                    TokenKey::Anonymous,
-                );
-                String::new()
-            }
-        };
-        if !decoded.is_empty() {
-            match sessions.lookup(&decoded, now) {
-                Ok(candidate) => {
-                    let token_key = candidate.token_key();
-                    return Ok((Credential::Session(candidate), token_key));
-                }
-                Err(err) => {
-                    log_session_error_raw(&err, route, remote_ip, TokenKey::Anonymous);
+    if sessions_enabled {
+        let mut encoded_session_cookie = None;
+        let mut saw_session_cookie = false;
+        if let Some(cookie_header) = parts.headers.get(COOKIE) {
+            if let Ok(value) = cookie_header.to_str() {
+                for pair in value.split(';') {
+                    let mut kv = pair.trim().splitn(2, '=');
+                    let name = kv.next().map(str::trim);
+                    let Some(raw_value) = kv.next() else {
+                        continue;
+                    };
+                    if name != Some(SESSION_COOKIE_NAME) {
+                        continue;
+                    }
+                    saw_session_cookie = true;
+                    let trimmed = raw_value.trim();
+                    if trimmed.is_empty() {
+                        purge_session_cookie = true;
+                        log_session_error_raw(
+                            &SessionError::InvalidFormat,
+                            route,
+                            Some(request_path),
+                            remote_ip,
+                            TokenKey::Anonymous,
+                        );
+                        continue;
+                    }
+                    if encoded_session_cookie.is_none() {
+                        encoded_session_cookie = Some(trimmed.to_owned());
+                    }
                 }
             }
         }
-        // Invalid session cookie: logged above, fall through to other credentials.
+
+        if saw_session_cookie && encoded_session_cookie.is_none() && !purge_session_cookie {
+            purge_session_cookie = true;
+            log_session_error_raw(
+                &SessionError::InvalidFormat,
+                route,
+                Some(request_path),
+                remote_ip,
+                TokenKey::Anonymous,
+            );
+        }
+
+        if let Some(encoded) = encoded_session_cookie {
+            let decoded = match percent_decode_str(&encoded).decode_utf8() {
+                Ok(value) => value.into_owned(),
+                Err(_) => {
+                    log_session_error_raw(
+                        &SessionError::InvalidFormat,
+                        route,
+                        Some(request_path),
+                        remote_ip,
+                        TokenKey::Anonymous,
+                    );
+                    String::new()
+                }
+            };
+            if decoded.is_empty() {
+                purge_session_cookie = true;
+            } else {
+                match sessions.lookup(&decoded, client_claim, now).await {
+                    Ok(candidate) => {
+                        if expected_fingerprint
+                            .is_none_or(|expected| candidate.token_fingerprint() != expected)
+                        {
+                            purge_session_cookie = true;
+                            sessions.revoke(candidate.id()).await;
+                            log_session_token_mismatch(route, Some(request_path), remote_ip);
+                        } else {
+                            let token_key = candidate.token_key();
+                            return Ok(CredentialExtraction {
+                                credential: Credential::Session(candidate),
+                                token_key,
+                                purge_session_cookie: false,
+                            });
+                        }
+                    }
+                    Err(err) => {
+                        purge_session_cookie = true;
+                        log_session_error_raw(
+                            &err,
+                            route,
+                            Some(request_path),
+                            remote_ip,
+                            TokenKey::Anonymous,
+                        );
+                    }
+                }
+            }
+            // Invalid session cookie: logged above, fall through to other credentials.
+        }
     }
 
     if let Some(header_value) = parts.headers.get(AUTHORIZATION) {
@@ -341,10 +468,11 @@ fn extract_credential(
                 if scheme.eq_ignore_ascii_case("bearer") {
                     let token = token.trim();
                     if !token.is_empty() {
-                        return Ok((
-                            Credential::RawToken(token.to_owned()),
-                            TokenKey::from_value(token),
-                        ));
+                        return Ok(CredentialExtraction {
+                            credential: Credential::RawToken(token.to_owned()),
+                            token_key: TokenKey::from_value(token),
+                            purge_session_cookie,
+                        });
                     }
                 }
             }
@@ -355,15 +483,20 @@ fn extract_credential(
         if let Ok(value) = header_value.to_str() {
             let trimmed = value.trim();
             if !trimmed.is_empty() {
-                return Ok((
-                    Credential::RawToken(trimmed.to_owned()),
-                    TokenKey::from_value(trimmed),
-                ));
+                return Ok(CredentialExtraction {
+                    credential: Credential::RawToken(trimmed.to_owned()),
+                    token_key: TokenKey::from_value(trimmed),
+                    purge_session_cookie,
+                });
             }
         }
     }
 
-    Ok((Credential::None, TokenKey::Anonymous))
+    Ok(CredentialExtraction {
+        credential: Credential::None,
+        token_key: TokenKey::Anonymous,
+        purge_session_cookie,
+    })
 }
 
 fn resolve_client_ip(
@@ -376,39 +509,151 @@ fn resolve_client_ip(
         return (source_ip, false);
     }
 
-    let header_value = match parts.headers.get("x-forwarded-for") {
+    if let Some(header_value) = parts.headers.get("x-forwarded-for") {
+        let Ok(header_str) = header_value.to_str() else {
+            log_forwarded_error(
+                "forwarded_for_invalid",
+                route,
+                Some(parts.uri.path()),
+                source_ip,
+                "non_utf8",
+            );
+            return (source_ip, false);
+        };
+        if header_str.len() > MAX_FORWARDED_HEADER_LEN {
+            log_forwarded_error(
+                "forwarded_for_too_long",
+                route,
+                Some(parts.uri.path()),
+                source_ip,
+                "too_long",
+            );
+            return (source_ip, false);
+        }
+
+        let mut ip_chain = Vec::new();
+        for segment in header_str.split(',') {
+            let token = segment.trim();
+            if token.is_empty() {
+                continue;
+            }
+            if ip_chain.len() >= MAX_FORWARDED_HOPS {
+                log_forwarded_error(
+                    "forwarded_for_too_many",
+                    route,
+                    Some(parts.uri.path()),
+                    source_ip,
+                    "too_many_hops",
+                );
+                return (source_ip, false);
+            }
+            match token.parse::<std::net::IpAddr>() {
+                Ok(ip) => ip_chain.push(ip),
+                Err(_) => {
+                    log_forwarded_error(
+                        "forwarded_for_invalid",
+                        route,
+                        Some(parts.uri.path()),
+                        source_ip,
+                        token,
+                    );
+                    return (source_ip, false);
+                }
+            }
+        }
+
+        if ip_chain.is_empty() {
+            return (source_ip, false);
+        }
+
+        if ip_chain.last() != Some(&source_ip) {
+            log_forwarded_error(
+                "forwarded_for_source_mismatch",
+                route,
+                Some(parts.uri.path()),
+                source_ip,
+                header_str,
+            );
+            return (source_ip, false);
+        }
+
+        if ip_chain.iter().skip(1).any(|ip| !ip_matches(*ip, trusted)) {
+            log_forwarded_error(
+                "forwarded_for_untrusted_chain",
+                route,
+                Some(parts.uri.path()),
+                source_ip,
+                header_str,
+            );
+            return (source_ip, false);
+        }
+
+        let client_ip = ip_chain[0];
+        return (client_ip, true);
+    }
+
+    let header_value = match parts.headers.get(FORWARDED) {
         Some(value) => value,
         None => return (source_ip, false),
     };
 
     let Ok(header_str) = header_value.to_str() else {
-        log_forwarded_error("forwarded_for_invalid", route, source_ip, "non_utf8");
+        log_forwarded_error(
+            "forwarded_header_invalid",
+            route,
+            Some(parts.uri.path()),
+            source_ip,
+            "non_utf8",
+        );
         return (source_ip, false);
     };
-
-    let mut ip_chain = Vec::new();
-    for segment in header_str.split(',') {
-        let token = segment.trim();
-        if token.is_empty() {
-            continue;
-        }
-        match token.parse::<std::net::IpAddr>() {
-            Ok(ip) => ip_chain.push(ip),
-            Err(_) => {
-                log_forwarded_error("forwarded_for_invalid", route, source_ip, token);
-                return (source_ip, false);
-            }
-        }
+    if header_str.len() > MAX_FORWARDED_HEADER_LEN {
+        log_forwarded_error(
+            "forwarded_header_too_long",
+            route,
+            Some(parts.uri.path()),
+            source_ip,
+            "too_long",
+        );
+        return (source_ip, false);
     }
+
+    let (ip_chain, by_ip) = match parse_forwarded_chain(header_str, MAX_FORWARDED_HOPS) {
+        Ok(value) => value,
+        Err(detail) => {
+            log_forwarded_error(
+                "forwarded_header_invalid",
+                route,
+                Some(parts.uri.path()),
+                source_ip,
+                &detail,
+            );
+            return (source_ip, false);
+        }
+    };
 
     if ip_chain.is_empty() {
         return (source_ip, false);
     }
 
+    if let Some(by_ip) = by_ip {
+        if by_ip != source_ip {
+            log_forwarded_error(
+                "forwarded_header_source_mismatch",
+                route,
+                Some(parts.uri.path()),
+                source_ip,
+                header_str,
+            );
+            return (source_ip, false);
+        }
+    }
+
     if ip_chain.iter().skip(1).any(|ip| !ip_matches(*ip, trusted)) {
         log_forwarded_error(
-            "forwarded_for_untrusted_chain",
+            "forwarded_header_untrusted_chain",
             route,
+            Some(parts.uri.path()),
             source_ip,
             header_str,
         );
@@ -419,6 +664,88 @@ fn resolve_client_ip(
     (client_ip, true)
 }
 
+fn parse_forwarded_chain(
+    header_str: &str,
+    max_hops: usize,
+) -> Result<(Vec<std::net::IpAddr>, Option<std::net::IpAddr>), String> {
+    let mut chain = Vec::new();
+    let mut last_by = None;
+
+    for segment in header_str.split(',') {
+        let segment = segment.trim();
+        if segment.is_empty() {
+            continue;
+        }
+        if chain.len() >= max_hops {
+            return Err("too_many_hops".to_string());
+        }
+
+        let mut for_ip = None;
+        let mut by_ip = None;
+        for directive in segment.split(';') {
+            let mut kv = directive.splitn(2, '=');
+            let key = kv.next().map(str::trim);
+            let Some(raw_val) = kv.next() else {
+                continue;
+            };
+            let raw_val = raw_val.trim();
+            if raw_val.is_empty() {
+                continue;
+            }
+
+            if key.map(|value| value.eq_ignore_ascii_case("for")) == Some(true) {
+                let ip = parse_forwarded_ip(raw_val).ok_or_else(|| raw_val.to_string())?;
+                for_ip = Some(ip);
+            } else if key.map(|value| value.eq_ignore_ascii_case("by")) == Some(true) {
+                if let Some(ip) = parse_forwarded_ip(raw_val) {
+                    by_ip = Some(ip);
+                }
+            }
+        }
+
+        let Some(ip) = for_ip else {
+            return Err(segment.to_string());
+        };
+        chain.push(ip);
+        last_by = by_ip;
+    }
+
+    if chain.is_empty() {
+        return Err(header_str.trim().to_string());
+    }
+
+    Ok((chain, last_by))
+}
+
+fn parse_forwarded_ip(raw: &str) -> Option<std::net::IpAddr> {
+    let trimmed = raw.trim().trim_matches('"').trim_matches('\'');
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("unknown") || trimmed.starts_with('_') {
+        return None;
+    }
+
+    if let Some(rest) = trimmed.strip_prefix('[') {
+        let end = rest.find(']')?;
+        let ip_str = &rest[..end];
+        return ip_str.parse().ok();
+    }
+
+    if let Ok(ip) = trimmed.parse::<std::net::IpAddr>() {
+        return Some(ip);
+    }
+
+    if let Some((host, port)) = trimmed.rsplit_once(':') {
+        if host.contains(':') {
+            return None;
+        }
+        if !port.chars().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        return host.parse::<std::net::IpAddr>().ok();
+    }
+
+    None
+}
+
 fn ip_matches(ip: std::net::IpAddr, rules: &[IpMatcher]) -> bool {
     rules.iter().any(|rule| rule.matches(ip))
 }
@@ -426,12 +753,14 @@ fn ip_matches(ip: std::net::IpAddr, rules: &[IpMatcher]) -> bool {
 fn log_forwarded_error(
     category: &'static str,
     route: WebRoute,
+    request_path: Option<&str>,
     source_ip: std::net::IpAddr,
     detail: &str,
 ) {
     LogEvent::SecurityIncident {
         category: Cow::Borrowed(category),
         route: Cow::Borrowed(route.as_str()),
+        request_path: request_path.map(Cow::Borrowed),
         ip: Some(Cow::Owned(source_ip.to_string())),
         token: None,
         detail: Some(Cow::Owned(detail.to_string())),
@@ -459,6 +788,7 @@ async fn build_failure_rejection(
         LogEvent::SecurityIncident {
             category: Cow::Borrowed("auth_failure_backoff"),
             route: Cow::Borrowed(request.route.as_str()),
+            request_path: Some(Cow::Borrowed(request.request_path.as_ref())),
             ip: Some(Cow::Owned(request.remote_ip.to_string())),
             token: Some(Cow::Owned(request.token_key.to_string())),
             detail: Some(Cow::Owned(format!(
@@ -472,6 +802,7 @@ async fn build_failure_rejection(
         LogEvent::SecurityIncident {
             category: Cow::Borrowed(category),
             route: Cow::Borrowed(request.route.as_str()),
+            request_path: Some(Cow::Borrowed(request.request_path.as_ref())),
             ip: Some(Cow::Owned(request.remote_ip.to_string())),
             token: Some(Cow::Owned(request.token_key.to_string())),
             detail: None,
@@ -482,25 +813,54 @@ async fn build_failure_rejection(
 }
 
 fn log_session_error(err: &SessionError, request: &AuthRequest) {
-    log_session_error_raw(err, request.route, request.remote_ip, request.token_key);
+    log_session_error_raw(
+        err,
+        request.route,
+        Some(request.request_path.as_ref()),
+        request.remote_ip,
+        request.token_key,
+    );
 }
 
 fn log_session_error_raw(
     err: &SessionError,
     route: WebRoute,
+    request_path: Option<&str>,
     ip: std::net::IpAddr,
     token: TokenKey,
 ) {
-    let category = match err {
-        SessionError::InvalidFormat => "session_invalid_format",
-        SessionError::Unknown => "session_unknown",
-        SessionError::Expired => "session_expired",
+    let (category, include_details) = match err {
+        SessionError::InvalidFormat => ("session_invalid_format", true),
+        SessionError::Unknown => ("session_unknown", true),
+        SessionError::Expired => ("session_expired", true),
+        SessionError::BindingMismatch => ("session_binding_mismatch", false),
     };
     LogEvent::SecurityIncident {
         category: Cow::Borrowed(category),
         route: Cow::Borrowed(route.as_str()),
+        request_path: request_path.map(Cow::Borrowed),
+        ip: if include_details {
+            Some(Cow::Owned(ip.to_string()))
+        } else {
+            None
+        },
+        token: if include_details {
+            Some(Cow::Owned(token.to_string()))
+        } else {
+            None
+        },
+        detail: None,
+    }
+    .emit();
+}
+
+fn log_session_token_mismatch(route: WebRoute, request_path: Option<&str>, ip: std::net::IpAddr) {
+    LogEvent::SecurityIncident {
+        category: Cow::Borrowed("session_token_mismatch"),
+        route: Cow::Borrowed(route.as_str()),
+        request_path: request_path.map(Cow::Borrowed),
         ip: Some(Cow::Owned(ip.to_string())),
-        token: Some(Cow::Owned(token.to_string())),
+        token: None,
         detail: None,
     }
     .emit();
@@ -557,12 +917,23 @@ mod tests {
         let state = SecurityState::new();
         let policy = SecurityPolicy::default();
         let sessions = SessionManager::new();
+        let verifier = TokenVerifier::parse(cached_argon2()).expect("parse hash");
         let parts = make_parts("/", IpAddr::V4(Ipv4Addr::LOCALHOST), Some("secret"));
         let now = Instant::now();
-        let request =
-            build_request(&[], &[], &sessions, true, &parts, WebRoute::Html, now, None).unwrap();
+        let request = build_request(
+            &[],
+            &[],
+            &sessions,
+            true,
+            Some(verifier.fingerprint()),
+            &parts,
+            WebRoute::Html,
+            now,
+            None,
+        )
+        .await
+        .unwrap();
 
-        let verifier = TokenVerifier::parse(cached_argon2()).expect("parse hash");
         verify_token(&state, &policy, Some(&verifier), &sessions, &request, now)
             .await
             .expect("token should be accepted");
@@ -573,12 +944,23 @@ mod tests {
         let state = SecurityState::new();
         let policy = SecurityPolicy::default();
         let sessions = SessionManager::new();
+        let verifier = TokenVerifier::parse(cached_argon2()).expect("parse hash");
         let parts = make_parts("/sse", IpAddr::V4(Ipv4Addr::LOCALHOST), None);
         let now = Instant::now();
-        let request =
-            build_request(&[], &[], &sessions, true, &parts, WebRoute::Sse, now, None).unwrap();
+        let request = build_request(
+            &[],
+            &[],
+            &sessions,
+            true,
+            Some(verifier.fingerprint()),
+            &parts,
+            WebRoute::Sse,
+            now,
+            None,
+        )
+        .await
+        .unwrap();
 
-        let verifier = TokenVerifier::parse(cached_argon2()).expect("parse hash");
         let err = verify_token(&state, &policy, Some(&verifier), &sessions, &request, now)
             .await
             .expect_err("missing token should be rejected");
@@ -590,12 +972,23 @@ mod tests {
         let state = SecurityState::new();
         let policy = SecurityPolicy::default();
         let sessions = SessionManager::new();
+        let verifier = TokenVerifier::parse(cached_argon2()).expect("parse hash");
         let parts = make_parts("/", IpAddr::V4(Ipv4Addr::LOCALHOST), None);
         let now = Instant::now();
-        let request =
-            build_request(&[], &[], &sessions, true, &parts, WebRoute::Html, now, None).unwrap();
+        let request = build_request(
+            &[],
+            &[],
+            &sessions,
+            true,
+            Some(verifier.fingerprint()),
+            &parts,
+            WebRoute::Html,
+            now,
+            None,
+        )
+        .await
+        .unwrap();
 
-        let verifier = TokenVerifier::parse(cached_argon2()).expect("parse hash");
         verify_token(&state, &policy, Some(&verifier), &sessions, &request, now)
             .await
             .expect("html route should allow missing token");
@@ -606,10 +999,13 @@ mod tests {
         let state = SecurityState::new();
         let policy = SecurityPolicy::default();
         let sessions = SessionManager::new();
+        let verifier = TokenVerifier::parse(cached_argon2()).expect("parse hash");
 
         let token_key = TokenKey::from_value("secret");
         let now = Instant::now();
-        let cookie_value = sessions.issue(token_key, now);
+        let cookie_value = sessions
+            .issue(token_key, verifier.fingerprint(), None, now)
+            .await;
         let encoded = utf8_percent_encode(&cookie_value, NON_ALPHANUMERIC).to_string();
 
         let request = Request::builder().uri("/sse").body(()).unwrap();
@@ -625,9 +1021,19 @@ mod tests {
                 4242,
             ))));
 
-        let auth_request =
-            build_request(&[], &[], &sessions, true, &parts, WebRoute::Sse, now, None).unwrap();
-        let verifier = TokenVerifier::parse(cached_argon2()).expect("parse hash");
+        let auth_request = build_request(
+            &[],
+            &[],
+            &sessions,
+            true,
+            Some(verifier.fingerprint()),
+            &parts,
+            WebRoute::Sse,
+            now,
+            None,
+        )
+        .await
+        .unwrap();
         verify_token(
             &state,
             &policy,
@@ -641,10 +1047,94 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn session_cookie_rejected_on_token_rotation() {
+        let sessions = SessionManager::new();
+        let verifier_v1 = TokenVerifier::parse(cached_argon2()).expect("parse hash v1");
+        let verifier_v2 = TokenVerifier::parse(&argon2_hash("rotated")).expect("parse hash v2");
+
+        let token_key = TokenKey::from_value("secret");
+        let now = Instant::now();
+        let cookie_value = sessions
+            .issue(token_key, verifier_v1.fingerprint(), None, now)
+            .await;
+        let encoded = utf8_percent_encode(&cookie_value, NON_ALPHANUMERIC).to_string();
+
+        let request = Request::builder().uri("/").body(()).unwrap();
+        let (mut parts, _) = request.into_parts();
+        parts.headers.insert(
+            COOKIE,
+            format!("{SESSION_COOKIE_NAME}={encoded}").parse().unwrap(),
+        );
+        parts
+            .extensions
+            .insert(ConnectInfo(std::net::SocketAddr::from((
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                4242,
+            ))));
+
+        let auth_request = build_request(
+            &[],
+            &[],
+            &sessions,
+            true,
+            Some(verifier_v2.fingerprint()),
+            &parts,
+            WebRoute::Html,
+            now,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(auth_request.credential, Credential::None));
+        assert_eq!(auth_request.token_key, TokenKey::Anonymous);
+        assert!(auth_request.purge_session_cookie);
+    }
+
+    #[tokio::test]
+    async fn session_cookie_is_ignored_when_sessions_disabled() {
+        let sessions = SessionManager::new();
+        let token_key = TokenKey::from_value("secret");
+        let now = Instant::now();
+        let cookie_value = sessions.issue(token_key, [0u8; 16], None, now).await;
+        let encoded = utf8_percent_encode(&cookie_value, NON_ALPHANUMERIC).to_string();
+
+        let request = Request::builder().uri("/").body(()).unwrap();
+        let (mut parts, _) = request.into_parts();
+        parts.headers.insert(
+            COOKIE,
+            format!("{SESSION_COOKIE_NAME}={encoded}").parse().unwrap(),
+        );
+        parts
+            .extensions
+            .insert(ConnectInfo(std::net::SocketAddr::from((
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                4242,
+            ))));
+
+        let auth_request = build_request(
+            &[],
+            &[],
+            &sessions,
+            false,
+            None,
+            &parts,
+            WebRoute::Html,
+            now,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(auth_request.credential, Credential::None));
+        assert_eq!(auth_request.token_key, TokenKey::Anonymous);
+    }
+
+    #[tokio::test]
     async fn invalid_session_cookie_logs_and_rejects() {
         let state = SecurityState::new();
         let policy = SecurityPolicy::default();
         let sessions = SessionManager::new();
+        let verifier = TokenVerifier::parse(cached_argon2()).expect("parse hash");
 
         let request = Request::builder().uri("/sse").body(()).unwrap();
         let (mut parts, _) = request.into_parts();
@@ -662,9 +1152,19 @@ mod tests {
             ))));
 
         let now = Instant::now();
-        let auth_request =
-            build_request(&[], &[], &sessions, true, &parts, WebRoute::Sse, now, None).unwrap();
-        let verifier = TokenVerifier::parse(cached_argon2()).expect("parse hash");
+        let auth_request = build_request(
+            &[],
+            &[],
+            &sessions,
+            true,
+            Some(verifier.fingerprint()),
+            &parts,
+            WebRoute::Sse,
+            now,
+            None,
+        )
+        .await
+        .unwrap();
         let err = verify_token(
             &state,
             &policy,
@@ -676,6 +1176,30 @@ mod tests {
         .await
         .expect_err("invalid session cookie should be rejected");
         assert_eq!(err.status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn allowlist_rejects_ip_with_forbidden_status() {
+        let sessions = SessionManager::new();
+        let parts = make_parts("/", IpAddr::V4(Ipv4Addr::LOCALHOST), None);
+        let allow = vec![IpMatcher::Exact(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)))];
+        let now = Instant::now();
+
+        let err = build_request(
+            &allow,
+            &[],
+            &sessions,
+            false,
+            None,
+            &parts,
+            WebRoute::Html,
+            now,
+            None,
+        )
+        .await
+        .expect_err("unlisted ip should be rejected");
+        assert_eq!(err.status, StatusCode::FORBIDDEN);
+        assert!(!err.is_auth_failure());
     }
 
     #[tokio::test]
@@ -693,17 +1217,99 @@ mod tests {
             &trusted,
             &sessions,
             true,
+            None,
             &parts,
             WebRoute::Html,
             now,
             None,
         )
+        .await
         .unwrap();
         assert_eq!(
             request.remote_ip,
             IpAddr::V4(Ipv4Addr::new(198, 51, 100, 25))
         );
         assert_ne!(request.remote_ip, IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)));
+    }
+
+    #[tokio::test]
+    async fn trusted_proxy_header_requires_source_hop() {
+        let sessions = SessionManager::new();
+        let mut parts = make_parts("/", IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)), None);
+        parts
+            .headers
+            .insert("x-forwarded-for", "198.51.100.25".parse().unwrap());
+        let trusted = vec![IpMatcher::Exact(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)))];
+        let now = Instant::now();
+        let request = build_request(
+            &[],
+            &trusted,
+            &sessions,
+            true,
+            None,
+            &parts,
+            WebRoute::Html,
+            now,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(request.remote_ip, IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)));
+    }
+
+    #[tokio::test]
+    async fn trusted_proxy_overrides_client_ip_with_forwarded_header() {
+        let sessions = SessionManager::new();
+        let mut parts = make_parts("/", IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)), None);
+        parts.headers.insert(
+            "forwarded",
+            "for=198.51.100.25;proto=https".parse().unwrap(),
+        );
+        let trusted = vec![IpMatcher::Exact(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)))];
+        let now = Instant::now();
+        let request = build_request(
+            &[],
+            &trusted,
+            &sessions,
+            true,
+            None,
+            &parts,
+            WebRoute::Html,
+            now,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            request.remote_ip,
+            IpAddr::V4(Ipv4Addr::new(198, 51, 100, 25))
+        );
+    }
+
+    #[tokio::test]
+    async fn forwarded_header_mismatched_by_is_ignored() {
+        let sessions = SessionManager::new();
+        let mut parts = make_parts("/", IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)), None);
+        parts.headers.insert(
+            "forwarded",
+            "for=198.51.100.25;by=203.0.113.5".parse().unwrap(),
+        );
+        let trusted = vec![IpMatcher::Exact(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)))];
+        let now = Instant::now();
+        let request = build_request(
+            &[],
+            &trusted,
+            &sessions,
+            true,
+            None,
+            &parts,
+            WebRoute::Html,
+            now,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(request.remote_ip, IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)));
     }
 
     #[tokio::test]
@@ -714,8 +1320,19 @@ mod tests {
             .headers
             .insert("x-forwarded-for", "198.51.100.25".parse().unwrap());
         let now = Instant::now();
-        let request =
-            build_request(&[], &[], &sessions, true, &parts, WebRoute::Html, now, None).unwrap();
+        let request = build_request(
+            &[],
+            &[],
+            &sessions,
+            true,
+            None,
+            &parts,
+            WebRoute::Html,
+            now,
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(request.remote_ip, IpAddr::V4(Ipv4Addr::new(203, 0, 113, 5)));
     }
 
