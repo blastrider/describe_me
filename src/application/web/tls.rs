@@ -1,4 +1,4 @@
-use std::{borrow::Cow, future::Future, io, net::SocketAddr, pin::Pin, sync::Arc};
+use std::{borrow::Cow, future::Future, io, net::SocketAddr, path::Path, pin::Pin, sync::Arc};
 
 use axum::Router;
 use axum_server::{accept::Accept, Handle};
@@ -90,8 +90,21 @@ async fn run_http_tls(
     interval_secs: f64,
     shutdown: Arc<Notify>,
 ) -> Result<(), DescribeError> {
+    let listener = match std::net::TcpListener::bind(bind_addr) {
+        Ok(listener) => listener,
+        Err(err) => {
+            let msg = err.to_string();
+            LogEvent::HttpBindFailed {
+                addr: Cow::Owned(bind_addr.to_string()),
+                error: Cow::Owned(msg),
+            }
+            .emit();
+            return Err(map_io(err));
+        }
+    };
+    let actual = listener.local_addr().unwrap_or(bind_addr);
     LogEvent::HttpServerStarted {
-        addr: Cow::Owned(format!("https://{}", bind_addr)),
+        addr: Cow::Owned(format!("https://{}", actual)),
         interval_s: interval_secs,
         tls: true,
     }
@@ -109,7 +122,7 @@ async fn run_http_tls(
         }
     });
     let tls_acceptor = RustlsAcceptor::new(rustls);
-    let result = axum_server::bind(bind_addr)
+    let result = axum_server::from_tcp(listener)
         .acceptor(tls_acceptor)
         .handle(handle)
         .serve(
@@ -190,6 +203,8 @@ async fn build_rustls_config(cfg: &WebTlsConfig) -> Result<Arc<ServerConfig>, De
             "web.tls nécessite cert_path et key_path".into(),
         ));
     }
+    validate_tls_path("cert_path", cert).await?;
+    validate_tls_path("key_path", key).await?;
     let cert_bytes = tokio::fs::read(cert)
         .await
         .map_err(|err| DescribeError::Config(format!("lecture certificat {cert}: {err}")))?;
@@ -204,6 +219,39 @@ async fn build_rustls_config(cfg: &WebTlsConfig) -> Result<Arc<ServerConfig>, De
         .map_err(|err| DescribeError::Config(format!("config TLS {cert}/{key}: {err}")))?;
     config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     Ok(Arc::new(config))
+}
+
+async fn validate_tls_path(kind: &str, raw: &str) -> Result<(), DescribeError> {
+    let path = Path::new(raw);
+    if !path.is_absolute() {
+        return Err(DescribeError::Config(format!(
+            "web.tls.{kind} doit être un chemin absolu: {raw}"
+        )));
+    }
+    let metadata = tokio::fs::metadata(path)
+        .await
+        .map_err(|err| DescribeError::Config(format!("web.tls.{kind} {raw}: {err}")))?;
+    if !metadata.is_file() {
+        return Err(DescribeError::Config(format!(
+            "web.tls.{kind} {raw} n'est pas un fichier"
+        )));
+    }
+    if kind == "key_path" {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mode = metadata.permissions().mode() & 0o777;
+            if mode & 0o077 != 0 {
+                warn!(
+                    path = raw,
+                    mode = %format!("{mode:03o}"),
+                    "tls_private_key_permissions_insecure"
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 fn load_cert_chain(
