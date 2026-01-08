@@ -1,4 +1,5 @@
 use describe_me_plugin_sdk::PluginOutput;
+use rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256};
 use std::borrow::Cow;
 #[cfg(feature = "config")]
@@ -9,6 +10,8 @@ use std::fs::{File, Metadata};
 use std::io::{self, Read};
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -16,6 +19,10 @@ use std::thread;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 use thiserror::Error;
 
+#[cfg(all(unix, any(feature = "cli", feature = "systemd")))]
+use nix::sys::signal::{kill, Signal};
+#[cfg(all(unix, any(feature = "cli", feature = "systemd")))]
+use nix::unistd::Pid;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
@@ -150,6 +157,11 @@ pub fn execute_process(spec: &PluginProcess<'_>) -> Result<PluginOutput, PluginE
     let command_str = spec.path.display().to_string();
 
     let mut command = Command::new(&spec.path);
+    #[cfg(unix)]
+    {
+        // Isolate plugin into its own process group to ensure we can terminate all descendants.
+        command.process_group(0);
+    }
     command
         .args(spec.args)
         .stdin(Stdio::null())
@@ -198,6 +210,11 @@ pub fn execute_process(spec: &PluginProcess<'_>) -> Result<PluginOutput, PluginE
         .take()
         .map(|r| spawn_reader(r, STDERR_LIMIT_BYTES, stderr_tx));
 
+    if let Err(err) = verify_child_identity(&child, &spec.path, &spec.identity) {
+        kill_process_tree(&mut child);
+        return Err(err);
+    }
+
     let mut stdout_result: Option<Result<Vec<u8>, StreamReadError>> = None;
     let mut stderr_result: Option<Result<Vec<u8>, StreamReadError>> = None;
     let mut limit_error: Option<PluginExecutionError> = None;
@@ -237,7 +254,7 @@ pub fn execute_process(spec: &PluginProcess<'_>) -> Result<PluginOutput, PluginE
                 });
             }
             if limit_error.is_some() && !killed {
-                let _ = child.kill();
+                kill_process_tree(&mut child);
                 killed = true;
             }
         }
@@ -277,7 +294,7 @@ pub fn execute_process(spec: &PluginProcess<'_>) -> Result<PluginOutput, PluginE
             }
             Ok(None) => {
                 if started.elapsed() >= timeout {
-                    let _ = child.kill();
+                    kill_process_tree(&mut child);
                     let _ = child.wait();
                     drop(stdout_rx);
                     drop(stderr_rx);
@@ -289,7 +306,7 @@ pub fn execute_process(spec: &PluginProcess<'_>) -> Result<PluginOutput, PluginE
                 thread::sleep(Duration::from_millis(20));
             }
             Err(err) => {
-                let _ = child.kill();
+                kill_process_tree(&mut child);
                 return Err(PluginExecutionError::Wait {
                     command: command_str.clone(),
                     source: err,
@@ -716,6 +733,36 @@ fn enforce_file_identity(
     Ok(())
 }
 
+fn verify_child_identity(
+    child: &std::process::Child,
+    path: &Path,
+    expected: &PluginFileIdentity,
+) -> Result<(), PluginExecutionError> {
+    #[cfg(target_os = "linux")]
+    {
+        let exe_path = PathBuf::from(format!("/proc/{}/exe", child.id()));
+        if let Ok(()) = enforce_file_identity(&exe_path, expected) {
+            return Ok(());
+        }
+    }
+    enforce_file_identity(path, expected)
+}
+
+#[cfg(all(unix, any(feature = "cli", feature = "systemd")))]
+fn kill_process_tree(child: &mut std::process::Child) {
+    let pid = child.id() as i32;
+    if pid > 0 {
+        // Send the signal to the whole process group to catch forked descendants.
+        let _ = kill(Pid::from_raw(-pid), Signal::SIGKILL);
+    }
+    let _ = child.kill();
+}
+
+#[cfg(not(all(unix, any(feature = "cli", feature = "systemd"))))]
+fn kill_process_tree(child: &mut std::process::Child) {
+    let _ = child.kill();
+}
+
 fn build_plugin_env(plugin_name: &str, policy: &PluginPolicy) -> Vec<(OsString, OsString)> {
     let allowlist = if policy.allowed_env.is_empty() {
         DEFAULT_PLUGIN_ENV_ALLOWLIST
@@ -763,7 +810,7 @@ fn build_plugin_env(plugin_name: &str, policy: &PluginPolicy) -> Vec<(OsString, 
 
 fn generate_plugin_token() -> String {
     let mut bytes = [0u8; 16];
-    fastrand::fill(&mut bytes);
+    OsRng.fill_bytes(&mut bytes);
     hex::encode(bytes)
 }
 
@@ -853,7 +900,7 @@ mod tests {
             path: script_path,
             args: &[],
             timeout: Duration::from_millis(100),
-            env: Vec::new(),
+            env: vec![(OsString::from("PATH"), OsString::from("/bin:/usr/bin"))],
             identity,
         };
         let err = execute_process(&spec).unwrap_err();
