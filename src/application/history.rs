@@ -108,6 +108,14 @@ impl HistorySettings {
             self.disable();
             return;
         }
+        if !(MIN_RETENTION_POINTS..=MAX_RETENTION_POINTS).contains(&points) {
+            tracing::warn!(
+                "history.retention_points={} hors bornes [{}, {}], valeur clampée",
+                points,
+                MIN_RETENTION_POINTS,
+                MAX_RETENTION_POINTS
+            );
+        }
         self.retention_points = points.clamp(MIN_RETENTION_POINTS, MAX_RETENTION_POINTS);
     }
 
