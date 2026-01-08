@@ -18,6 +18,8 @@ use crate::application::web::{
     state::AppState, state::StaticWebConfig, updates_cache::UpdatesCache, LogoAsset, RuntimeState,
     WebAccess, WebSecurity,
 };
+#[cfg(feature = "web")]
+use crate::domain::SessionCookieSameSite;
 
 /// Snapshot minimal cohérent pour les tests.
 pub fn dummy_snapshot() -> SystemSnapshot {
@@ -106,6 +108,7 @@ pub fn make_app_state_with_ctx(
         exposure,
         logo: LogoAsset::default(),
         session_cookie_secure,
+        session_cookie_same_site: SessionCookieSameSite::Lax,
         session_ttl,
         updates_refresh_ttl: Duration::from_secs(1),
         tls_enabled: false,
@@ -113,7 +116,8 @@ pub fn make_app_state_with_ctx(
     let runtime = RuntimeState {
         shutdown: Arc::new(tokio::sync::Notify::new()),
         updates_cache: UpdatesCache::new(Duration::from_secs(1), Duration::from_secs(1)),
-        snapshot_cache: Arc::new(std::sync::RwLock::new(None)),
+        snapshot_cache: Arc::new(tokio::sync::RwLock::new(None)),
+        snapshot_refresh: Arc::new(tokio::sync::Mutex::new(())),
         extension_metrics: Arc::new(crate::application::metrics::ExtensionMetricsState::new()),
     };
     AppState::new(Arc::new(ctx), static_cfg, runtime)
