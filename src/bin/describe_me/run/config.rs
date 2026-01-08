@@ -1,5 +1,11 @@
 use anyhow::Result;
-use describe_me_lib::{DescribeConfig, HistoryProfile, HistorySettings};
+#[cfg(feature = "config")]
+use describe_me_lib::DescribeConfig;
+use describe_me_lib::{HistoryProfile, HistorySettings};
+#[cfg(feature = "config")]
+type DescribeCfg = DescribeConfig;
+#[cfg(not(feature = "config"))]
+type DescribeCfg = ();
 
 #[cfg(feature = "config")]
 use describe_me_lib::history_settings_from_config;
@@ -11,7 +17,7 @@ use crate::describe_me::allowlists::CliListOrigin;
 
 pub struct ConfigResolution {
     #[cfg(feature = "config")]
-    config: Option<DescribeConfig>,
+    config: Option<DescribeCfg>,
     pub allow_config_exposure: bool,
     #[cfg(feature = "web")]
     web_list_origins: WebListOrigins,
@@ -19,12 +25,12 @@ pub struct ConfigResolution {
 
 impl ConfigResolution {
     #[cfg(feature = "config")]
-    pub fn config(&self) -> Option<&DescribeConfig> {
+    pub fn config(&self) -> Option<&DescribeCfg> {
         self.config.as_ref()
     }
 
     #[cfg(not(feature = "config"))]
-    pub fn config(&self) -> Option<&DescribeConfig> {
+    pub fn config(&self) -> Option<&DescribeCfg> {
         None
     }
 
@@ -75,7 +81,7 @@ pub fn resolve_config(cli: &mut CliConfig) -> Result<ConfigResolution> {
     })
 }
 
-pub fn resolve_history_settings(cli: &CliConfig, cfg: Option<&DescribeConfig>) -> HistorySettings {
+pub fn resolve_history_settings(cli: &CliConfig, cfg: Option<&DescribeCfg>) -> HistorySettings {
     #[cfg(not(feature = "config"))]
     let _ = cfg;
     #[cfg(feature = "config")]
@@ -90,7 +96,7 @@ pub fn resolve_history_settings(cli: &CliConfig, cfg: Option<&DescribeConfig>) -
 
 #[cfg(feature = "config")]
 /// Résout allow_config_exposure (priorité: CLI > runtime config > ENV).
-fn resolve_allow_config_exposure(cli_flag: bool, config: Option<&DescribeConfig>) -> bool {
+fn resolve_allow_config_exposure(cli_flag: bool, config: Option<&DescribeCfg>) -> bool {
     if cli_flag {
         return true;
     }
@@ -127,7 +133,7 @@ fn resolve_allow_config_exposure(cli_flag: bool) -> bool {
 }
 
 #[cfg(feature = "config")]
-fn load_config(cli: &CliConfig) -> Result<Option<DescribeConfig>> {
+fn load_config(cli: &CliConfig) -> Result<Option<DescribeCfg>> {
     if let Some(p) = &cli.config_path {
         let cfg = describe_me_lib::load_config_from_path(p)?;
         if let Some(runtime) = cfg.runtime.as_ref() {
