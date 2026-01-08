@@ -35,6 +35,9 @@ pub const CONTAINERS_PLUGIN_BINARY: &str =
 /// Durée pendant laquelle on réutilise le dernier résultat pour éviter de relancer trop souvent.
 #[cfg(feature = "serde")]
 pub const CONTAINERS_CACHE_TTL: Duration = Duration::from_secs(30);
+/// Durée maximale pendant laquelle un résultat obsolète peut être réutilisé en cas d'échec plugin.
+#[cfg(feature = "serde")]
+pub const CONTAINERS_CACHE_STALE_MAX_AGE: Duration = Duration::from_secs(300);
 
 /// Version du contrat JSON attendu depuis `describe-me-plugin-containers`.
 pub const CONTAINERS_CONTRACT_VERSION: u16 = 1;
@@ -184,8 +187,15 @@ impl ContainersCache {
         }
     }
 
-    fn reuse_stale(&self) -> Option<ContainersSnapshot> {
-        self.state.data.clone()
+    fn reuse_stale(&self, now: Instant) -> Option<ContainersSnapshot> {
+        match (self.state.data.as_ref(), self.state.last_success) {
+            (Some(snapshot), Some(ts))
+                if now.duration_since(ts) <= CONTAINERS_CACHE_STALE_MAX_AGE =>
+            {
+                Some(snapshot.clone())
+            }
+            _ => None,
+        }
     }
 
     fn store(&mut self, snapshot: ContainersSnapshot, now: Instant) {
@@ -257,7 +267,7 @@ impl ContainersCacheService {
                 }
                 let cached = {
                     let guard = lock_expect(self.cache.lock(), "ContainersCacheService");
-                    guard.reuse_stale()
+                    guard.reuse_stale(now)
                 };
                 if let Some(snapshot) = cached {
                     warn!(
@@ -598,5 +608,20 @@ mod tests {
         assert_eq!(summary.total, 0);
         assert_eq!(summary.running, 0);
         assert!(snapshot.containers.is_none());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn stale_cache_reuse_honors_max_age() {
+        let mut cache = ContainersCache::default();
+        let snapshot = placeholder_snapshot();
+        let now = Instant::now();
+
+        cache.store(snapshot.clone(), now);
+        assert!(cache.reuse_stale(now).is_some());
+
+        let old = now - CONTAINERS_CACHE_STALE_MAX_AGE - Duration::from_secs(1);
+        cache.state.last_success = Some(old);
+        assert!(cache.reuse_stale(now).is_none());
     }
 }
