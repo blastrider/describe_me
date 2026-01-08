@@ -38,18 +38,15 @@ pub(crate) use security::{clear_session_cookie, set_session_cookie, SESSION_COOK
 pub(crate) use state::{AppState, LogoAsset, RuntimeState, StaticWebConfig};
 use tls::{build_tls_config, serve};
 
-use std::{
-    net::SocketAddr,
-    sync::{Arc, RwLock},
-    time::Duration,
-};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use axum::{
+    extract::DefaultBodyLimit,
     http::{header, HeaderMap, HeaderValue},
     routing::{get, post},
     Router,
 };
-use tokio::sync::Notify;
+use tokio::sync::{Notify, RwLock};
 
 use crate::application::apply_history_settings;
 #[cfg(feature = "config")]
@@ -60,7 +57,7 @@ use crate::application::exposure::Exposure;
 use crate::application::metadata::override_state_directory;
 #[cfg(feature = "config")]
 use crate::domain::DescribeConfig;
-use crate::domain::DescribeError;
+use crate::domain::{DescribeError, SessionCookieSameSite};
 
 use handlers::{
     containers_api, containers_page, history_series, host_logs, index, logo_asset, logs_page,
@@ -72,6 +69,8 @@ use updates_cache::UpdatesCache;
 pub(crate) const UPDATES_CACHE_SUCCESS_TTL: Duration = Duration::from_secs(300);
 const UPDATES_CACHE_FAILURE_RETRY: Duration = Duration::from_secs(60);
 pub(crate) const WEB_SESSION_SECONDS: u64 = 7 * 24 * 3600;
+const DESCRIPTION_BODY_LIMIT: usize = 8 * 1024;
+const TAGS_BODY_LIMIT: usize = 16 * 1024;
 
 #[cfg(feature = "config")]
 const LOGO_MAX_BYTES: u64 = 128 * 1024;
@@ -90,7 +89,9 @@ pub struct WebAccess {
     pub trusted_proxies: Vec<String>,
     /// Paramètres TLS optionnels.
     pub tls: Option<WebTlsConfig>,
-    /// Force l'attribut Secure sur les cookies de session (désactivable en dev HTTP).
+    /// Active l'attribut Secure sur les cookies de session.
+    /// Secure est effectif si TLS est local ou si `trusted_proxies` est configuré (TLS terminé par proxy),
+    /// sauf override via `dev_insecure_session_cookie`.
     pub session_cookie_secure: bool,
 }
 
@@ -105,6 +106,13 @@ impl Default for WebAccess {
             session_cookie_secure: true,
         }
     }
+}
+
+pub(crate) fn effective_session_cookie_secure(access: &WebAccess, dev_insecure: bool) -> bool {
+    if dev_insecure {
+        return false;
+    }
+    access.session_cookie_secure && (access.tls.is_some() || !access.trusted_proxies.is_empty())
 }
 
 #[derive(Debug, Clone)]
@@ -125,7 +133,10 @@ fn build_default_web_runtime(
     session_cookie_secure: bool,
 ) -> Result<(StaticWebConfig, Arc<WebSecurity>, LogoAsset), DescribeError> {
     let tls_enabled = access.tls.is_some();
+    #[cfg(feature = "config")]
     let security = WebSecurity::build(access, None)?;
+    #[cfg(not(feature = "config"))]
+    let security = WebSecurity::build(access)?;
     let security_arc = Arc::new(security);
     let logo = LogoAsset::default();
     let static_cfg = StaticWebConfig {
@@ -137,6 +148,7 @@ fn build_default_web_runtime(
         exposure,
         logo: logo.clone(),
         session_cookie_secure,
+        session_cookie_same_site: SessionCookieSameSite::Lax,
         session_ttl: security_arc.session_ttl(),
         updates_refresh_ttl: UPDATES_CACHE_SUCCESS_TTL,
         tls_enabled,
@@ -184,7 +196,7 @@ pub async fn serve_http_with_context<A: Into<SocketAddr>>(
 ) -> Result<(), DescribeError> {
     let origin_policy = OriginPolicy::from_access(&access)?;
     let tls_settings = access.tls.clone();
-    let session_cookie_secure = access.session_cookie_secure && tls_settings.is_some();
+    let session_cookie_secure = effective_session_cookie_secure(&access, false);
 
     let shutdown = Arc::new(Notify::new());
     #[cfg(feature = "config")]
@@ -242,17 +254,20 @@ pub async fn serve_http_with_context<A: Into<SocketAddr>>(
 fn build_runtime_state(shutdown: Arc<Notify>, updates_refresh_ttl: Duration) -> RuntimeState {
     let updates_cache = UpdatesCache::new(updates_refresh_ttl, UPDATES_CACHE_FAILURE_RETRY);
     let snapshot_cache = Arc::new(RwLock::new(None));
+    let snapshot_refresh = Arc::new(tokio::sync::Mutex::new(()));
     let extension_metrics = Arc::new(crate::application::metrics::ExtensionMetricsState::new());
 
     RuntimeState {
         shutdown,
         updates_cache,
         snapshot_cache,
+        snapshot_refresh,
         extension_metrics,
     }
 }
 
 fn build_router(app_state: AppState, origin_policy: OriginPolicy) -> Router {
+    let cors_allowlist = origin_policy.cors_allowlist();
     Router::new()
         .route("/", get(index))
         .route("/auth/login", post(auth::login))
@@ -266,10 +281,19 @@ fn build_router(app_state: AppState, origin_policy: OriginPolicy) -> Router {
         .route("/api/containers", get(containers_api))
         .route("/api/history", get(history_series))
         .route("/api/logs", get(host_logs))
-        .route("/api/description", post(update_description))
-        .route("/api/tags", post(update_tags))
+        .route(
+            "/api/description",
+            post(update_description).layer(DefaultBodyLimit::max(DESCRIPTION_BODY_LIMIT)),
+        )
+        .route(
+            "/api/tags",
+            post(update_tags).layer(DefaultBodyLimit::max(TAGS_BODY_LIMIT)),
+        )
         .layer(OriginCheckLayer::new(origin_policy))
-        .layer(SecurityHeadersLayer::new(app_state.static_cfg.clone()))
+        .layer(SecurityHeadersLayer::new(
+            app_state.static_cfg.clone(),
+            cors_allowlist,
+        ))
         .with_state(app_state)
 }
 
