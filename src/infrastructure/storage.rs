@@ -1,7 +1,7 @@
 use std::env;
 use std::ffi::OsString;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use redb::{Database, ReadableTable, TableDefinition, TableError};
@@ -18,6 +18,17 @@ static STATE_DIR_OVERRIDE: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
 #[cfg(test)]
 static STATE_DIR_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
+#[cfg(any(test, feature = "internals"))]
+pub trait MetadataBackend: Send + Sync {
+    fn set_description(&self, text: &str) -> Result<(), DescribeError>;
+    fn get_description(&self) -> Result<Option<String>, DescribeError>;
+    fn clear_description(&self) -> Result<(), DescribeError>;
+    fn set_tags_raw(&self, payload: &str) -> Result<(), DescribeError>;
+    fn get_tags_raw(&self) -> Result<Option<String>, DescribeError>;
+    fn clear_tags(&self) -> Result<(), DescribeError>;
+}
+
+#[cfg(not(any(test, feature = "internals")))]
 pub(crate) trait MetadataBackend: Send + Sync {
     fn set_description(&self, text: &str) -> Result<(), DescribeError>;
     fn get_description(&self) -> Result<Option<String>, DescribeError>;
@@ -27,10 +38,23 @@ pub(crate) trait MetadataBackend: Send + Sync {
     fn clear_tags(&self) -> Result<(), DescribeError>;
 }
 
+#[cfg(any(test, feature = "internals"))]
+pub trait MetadataBackendFactory: Send + Sync {
+    fn open_default(&self) -> Result<Box<dyn MetadataBackend>, DescribeError>;
+}
+
+#[cfg(not(any(test, feature = "internals")))]
 pub(crate) trait MetadataBackendFactory: Send + Sync {
     fn open_default(&self) -> Result<Box<dyn MetadataBackend>, DescribeError>;
 }
 
+#[cfg(any(test, feature = "internals"))]
+#[derive(Clone)]
+pub struct MetadataStore {
+    backend: Arc<dyn MetadataBackend>,
+}
+
+#[cfg(not(any(test, feature = "internals")))]
 #[derive(Clone)]
 pub(crate) struct MetadataStore {
     backend: Arc<dyn MetadataBackend>,
@@ -102,7 +126,7 @@ impl BackendRegistry {
         Ok(backend)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "internals"))]
     fn set_factory(&mut self, factory: Box<dyn MetadataBackendFactory>) {
         self.factory = factory;
         self.backend = None;
@@ -130,19 +154,41 @@ impl MetadataBackendFactory for RedbBackendFactory {
         let path = metadata_db_path();
         let path = path.as_path();
         if let Some(dir) = path.parent() {
+            ensure_not_symlink(dir, "répertoire état")?;
             fs::create_dir_all(dir).map_err(|err| {
                 DescribeError::System(format!(
                     "impossible de créer le répertoire état {}: {err}",
                     dir.display()
                 ))
             })?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o700));
+            }
         }
+        ensure_not_symlink(path, "fichier metadata")?;
         let db = if path.exists() {
             Database::open(path).map_err(map_db_err)?
         } else {
             Database::create(path).map_err(map_db_err)?
         };
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+        }
         Ok(Box::new(RedbBackend { db }))
+    }
+}
+
+fn ensure_not_symlink(path: &Path, context: &str) -> Result<(), DescribeError> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => Err(DescribeError::System(format!(
+            "{context} ne doit pas être un lien symbolique: {}",
+            path.display()
+        ))),
+        _ => Ok(()),
     }
 }
 
@@ -238,21 +284,22 @@ impl MetadataBackend for RedbBackend {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn set_metadata_backend_factory(factory: Box<dyn MetadataBackendFactory>) {
+#[cfg(any(test, feature = "internals"))]
+pub fn set_metadata_backend_factory(factory: Box<dyn MetadataBackendFactory>) {
     let lock = backend_registry();
     let mut guard = lock_expect(lock.lock(), "MetadataBackendRegistry");
     guard.set_factory(factory);
 }
 
-#[cfg(test)]
-pub(crate) fn reset_metadata_backend_factory_for_tests() {
+#[cfg(any(test, feature = "internals"))]
+pub fn reset_metadata_backend_factory_for_tests() {
     set_metadata_backend_factory(default_backend_factory());
 }
 
 pub(crate) fn metadata_db_path() -> PathBuf {
     if let Some(dir) = env::var_os("DESCRIBE_ME_STATE_DIR") {
-        return resolve_db_path(PathBuf::from(dir));
+        let path = PathBuf::from(dir);
+        return resolve_db_path(path);
     }
     if let Some(path) = state_dir_override() {
         return resolve_db_path(path);
@@ -262,36 +309,42 @@ pub(crate) fn metadata_db_path() -> PathBuf {
             return resolve_db_path(first);
         }
     }
-    resolve_state_dir().join(DB_FILE_NAME)
+    let resolved = resolve_state_dir().unwrap_or_else(|| env::temp_dir().join(APP_DIR_NAME));
+    resolve_db_path(resolved)
 }
 
-fn resolve_state_dir() -> PathBuf {
+fn resolve_state_dir() -> Option<PathBuf> {
     #[cfg(unix)]
     {
         if let Some(dir) = env::var_os("XDG_STATE_HOME") {
-            return PathBuf::from(dir).join(APP_DIR_NAME);
+            return Some(PathBuf::from(dir).join(APP_DIR_NAME));
         }
         if let Some(home) = env::var_os("HOME") {
-            return PathBuf::from(home)
-                .join(".local")
-                .join("state")
-                .join(APP_DIR_NAME);
+            return Some(
+                PathBuf::from(home)
+                    .join(".local")
+                    .join("state")
+                    .join(APP_DIR_NAME),
+            );
         }
     }
     #[cfg(not(unix))]
     {
         if let Some(dir) = env::var_os("LOCALAPPDATA") {
-            return PathBuf::from(dir).join(APP_DIR_NAME);
+            return Some(PathBuf::from(dir).join(APP_DIR_NAME));
         }
         if let Some(dir) = env::var_os("APPDATA") {
-            return PathBuf::from(dir).join(APP_DIR_NAME);
+            return Some(PathBuf::from(dir).join(APP_DIR_NAME));
         }
     }
-    env::temp_dir().join(APP_DIR_NAME)
+    tracing::warn!(
+        "Aucun répertoire d'état fiable (XDG/HOME/APPDATA) détecté, retombée sur un chemin temporaire."
+    );
+    None
 }
 
 fn resolve_db_path(base: PathBuf) -> PathBuf {
-    if base
+    let path = if base
         .file_name()
         .map(|name| name == DB_FILE_NAME)
         .unwrap_or(false)
@@ -300,7 +353,16 @@ fn resolve_db_path(base: PathBuf) -> PathBuf {
         base
     } else {
         base.join(DB_FILE_NAME)
+    };
+
+    if !path.is_absolute() {
+        tracing::warn!(
+            "Chemin state_dir non absolu ({}) résolu par rapport au répertoire courant.",
+            path.display()
+        );
     }
+
+    path
 }
 
 fn state_dir_override() -> Option<PathBuf> {

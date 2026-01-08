@@ -13,10 +13,10 @@ pub fn handle_history_command(cmd: HistoryCommand, ctx: &AppContext) -> Result<(
 
     let server_id = if let Some(id) = cmd.server {
         id
-    } else if let Some(default_id) = ctx.history().default_server_id() {
-        default_id
     } else {
-        bail!("Aucun identifiant serveur n'est disponible (aucun snapshot capturé ?).");
+        ctx.history().default_server_id().map_err(|err| {
+            anyhow::anyhow!("Impossible de récupérer l'identité du serveur: {err}")
+        })?
     };
 
     let window_secs = cmd.window.max(1);
@@ -37,10 +37,7 @@ pub fn handle_history_command(cmd: HistoryCommand, ctx: &AppContext) -> Result<(
         rounding,
     ) {
         Ok(series) => series,
-        Err(err) => {
-            map_history_error(err)?;
-            return Ok(());
-        }
+        Err(err) => return map_history_error(err),
     };
 
     print_history_series(&series);
@@ -59,8 +56,7 @@ fn map_history_error(err: HistoryQueryError) -> Result<()> {
             bail!("Identifiant de serveur invalide.");
         }
         HistoryQueryError::NotFound => {
-            println!("Aucune donnée historique disponible pour ce serveur.");
-            Ok(())
+            bail!("Aucune donnée historique disponible pour ce serveur.");
         }
         HistoryQueryError::Storage(err) => {
             bail!("Lecture de l'historique impossible: {err}");

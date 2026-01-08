@@ -4,6 +4,7 @@ use describe_me_lib::AppContext;
 use crate::describe_me::args::{DescriptionCommand, MetadataCommand, TagsCommand};
 
 pub fn handle_metadata_command(cmd: MetadataCommand, ctx: &AppContext) -> Result<()> {
+    warn_if_metadata_not_persistent(ctx);
     match cmd {
         MetadataCommand::Description(action) => handle_description_command(action, ctx),
         MetadataCommand::Tags(action) => handle_tags_command(action, ctx),
@@ -29,6 +30,19 @@ fn handle_description_command(cmd: DescriptionCommand, ctx: &AppContext) -> Resu
         }
     }
     Ok(())
+}
+
+fn warn_if_metadata_not_persistent(ctx: &AppContext) {
+    use describe_me_lib::MetadataStoreHealth::*;
+    match ctx.metadata_store_health() {
+        Persistent => {}
+        FallbackInMemory => eprintln!(
+            "Avertissement: le stockage des métadonnées est en fallback mémoire (modifications non persistées)."
+        ),
+        InMemoryOnly => eprintln!(
+            "Avertissement: le stockage des métadonnées est purement mémoire (modifications non persistées)."
+        ),
+    }
 }
 
 fn handle_tags_command(cmd: TagsCommand, ctx: &AppContext) -> Result<()> {

@@ -14,6 +14,13 @@ pub struct UpdatesCache {
     failure_retry: Duration,
 }
 
+pub(crate) struct UpdatesCacheStatus {
+    pub data: Option<Arc<UpdatesInfo>>,
+    pub fresh: bool,
+    pub refreshing: bool,
+    pub cooldown_active: bool,
+}
+
 struct Inner {
     state: Mutex<RefreshState<Arc<UpdatesInfo>>>,
     notify: Notify,
@@ -40,31 +47,34 @@ impl Drop for RefreshGuard {
         if !self.armed {
             return;
         }
-        let inner = self.inner.as_ref();
-        let reset_sync = |inner: &Inner| {
-            if let Ok(mut state) = inner.state.try_lock() {
-                finish_refresh(&mut state, Instant::now(), RefreshUpdate::Retain);
-                drop(state);
-                inner.notify.notify_waiters();
-                return true;
-            }
-            false
-        };
-
-        if reset_sync(inner) {
+        if reset_refresh(&self.inner) {
             return;
         }
 
-        // Contended: spin with a short backoff until the lock can be acquired.
-        let mut backoff = 1u64;
-        loop {
-            if reset_sync(inner) {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(backoff));
-            backoff = (backoff.saturating_mul(2)).min(10);
-        }
+        let inner = Arc::clone(&self.inner);
+        let _ = std::thread::Builder::new()
+            .name("updates-cache-refresh-reset".to_string())
+            .spawn(move || {
+                let mut backoff = 1u64;
+                loop {
+                    if reset_refresh(&inner) {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(backoff));
+                    backoff = (backoff.saturating_mul(2)).min(10);
+                }
+            });
     }
+}
+
+fn reset_refresh(inner: &Arc<Inner>) -> bool {
+    if let Ok(mut state) = inner.state.try_lock() {
+        finish_refresh(&mut state, Instant::now(), RefreshUpdate::Retain);
+        drop(state);
+        inner.notify.notify_waiters();
+        return true;
+    }
+    false
 }
 
 type State = RefreshState<Arc<UpdatesInfo>>;
@@ -88,6 +98,27 @@ impl UpdatesCache {
     pub(crate) async fn peek_shared(&self) -> Option<Arc<UpdatesInfo>> {
         let state = self.inner.state.lock().await;
         state.data.clone()
+    }
+
+    pub(crate) async fn status(&self) -> UpdatesCacheStatus {
+        let now = Instant::now();
+        let state = self.inner.state.lock().await;
+        let data = state.data.clone();
+        let fresh = data.is_some()
+            && state
+                .last_success
+                .map(|ts| now.duration_since(ts) <= self.success_ttl)
+                .unwrap_or(false);
+        let cooldown_active = state
+            .last_refresh
+            .map(|ts| now.duration_since(ts) < self.failure_retry)
+            .unwrap_or(false);
+        UpdatesCacheStatus {
+            data,
+            fresh,
+            refreshing: state.refreshing,
+            cooldown_active,
+        }
     }
 
     pub async fn ensure_fresh(&self) {
@@ -116,6 +147,7 @@ impl UpdatesCache {
 
     pub(crate) async fn refresh_blocking_shared(&self) -> Option<Arc<UpdatesInfo>> {
         loop {
+            let notified = self.inner.notify.notified();
             let wait_for_refresh = {
                 let mut state = self.inner.state.lock().await;
                 if let Some(data) = state.data.clone() {
@@ -130,7 +162,7 @@ impl UpdatesCache {
             };
 
             if wait_for_refresh {
-                self.inner.notify.notified().await;
+                notified.await;
                 continue;
             }
 
@@ -321,11 +353,17 @@ mod tests {
 
         release_task.await.ok();
         holder.join().ok();
-
-        let state = cache.inner.state.lock().await;
-        assert!(
-            !state.refreshing,
-            "refreshing should reset even when lock was contended"
-        );
+        tokio::time::timeout(Duration::from_millis(100), async {
+            loop {
+                let state = cache.inner.state.lock().await;
+                if !state.refreshing {
+                    break;
+                }
+                drop(state);
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("refreshing should reset even when lock was contended");
     }
 }

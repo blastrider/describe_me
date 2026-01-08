@@ -6,7 +6,11 @@ mod render;
 mod web;
 
 use anyhow::{bail, Result};
+#[cfg(feature = "config")]
+use describe_me_lib::domain::DescribeConfig;
 use describe_me_lib::{apply_history_settings, AppContext, LogEvent};
+#[cfg(not(feature = "config"))]
+type DescribeConfig = ();
 
 use super::args::{CliCommand, CliConfig, WebTokenSource};
 use super::exposure::apply_cli_exposure_flags;
@@ -29,18 +33,18 @@ pub fn execute(mut cli: CliConfig) -> Result<RunOutcome> {
     }
 
     let config = config::resolve_config(&mut cli)?;
+    ensure_not_root()?;
     let ctx = AppContext::new_default()?;
 
-    if let Some(cmd) = cli.command.take() {
-        handle_command(cmd, &ctx)?;
-        return Ok(RunOutcome::Completed);
-    }
-
     describe_me_lib::init_logging();
-    ensure_not_root()?;
 
     let history_settings = config::resolve_history_settings(&cli, config.config());
     apply_history_settings(&ctx, history_settings)?;
+
+    if let Some(cmd) = cli.command.take() {
+        handle_command(cmd, &ctx, config.config())?;
+        return Ok(RunOutcome::Completed);
+    }
 
     #[cfg(feature = "web")]
     let web_access = web::build_web_access(&cli, config.config(), config.web_list_origins());
@@ -145,10 +149,10 @@ fn maybe_handle_hash_request(cli: &CliConfig) -> Result<bool> {
     Ok(false)
 }
 
-fn handle_command(cmd: CliCommand, ctx: &AppContext) -> Result<()> {
+fn handle_command(cmd: CliCommand, ctx: &AppContext, cfg: Option<&DescribeConfig>) -> Result<()> {
     match cmd {
         CliCommand::Metadata(metadata) => cmd_metadata::handle_metadata_command(metadata, ctx),
-        CliCommand::Plugin(plugin) => cmd_plugin::handle_plugin_command(plugin),
+        CliCommand::Plugin(plugin) => cmd_plugin::handle_plugin_command(plugin, cfg),
         CliCommand::History(history) => cmd_history::handle_history_command(history, ctx),
         CliCommand::Logs(logs) => cmd_logs::handle_logs_command(logs),
     }

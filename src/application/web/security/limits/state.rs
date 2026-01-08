@@ -11,7 +11,7 @@ use super::{
     brute_force_guard::{BruteForceGuard, FailureOutcome},
     rate_limiter::RateLimiter,
     token_affinity::TokenAffinity,
-    GlobalSlots, SseAdmission,
+    GlobalSlotsByRoute, SseAdmission,
 };
 use crate::application::logging::LogEvent;
 
@@ -23,23 +23,24 @@ pub(crate) struct SecurityState {
     brute_force: BruteForceGuard,
     token_affinity: TokenAffinity,
     sse_admission: SseAdmission,
-    global_slots: GlobalSlots,
+    global_slots: GlobalSlotsByRoute,
 }
 
 #[derive(Debug)]
 pub(crate) struct GlobalPermit {
     state: Arc<SecurityState>,
+    route: WebRoute,
 }
 
 impl GlobalPermit {
-    fn new(state: Arc<SecurityState>) -> Self {
-        Self { state }
+    fn new(state: Arc<SecurityState>, route: WebRoute) -> Self {
+        Self { state, route }
     }
 }
 
 impl Drop for GlobalPermit {
     fn drop(&mut self) {
-        self.state.release_global();
+        self.state.release_global(self.route);
     }
 }
 
@@ -50,16 +51,16 @@ impl SecurityState {
             brute_force: BruteForceGuard::new(),
             token_affinity: TokenAffinity::new(),
             sse_admission: SseAdmission::new(),
-            global_slots: GlobalSlots::new(),
+            global_slots: GlobalSlotsByRoute::new(),
         }
     }
 
-    fn try_acquire_global(&self, limit: u32) -> Result<(), ()> {
-        self.global_slots.try_acquire(limit)
+    fn try_acquire_global(&self, route: WebRoute, limit: u32) -> Result<(), ()> {
+        self.global_slots.for_route(route).try_acquire(limit)
     }
 
-    fn release_global(&self) {
-        self.global_slots.release();
+    fn release_global(&self, route: WebRoute) {
+        self.global_slots.for_route(route).release();
     }
 
     pub(crate) fn acquire_global_permit(
@@ -71,17 +72,18 @@ impl SecurityState {
         if limit == 0 {
             return Ok(None);
         }
-        self.try_acquire_global(limit).map_err(|_| {
+        self.try_acquire_global(route, limit).map_err(|_| {
             emit_security_incident(
                 "rate_limit_global",
                 route,
                 None,
                 None,
-                Some(format!("limit={limit}")),
+                None,
+                Some(format!("kind=concurrency limit={limit}")),
             );
             SecurityRejection::rate_limited(Duration::from_secs(1))
         })?;
-        Ok(Some(GlobalPermit::new(Arc::clone(self))))
+        Ok(Some(GlobalPermit::new(Arc::clone(self), route)))
     }
 
     pub(super) async fn register_ip_hit(
@@ -106,12 +108,13 @@ impl SecurityState {
         &self,
         route: WebRoute,
         token: TokenKey,
+        ip: IpAddr,
         policy: &SecurityPolicy,
         now: Instant,
     ) -> Option<Duration> {
         let decision = self
             .rate_limiter
-            .register_token_hit(route, token, policy, now)
+            .register_token_hit(route, token, ip, policy, now)
             .await;
         match decision {
             dec if dec.is_allowed() => None,
@@ -172,13 +175,13 @@ impl SecurityState {
         self.brute_force.note_success(ip, token).await;
     }
 
-    pub(crate) fn acquire_sse(
+    pub(crate) async fn acquire_sse(
         &self,
         ip: IpAddr,
         token: TokenKey,
         policy: &SecurityPolicy,
     ) -> Result<Option<SsePermit>, Duration> {
-        self.sse_admission.try_acquire(ip, token, policy)
+        self.sse_admission.try_acquire(ip, token, policy).await
     }
 }
 
@@ -196,6 +199,7 @@ pub(crate) async fn ensure_not_blocked(
         emit_security_incident(
             "cooldown_active",
             request.route,
+            Some(request.request_path.as_ref()),
             Some(request.remote_ip),
             Some(request.token_key),
             Some(format!("retry_after_s={:.3}", delay.as_secs_f32())),
@@ -225,6 +229,7 @@ pub(crate) async fn enforce_rate_limits(
         emit_security_incident(
             "rate_limit_ip",
             request.route,
+            Some(request.request_path.as_ref()),
             Some(request.remote_ip),
             Some(request.token_key),
             Some(format!("retry_after_s={:.3}", delay.as_secs_f32())),
@@ -233,13 +238,20 @@ pub(crate) async fn enforce_rate_limits(
     }
 
     if let Some(delay) = state
-        .register_token_hit(request.route, request.token_key, policy, now)
+        .register_token_hit(
+            request.route,
+            request.token_key,
+            request.remote_ip,
+            policy,
+            now,
+        )
         .await
     {
         let delay = policy.adjust_retry(request.route, delay);
         emit_security_incident(
             "rate_limit_token",
             request.route,
+            Some(request.request_path.as_ref()),
             Some(request.remote_ip),
             Some(request.token_key),
             Some(format!("retry_after_s={:.3}", delay.as_secs_f32())),
@@ -253,6 +265,7 @@ pub(crate) async fn enforce_rate_limits(
 fn emit_security_incident(
     category: &'static str,
     route: WebRoute,
+    request_path: Option<&str>,
     ip: Option<IpAddr>,
     token: Option<TokenKey>,
     detail: Option<String>,
@@ -260,9 +273,37 @@ fn emit_security_incident(
     LogEvent::SecurityIncident {
         category: Cow::Borrowed(category),
         route: Cow::Borrowed(route.as_str()),
+        request_path: request_path.map(Cow::Borrowed),
         ip: ip.map(|addr| Cow::Owned(addr.to_string())),
         token: token.map(|key| Cow::Owned(key.to_string())),
         detail: detail.map(Cow::Owned),
     }
     .emit();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn global_slots_are_per_route() {
+        let policy = SecurityPolicy::default();
+        let state = Arc::new(SecurityState::new());
+        let logs_limit = policy.route_policy(WebRoute::Logs).global_limit();
+        assert!(logs_limit > 0);
+
+        let mut held = Vec::new();
+        for _ in 0..logs_limit {
+            let permit = state
+                .acquire_global_permit(WebRoute::Html, &policy)
+                .expect("html acquire ok")
+                .expect("permit expected");
+            held.push(permit);
+        }
+
+        let _logs = state
+            .acquire_global_permit(WebRoute::Logs, &policy)
+            .expect("logs acquire ok")
+            .expect("permit expected");
+    }
 }

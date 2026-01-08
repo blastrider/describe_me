@@ -1,14 +1,107 @@
 use super::tests_common::*;
 use super::*;
+use crate::application::web::security::session::SessionManager;
 use crate::application::web::SESSION_COOKIE_NAME;
 #[cfg(feature = "config")]
 use crate::application::web::WEB_SESSION_SECONDS;
+use crate::domain::DescribeError;
 #[cfg(feature = "config")]
 use crate::domain::WebSecurityConfig;
+use axum::extract::ConnectInfo;
 use axum::http::StatusCode;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
-use std::net::{IpAddr, Ipv4Addr};
-use std::time::Duration;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::time::{Duration, Instant};
+
+#[test]
+fn web_route_from_path_defaults_for_sensitive_routes() {
+    assert_eq!(WebRoute::from_path("/api/containers"), WebRoute::History);
+    assert_eq!(WebRoute::from_path("/api/description"), WebRoute::History);
+    assert_eq!(WebRoute::from_path("/api/tags"), WebRoute::History);
+    assert_eq!(WebRoute::from_path("/container"), WebRoute::Logs);
+    assert_eq!(WebRoute::from_path("/updates"), WebRoute::Logs);
+    assert_eq!(WebRoute::from_path("/metrics"), WebRoute::Metrics);
+    assert_eq!(WebRoute::from_path("/"), WebRoute::Html);
+}
+
+#[tokio::test]
+async fn auth_request_keeps_route_label_but_captures_path() {
+    let sessions = SessionManager::new();
+    let request = axum::http::Request::builder()
+        .uri("/auth/login")
+        .body(())
+        .unwrap();
+    let (mut parts, _) = request.into_parts();
+    parts
+        .extensions
+        .insert(ConnectInfo(SocketAddr::from((Ipv4Addr::LOCALHOST, 4242))));
+    let auth_request = auth::build_request(
+        &[],
+        &[],
+        &sessions,
+        false,
+        None,
+        &parts,
+        WebRoute::Html,
+        Instant::now(),
+        None,
+    )
+    .await
+    .expect("request");
+    assert_eq!(auth_request.route.as_str(), "/");
+    assert_eq!(auth_request.request_path.as_ref(), "/auth/login");
+}
+
+#[tokio::test]
+async fn auth_request_captures_api_path() {
+    let sessions = SessionManager::new();
+    let request = axum::http::Request::builder()
+        .uri("/api/description")
+        .body(())
+        .unwrap();
+    let (mut parts, _) = request.into_parts();
+    parts
+        .extensions
+        .insert(ConnectInfo(SocketAddr::from((Ipv4Addr::LOCALHOST, 4242))));
+    let auth_request = auth::build_request(
+        &[],
+        &[],
+        &sessions,
+        false,
+        None,
+        &parts,
+        WebRoute::History,
+        Instant::now(),
+        None,
+    )
+    .await
+    .expect("request");
+    assert_eq!(auth_request.route.as_str(), "/api/history");
+    assert_eq!(auth_request.request_path.as_ref(), "/api/description");
+}
+
+#[test]
+fn web_token_whitespace_is_rejected() {
+    let access = make_access(Some("   "));
+    let err = build_security_result(access).expect_err("empty token should be rejected");
+    assert!(
+        matches!(err, DescribeError::Config(msg) if msg.contains("web.token is empty/whitespace"))
+    );
+}
+
+#[test]
+fn web_token_is_accepted_when_present() {
+    let access = make_access(Some(cached_hash()));
+    let security = build_security_result(access).expect("valid token should be accepted");
+    assert!(security.token_fingerprint().is_some());
+}
+
+#[test]
+fn web_token_none_disables_auth() {
+    let access = make_access(None);
+    let security = build_security_result(access).expect("missing token should be allowed");
+    assert!(security.token_fingerprint().is_none());
+}
 
 #[tokio::test]
 async fn rate_limit_ip_html() {

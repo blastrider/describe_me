@@ -1,4 +1,5 @@
 mod collectors;
+#[cfg(feature = "config")]
 pub mod config;
 mod context;
 mod history_config;
@@ -15,13 +16,15 @@ use crate::application::exposure::{Exposure, SnapshotView};
 pub use crate::application::history_config::apply_history_settings;
 #[cfg(feature = "config")]
 pub use crate::application::history_config::history_settings_from_config;
+#[cfg(feature = "serde")]
 use crate::application::logging::LogEvent;
 #[cfg(feature = "config")]
 use crate::domain::DescribeConfig;
 #[cfg(any(feature = "systemd", feature = "config"))]
 use crate::domain::ServiceInfo;
 use crate::domain::{CaptureOptions, DescribeError, DiskUsage, SystemSnapshot};
-pub use context::AppContext;
+pub use context::{AppContext, MetadataStoreHealth};
+#[cfg(feature = "serde")]
 use std::borrow::Cow;
 use std::time::Instant;
 use tracing::debug;
@@ -104,12 +107,14 @@ pub fn capture_snapshot_with_view(
     }
 
     #[cfg(feature = "config")]
-    if let Some(cfg) = _cfg {
-        let (extensions_map, failures) = extensions::execute_configured_plugins(cfg);
-        if !extensions_map.is_empty() {
-            snapshot.extensions = Some(extensions_map);
+    if exposure.extensions() {
+        if let Some(cfg) = _cfg {
+            let (extensions_map, failures) = extensions::execute_configured_plugins(cfg);
+            if !extensions_map.is_empty() {
+                snapshot.extensions = Some(extensions_map);
+            }
+            extensions::log_failures(&failures);
         }
-        extensions::log_failures(&failures);
     }
 
     let mut view = SnapshotView::new(&snapshot, exposure);
@@ -145,6 +150,26 @@ pub fn load_config_from_path<P: AsRef<std::path::Path>>(
     path: P,
 ) -> Result<DescribeConfig, DescribeError> {
     let path_ref = path.as_ref();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(path_ref) {
+            let mode = meta.permissions().mode();
+            // world-readable or world-writable
+            if mode & 0o007 != 0 || mode & 0o070 != 0 {
+                LogEvent::ConfigError {
+                    path: Cow::Owned(path_ref.display().to_string()),
+                    error: Cow::Borrowed("permissions trop ouvertes (attendu 0600 ou équivalent)"),
+                }
+                .emit();
+                return Err(DescribeError::Config(format!(
+                    "permissions trop ouvertes sur {} (mode {:o})",
+                    path_ref.display(),
+                    mode & 0o777
+                )));
+            }
+        }
+    }
     let data = std::fs::read_to_string(path_ref).map_err(|e| {
         let msg = e.to_string();
         LogEvent::ConfigError {
@@ -154,7 +179,7 @@ pub fn load_config_from_path<P: AsRef<std::path::Path>>(
         .emit();
         DescribeError::Config(format!("read {}: {e}", path_ref.display()))
     })?;
-    toml::from_str::<DescribeConfig>(&data).map_err(|e| {
+    let cfg = toml::from_str::<DescribeConfig>(&data).map_err(|e| {
         let msg = e.to_string();
         LogEvent::ConfigError {
             path: Cow::Owned(path_ref.display().to_string()),
@@ -162,7 +187,16 @@ pub fn load_config_from_path<P: AsRef<std::path::Path>>(
         }
         .emit();
         DescribeError::Config(format!("toml parse: {e}"))
-    })
+    })?;
+    if let Err(err) = cfg.validate_plugin_names() {
+        LogEvent::ConfigError {
+            path: Cow::Owned(path_ref.display().to_string()),
+            error: Cow::Owned(err.to_string()),
+        }
+        .emit();
+        return Err(err);
+    }
+    Ok(cfg)
 }
 
 /// Filtre une liste de services selon la config.
@@ -208,12 +242,15 @@ pub mod web;
 pub mod health;
 
 pub mod containers;
+#[cfg(feature = "serde")]
 pub mod error;
 pub mod exposure;
+#[cfg(feature = "serde")]
 pub mod extensions;
 pub mod history;
 pub mod logging;
 pub mod logs;
 pub mod metadata;
+#[cfg(feature = "serde")]
 pub mod metrics;
 pub mod pagination;

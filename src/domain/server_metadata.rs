@@ -42,7 +42,7 @@ impl TryFrom<&str> for ServerDescription {
     type Error = MetadataValidationError;
 
     fn try_from(raw: &str) -> Result<Self, Self::Error> {
-        let sanitized = raw.replace("\r\n", "\n").replace('\r', "\n");
+        let sanitized = sanitize_description(raw);
         if sanitized.len() > DESCRIPTION_MAX_BYTES {
             return Err(MetadataValidationError::DescriptionTooLong(
                 DESCRIPTION_MAX_BYTES,
@@ -50,6 +50,49 @@ impl TryFrom<&str> for ServerDescription {
         }
         Ok(ServerDescription(sanitized))
     }
+}
+
+fn sanitize_description(raw: &str) -> String {
+    let normalized = raw.replace("\r\n", "\n").replace('\r', "\n");
+    let mut out = String::with_capacity(normalized.len());
+    let mut prev_space = false;
+    let mut at_line_start = true;
+
+    for ch in normalized.chars() {
+        if ch == '\n' {
+            while out.ends_with(' ') {
+                out.pop();
+            }
+            out.push('\n');
+            prev_space = false;
+            at_line_start = true;
+            continue;
+        }
+
+        let mut c = ch;
+        if c.is_control() {
+            c = ' ';
+        }
+
+        if c.is_whitespace() {
+            if at_line_start || prev_space {
+                continue;
+            }
+            out.push(' ');
+            prev_space = true;
+            continue;
+        }
+
+        out.push(c);
+        prev_space = false;
+        at_line_start = false;
+    }
+
+    while out.ends_with(' ') {
+        out.pop();
+    }
+
+    out
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -100,9 +143,6 @@ impl TryFrom<Vec<String>> for TagsBatch {
         if raw.is_empty() {
             return Err(MetadataValidationError::NoTags);
         }
-        if raw.len() > TAGS_MAX_PER_REQUEST {
-            return Err(MetadataValidationError::TooManyTags);
-        }
         let mut normalized = BTreeSet::new();
         for tag in raw {
             let validated = ServerTag::try_from(tag.as_str())?;
@@ -110,6 +150,9 @@ impl TryFrom<Vec<String>> for TagsBatch {
         }
         if normalized.is_empty() {
             return Err(MetadataValidationError::NoTags);
+        }
+        if normalized.len() > TAGS_MAX_PER_REQUEST {
+            return Err(MetadataValidationError::TooManyTags);
         }
         Ok(TagsBatch(normalized.into_iter().collect()))
     }
@@ -160,6 +203,13 @@ mod tests {
     }
 
     #[test]
+    fn description_sanitizes_controls_and_spaces() {
+        let raw = "  hello\tworld\r\nnew\u{0007}line \n  spaced  out\t\tend ";
+        let desc = ServerDescription::try_from(raw).expect("description");
+        assert_eq!(desc.as_ref(), "hello world\nnew line\nspaced out end");
+    }
+
+    #[test]
     fn tag_normalization_and_limits() {
         let tag = ServerTag::try_from("  Foo_Bar  ").expect("tag");
         assert_eq!(tag.as_ref(), "foo-bar");
@@ -172,5 +222,17 @@ mod tests {
         let batch =
             TagsBatch::try_from(vec!["Prod".into(), "prod".into(), "db".into()]).expect("batch");
         assert_eq!(batch.as_strings(), vec!["db", "prod"]);
+    }
+
+    #[test]
+    fn tags_batch_limits_after_dedup() {
+        let mut raw = Vec::new();
+        for _ in 0..(TAGS_MAX_PER_REQUEST + 10) {
+            raw.push("web".to_string());
+        }
+        raw.push("api".to_string());
+
+        let batch = TagsBatch::try_from(raw).expect("batch with deduped tags");
+        assert_eq!(batch.as_strings(), vec!["api", "web"]);
     }
 }

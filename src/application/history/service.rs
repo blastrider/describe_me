@@ -105,8 +105,8 @@ impl HistoryService {
         self.with_ctx(|ctx| ctx.settings.clone())
     }
 
-    pub fn default_server_id(&self) -> Option<String> {
-        self.server_identity().ok().cloned()
+    pub fn default_server_id(&self) -> Result<String, DescribeError> {
+        self.server_identity().cloned()
     }
 
     pub fn query_series(
@@ -189,7 +189,12 @@ impl HistoryService {
         if let Some(id) = self.server_id.get() {
             return Ok(id);
         }
-        let created = history::load_or_create_identity()?;
+        let is_memory = self.with_ctx(|ctx| matches!(ctx.settings.mode, HistoryMode::InMemory));
+        let created = if is_memory {
+            history::generate_identity_string()
+        } else {
+            history::load_or_create_identity()?
+        };
         Ok(self.server_id.get_or_init(|| created))
     }
 }
@@ -241,5 +246,32 @@ mod tests {
             .query_series(&server_id, Duration::from_secs(60), 10, 1)
             .expect("series");
         assert!(!series.points.is_empty());
+    }
+
+    #[test]
+    fn in_memory_mode_uses_ephemeral_identity() {
+        let _guard = crate::infrastructure::storage::state_dir_test_lock();
+        crate::infrastructure::storage::clear_state_dir_override_for_tests();
+        std::env::remove_var("DESCRIBE_ME_STATE_DIR");
+        std::env::remove_var("STATE_DIRECTORY");
+        let temp = tempfile::tempdir().expect("tempdir");
+        crate::application::metadata::override_state_directory(temp.path());
+
+        let identity_path = crate::infrastructure::history::history_identity_path();
+        if identity_path.exists() {
+            std::fs::remove_file(&identity_path).ok();
+        }
+
+        let service = HistoryService::new();
+        let mut settings = HistorySettings::for_profile(HistoryProfile::Default);
+        settings.mode = HistoryMode::InMemory;
+        service.configure(settings).expect("configure");
+
+        let id = service.default_server_id().expect("server id");
+        assert_eq!(id.len(), 32);
+        assert!(
+            !identity_path.exists(),
+            "in-memory mode should not create history.identity on disk"
+        );
     }
 }

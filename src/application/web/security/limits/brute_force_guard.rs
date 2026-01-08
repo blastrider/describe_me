@@ -6,10 +6,14 @@ use std::{
 
 use tokio::sync::Mutex;
 
-use super::policy::BruteForcePolicy;
+use super::policy::{BruteForcePolicy, TOKEN_IP_SPREAD_MAX_IPS};
 use super::sliding::SlidingWindowQueue;
 use crate::application::logging::LogEvent;
 use crate::application::web::security::{TokenKey, WebRoute};
+
+const MAX_CLEANUP_INTERVAL: Duration = Duration::from_secs(30);
+// Guardrail against unbounded key floods; keep comfortably above typical traffic.
+const MAX_ENTRIES: usize = 10_000;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct FailureOutcome {
@@ -45,10 +49,13 @@ impl BruteForceGuard {
         now: Instant,
         policy: &BruteForcePolicy,
     ) -> Option<Duration> {
-        let mut delay = self.failures_ip.existing_block(ip, now).await;
+        let mut delay = self.failures_ip.existing_block(ip, now, policy).await;
 
         if token != TokenKey::Anonymous {
-            delay = combine_delay(delay, self.failures_token.existing_block(token, now).await);
+            delay = combine_delay(
+                delay,
+                self.failures_token.existing_block(token, now, policy).await,
+            );
             delay = combine_delay(
                 delay,
                 self.token_spread.existing_block(token, now, policy).await,
@@ -103,7 +110,13 @@ impl BruteForceGuard {
 
 #[derive(Debug)]
 struct FailureTracker<K> {
-    inner: Mutex<HashMap<K, FailureRecord>>,
+    inner: Mutex<FailureState<K>>,
+}
+
+#[derive(Debug)]
+struct FailureState<K> {
+    entries: HashMap<K, FailureRecord>,
+    last_cleanup: Instant,
 }
 
 impl<K> FailureTracker<K>
@@ -112,32 +125,93 @@ where
 {
     fn new() -> Self {
         Self {
-            inner: Mutex::new(HashMap::new()),
+            inner: Mutex::new(FailureState {
+                entries: HashMap::new(),
+                last_cleanup: Instant::now(),
+            }),
         }
     }
 
     async fn register(&self, key: K, now: Instant, policy: &BruteForcePolicy) -> Option<Duration> {
         let mut guard = self.inner.lock().await;
-        let record = guard
-            .entry(key)
-            .or_insert_with(|| FailureRecord::new(policy.window()));
-        let delay = record
-            .register(now, policy)
-            .map(|until| until.saturating_duration_since(now));
-        if record.is_clear() {
-            guard.remove(&key);
+        self.cleanup_if_needed(&mut guard, now, policy);
+        let (delay, is_clear) = {
+            let record = guard
+                .entries
+                .entry(key)
+                .or_insert_with(|| FailureRecord::new(policy.window()));
+            let delay = record
+                .register(now, policy)
+                .map(|until| until.saturating_duration_since(now));
+            (delay, record.is_clear())
+        };
+        if is_clear {
+            guard.entries.remove(&key);
         }
+        self.enforce_cap(&mut guard);
         delay
     }
 
-    async fn existing_block(&self, key: K, now: Instant) -> Option<Duration> {
-        let guard = self.inner.lock().await;
-        guard.get(&key).and_then(|record| record.blocked_delay(now))
+    async fn existing_block(
+        &self,
+        key: K,
+        now: Instant,
+        policy: &BruteForcePolicy,
+    ) -> Option<Duration> {
+        let mut guard = self.inner.lock().await;
+        self.cleanup_if_needed(&mut guard, now, policy);
+        self.enforce_cap(&mut guard);
+        guard
+            .entries
+            .get(&key)
+            .and_then(|record| record.blocked_delay(now))
     }
 
     async fn clear(&self, key: K) {
         let mut guard = self.inner.lock().await;
-        guard.remove(&key);
+        guard.entries.remove(&key);
+    }
+
+    fn cleanup_if_needed(
+        &self,
+        state: &mut FailureState<K>,
+        now: Instant,
+        policy: &BruteForcePolicy,
+    ) {
+        let interval = cleanup_interval(policy.window());
+        if now
+            .checked_duration_since(state.last_cleanup)
+            .map(|elapsed| elapsed < interval)
+            .unwrap_or(false)
+        {
+            return;
+        }
+
+        state.last_cleanup = now;
+        state.entries.retain(|_, record| {
+            record.cleanup(now, policy);
+            !record.is_clear()
+        });
+    }
+
+    fn enforce_cap(&self, state: &mut FailureState<K>) {
+        while state.entries.len() > MAX_ENTRIES {
+            let Some(key) = state.entries.keys().next().copied() else {
+                break;
+            };
+            state.entries.remove(&key);
+        }
+    }
+}
+
+#[cfg(test)]
+impl<K> FailureTracker<K>
+where
+    K: Eq + std::hash::Hash + Copy + Send + 'static,
+{
+    async fn len(&self) -> usize {
+        let guard = self.inner.lock().await;
+        guard.entries.len()
     }
 }
 
@@ -206,6 +280,16 @@ impl FailureRecord {
         let until = now + next_backoff;
         self.blocked_until = Some(until);
         Some(until)
+    }
+
+    fn cleanup(&mut self, now: Instant, policy: &BruteForcePolicy) {
+        self.attempts.set_window(policy.window());
+        self.attempts.purge(now);
+        if let Some(until) = self.blocked_until {
+            if until <= now {
+                self.blocked_until = None;
+            }
+        }
     }
 
     fn is_clear(&self) -> bool {
@@ -347,7 +431,7 @@ impl TokenSpread {
 
         self.failure_count = self.failure_count.saturating_add(1);
         self.ips.insert(ip);
-        if self.ips.len() > 32 {
+        if self.ips.len() > TOKEN_IP_SPREAD_MAX_IPS as usize {
             if let Some(first) = self.ips.iter().next().copied() {
                 self.ips.remove(&first);
             }
@@ -415,11 +499,17 @@ fn emit_security_incident(
     LogEvent::SecurityIncident {
         category: Cow::Borrowed(category),
         route: Cow::Borrowed(route.as_str()),
+        request_path: None,
         ip: ip.map(|addr| Cow::Owned(addr.to_string())),
         token: token.map(|key| Cow::Owned(key.to_string())),
         detail: detail.map(Cow::Owned),
     }
     .emit();
+}
+
+fn cleanup_interval(window: Duration) -> Duration {
+    let interval = window / 2;
+    interval.min(MAX_CLEANUP_INTERVAL)
 }
 
 #[cfg(test)]
@@ -472,6 +562,41 @@ mod tests {
             .existing_block(hot_token, later, &policy)
             .await
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn failure_tracker_cleanup_expires_old_entries() {
+        let tracker = FailureTracker::<IpAddr>::new();
+        let policy = BruteForcePolicy::default();
+        let now = Instant::now();
+
+        for i in 0..100u32 {
+            let ip = IpAddr::V4(Ipv4Addr::from(i));
+            let _ = tracker.register(ip, now, &policy).await;
+        }
+
+        assert!(tracker.len().await >= 100);
+
+        let later = now + policy.window() + policy.window();
+        let _ = tracker
+            .existing_block(IpAddr::V4(Ipv4Addr::from(0)), later, &policy)
+            .await;
+
+        assert_eq!(tracker.len().await, 0);
+    }
+
+    #[tokio::test]
+    async fn failure_tracker_enforces_max_entries() {
+        let tracker = FailureTracker::<IpAddr>::new();
+        let policy = BruteForcePolicy::default();
+        let now = Instant::now();
+
+        for i in 0..(MAX_ENTRIES as u32 + 25) {
+            let ip = IpAddr::V4(Ipv4Addr::from(i));
+            let _ = tracker.register(ip, now, &policy).await;
+        }
+
+        assert!(tracker.len().await <= MAX_ENTRIES);
     }
 
     #[test]

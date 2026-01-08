@@ -5,6 +5,12 @@ const tagsEditorManager =
 
 const MAX_PAGE_LIMIT = 500;
 const DEFAULT_PAGE_LIMIT = 20;
+const EXTENSION_MAX_FIELDS = 12;
+const EXTENSION_MAX_VALUE_LENGTH = 200;
+const EXTENSION_MAX_DEPTH = 2;
+const EXTENSION_MAX_ARRAY_ITEMS = 8;
+const EXTENSION_MAX_ENTRY_LENGTH = 400;
+const EXTENSION_MAX_PLUGINS = 30;
 
 let currentSnapshot = null;
 
@@ -34,32 +40,90 @@ function getWidthFromBytes(totalBytes, availableBytes) {
   return `${bounded.toFixed(1)}%`;
 }
 
-function formatExtensionValue(value) {
+function truncateText(value, limit) {
+  if (value.length <= limit) return value;
+  return `${value.slice(0, Math.max(0, limit - 3))}...`;
+}
+
+function isPlainObject(value) {
+  if (!value || typeof value !== "object") return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+function collectEntries(obj, limit) {
+  const entries = [];
+  let truncated = false;
+  for (const key in obj) {
+    if (!Object.prototype.hasOwnProperty.call(obj, key)) continue;
+    if (entries.length < limit) {
+      entries.push([key, obj[key]]);
+    } else {
+      truncated = true;
+      break;
+    }
+  }
+  return { entries, truncated };
+}
+
+function formatExtensionValue(value, depth = 0) {
   if (value === null || typeof value === "undefined") {
     return "—";
   }
   if (typeof value === "string") {
-    return value;
+    return truncateText(value, EXTENSION_MAX_VALUE_LENGTH);
   }
   if (typeof value === "number" || typeof value === "boolean") {
     return value.toString();
   }
-  try {
-    return JSON.stringify(value);
-  } catch (err) {
-    return String(value);
+  if (Array.isArray(value)) {
+    if (depth >= EXTENSION_MAX_DEPTH) {
+      return `[${value.length} items]`;
+    }
+    const maxItems = Math.min(value.length, EXTENSION_MAX_ARRAY_ITEMS);
+    const items = [];
+    for (let idx = 0; idx < maxItems; idx += 1) {
+      items.push(formatExtensionValue(value[idx], depth + 1));
+    }
+    const suffix = value.length > maxItems
+      ? `, ... +${value.length - maxItems}`
+      : "";
+    return truncateText(
+      `[${items.join(", ")}${suffix}]`,
+      EXTENSION_MAX_ENTRY_LENGTH
+    );
   }
+  if (!isPlainObject(value)) {
+    return truncateText(String(value), EXTENSION_MAX_VALUE_LENGTH);
+  }
+  if (depth >= EXTENSION_MAX_DEPTH) {
+    return "{...}";
+  }
+  const { entries, truncated } = collectEntries(value, EXTENSION_MAX_FIELDS);
+  const parts = entries.map(
+    ([key, entryValue]) => `${key}: ${formatExtensionValue(entryValue, depth + 1)}`
+  );
+  if (truncated) {
+    parts.push("...");
+  }
+  return truncateText(`{ ${parts.join(", ")} }`, EXTENSION_MAX_ENTRY_LENGTH);
 }
 
 function extensionEntries(payload) {
   if (
     payload &&
     typeof payload === "object" &&
-    !Array.isArray(payload)
+    !Array.isArray(payload) &&
+    isPlainObject(payload)
   ) {
-    return Object.entries(payload).map(
+    const { entries, truncated } = collectEntries(payload, EXTENSION_MAX_FIELDS);
+    const values = entries.map(
       ([key, value]) => `${key}: ${formatExtensionValue(value)}`
     );
+    if (truncated) {
+      values.push("...");
+    }
+    return values;
   }
   return [formatExtensionValue(payload)];
 }
@@ -932,7 +996,7 @@ function updateUI(data) {
       typeof rawExtensions === 'object' &&
       !Array.isArray(rawExtensions)
     ) {
-      const entries = Object.entries(rawExtensions);
+      const { entries, truncated } = collectEntries(rawExtensions, EXTENSION_MAX_PLUGINS);
       if (entries.length > 0) {
         extensionsCard.style.display = 'block';
         const fragment = document.createDocumentFragment();
@@ -955,6 +1019,11 @@ function updateUI(data) {
             row.appendChild(details);
             fragment.appendChild(row);
           });
+        if (truncated) {
+          fragment.appendChild(
+            createServiceEmpty("Liste des extensions tronquee")
+          );
+        }
         extensionsList.appendChild(fragment);
       } else if (hasField) {
         extensionsCard.style.display = 'block';

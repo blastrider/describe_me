@@ -1,8 +1,13 @@
 use crate::domain::{DescribeError, DiskPartition, DiskUsage};
+use crate::infrastructure::command;
 use crate::SharedSlice;
 use std::os::unix::fs::MetadataExt;
 use sysinfo::{CpuRefreshKind, Disks, MemoryRefreshKind, RefreshKind, System};
 use tracing::debug;
+
+const BTRFS_COMMAND_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+const BTRFS_COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
+const BTRFS_COMMAND_MAX_OUTPUT: usize = 64 * 1024;
 
 pub(crate) struct SysinfoSnapshot {
     pub hostname: String,
@@ -57,7 +62,8 @@ pub(crate) fn gather() -> Result<SysinfoSnapshot, DescribeError> {
 use std::{
     collections::{HashMap, HashSet},
     fs,
-    process::Command,
+    process::{Command, Stdio},
+    time::Duration,
 };
 
 // Linux-only: parses procfs mount tables to deduplicate devices.
@@ -82,15 +88,46 @@ fn parse_mountinfo_from_str(content: &str) -> HashMap<String, (String, String)> 
             let majmin = l.next().unwrap_or_default().to_string();
             // root
             let _root = l.next();
-            let mnt = l.next().unwrap_or_default().to_string();
+            let mnt_raw = l.next().unwrap_or_default();
             // right: fstype source superopts
             let mut r = right.split_whitespace();
             let _fstype = r.next();
-            let source = r.next().unwrap_or_default().to_string();
+            let source_raw = r.next().unwrap_or_default();
+            let mnt = decode_mountinfo_token(mnt_raw);
+            let source = decode_mountinfo_token(source_raw);
             map.insert(mnt, (majmin, source));
         }
     }
     map
+}
+
+fn decode_mountinfo_token(token: &str) -> String {
+    if !token.as_bytes().contains(&b'\\') {
+        return token.to_string();
+    }
+    let bytes = token.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut idx = 0usize;
+    while idx < bytes.len() {
+        if bytes[idx] == b'\\' && idx + 3 < bytes.len() {
+            let b1 = bytes[idx + 1];
+            let b2 = bytes[idx + 2];
+            let b3 = bytes[idx + 3];
+            if is_octal_digit(b1) && is_octal_digit(b2) && is_octal_digit(b3) {
+                let val = (b1 - b'0') * 64 + (b2 - b'0') * 8 + (b3 - b'0');
+                out.push(val);
+                idx += 4;
+                continue;
+            }
+        }
+        out.push(bytes[idx]);
+        idx += 1;
+    }
+    String::from_utf8_lossy(&out).to_string()
+}
+
+fn is_octal_digit(byte: u8) -> bool {
+    (b'0'..=b'7').contains(&byte)
 }
 
 #[cfg(any(test, feature = "internals"))]
@@ -129,10 +166,23 @@ struct BtrfsUsage {
 /// `None` et l'appelant conserve simplement les métriques issues de
 /// `sysinfo` sans déclencher d'erreur.
 fn read_btrfs_usage(mount_point: &str) -> Option<BtrfsUsage> {
-    let output = Command::new("btrfs")
-        .args(["filesystem", "df", "-b", mount_point])
-        .output()
-        .ok()?;
+    let mut cmd = Command::new("btrfs");
+    cmd.args(["filesystem", "df", "-b", mount_point])
+        .env_clear()
+        .env("PATH", BTRFS_COMMAND_PATH)
+        .env("LC_ALL", "C")
+        .stdin(Stdio::null());
+    let output = command::run_command_with_timeout(
+        cmd,
+        BTRFS_COMMAND_TIMEOUT,
+        BTRFS_COMMAND_MAX_OUTPUT,
+        "btrfs filesystem df",
+    )
+    .ok()?;
+    if output.stdout_truncated || output.stderr_truncated {
+        return None;
+    }
+    let output = output.output;
     if !output.status.success() {
         return None;
     }
@@ -358,6 +408,16 @@ mod tests {
             let text = String::from_utf8_lossy(&data);
             let _ = parse_mountinfo_for_tests(&text);
         }
+    }
+
+    #[test]
+    fn parse_mountinfo_decodes_escaped_tokens() {
+        let content = "1 1 8:1 / /mnt/my\\040disk rw - ext4 /dev/mapper/vg\\040name rw";
+        let parsed = parse_mountinfo_for_tests(content);
+        assert_eq!(
+            parsed.get("/mnt/my disk"),
+            Some(&("8:1".to_string(), "/dev/mapper/vg name".to_string()))
+        );
     }
 
     #[test]

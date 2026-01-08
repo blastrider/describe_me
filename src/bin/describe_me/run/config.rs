@@ -1,5 +1,11 @@
 use anyhow::Result;
-use describe_me_lib::{DescribeConfig, HistoryProfile, HistorySettings};
+#[cfg(feature = "config")]
+use describe_me_lib::DescribeConfig;
+use describe_me_lib::{HistoryProfile, HistorySettings};
+#[cfg(feature = "config")]
+type DescribeCfg = DescribeConfig;
+#[cfg(not(feature = "config"))]
+type DescribeCfg = ();
 
 #[cfg(feature = "config")]
 use describe_me_lib::history_settings_from_config;
@@ -11,7 +17,7 @@ use crate::describe_me::allowlists::CliListOrigin;
 
 pub struct ConfigResolution {
     #[cfg(feature = "config")]
-    config: Option<DescribeConfig>,
+    config: Option<DescribeCfg>,
     pub allow_config_exposure: bool,
     #[cfg(feature = "web")]
     web_list_origins: WebListOrigins,
@@ -19,12 +25,12 @@ pub struct ConfigResolution {
 
 impl ConfigResolution {
     #[cfg(feature = "config")]
-    pub fn config(&self) -> Option<&DescribeConfig> {
+    pub fn config(&self) -> Option<&DescribeCfg> {
         self.config.as_ref()
     }
 
     #[cfg(not(feature = "config"))]
-    pub fn config(&self) -> Option<&DescribeConfig> {
+    pub fn config(&self) -> Option<&DescribeCfg> {
         None
     }
 
@@ -35,8 +41,6 @@ impl ConfigResolution {
 }
 
 pub fn resolve_config(cli: &mut CliConfig) -> Result<ConfigResolution> {
-    let allow_config_exposure = resolve_allow_config_exposure(cli.allow_config_exposure);
-
     #[cfg(feature = "web")]
     let mut web_list_origins = WebListOrigins::from_cli(cli);
 
@@ -61,6 +65,13 @@ pub fn resolve_config(cli: &mut CliConfig) -> Result<ConfigResolution> {
         );
     }
 
+    #[cfg(feature = "config")]
+    let allow_config_exposure =
+        resolve_allow_config_exposure(cli.allow_config_exposure, config.as_ref());
+
+    #[cfg(not(feature = "config"))]
+    let allow_config_exposure = resolve_allow_config_exposure(cli.allow_config_exposure);
+
     Ok(ConfigResolution {
         #[cfg(feature = "config")]
         config,
@@ -70,7 +81,7 @@ pub fn resolve_config(cli: &mut CliConfig) -> Result<ConfigResolution> {
     })
 }
 
-pub fn resolve_history_settings(cli: &CliConfig, cfg: Option<&DescribeConfig>) -> HistorySettings {
+pub fn resolve_history_settings(cli: &CliConfig, cfg: Option<&DescribeCfg>) -> HistorySettings {
     #[cfg(not(feature = "config"))]
     let _ = cfg;
     #[cfg(feature = "config")]
@@ -83,6 +94,32 @@ pub fn resolve_history_settings(cli: &CliConfig, cfg: Option<&DescribeConfig>) -
     apply_cli_history_overrides(cli, from_config)
 }
 
+#[cfg(feature = "config")]
+/// Résout allow_config_exposure (priorité: CLI > runtime config > ENV).
+fn resolve_allow_config_exposure(cli_flag: bool, config: Option<&DescribeCfg>) -> bool {
+    if cli_flag {
+        return true;
+    }
+    if let Some(cfg) = config {
+        if cfg
+            .runtime
+            .as_ref()
+            .map(|runtime| runtime.allow_config_exposure)
+            .unwrap_or(false)
+        {
+            return true;
+        }
+    }
+    if let Ok(value) = std::env::var("DESCRIBE_ME_ALLOW_CONFIG_EXPOSURE") {
+        if env_flag_enabled(&value) {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(not(feature = "config"))]
+/// Résout allow_config_exposure (priorité: CLI > ENV).
 fn resolve_allow_config_exposure(cli_flag: bool) -> bool {
     if cli_flag {
         return true;
@@ -96,7 +133,7 @@ fn resolve_allow_config_exposure(cli_flag: bool) -> bool {
 }
 
 #[cfg(feature = "config")]
-fn load_config(cli: &CliConfig) -> Result<Option<DescribeConfig>> {
+fn load_config(cli: &CliConfig) -> Result<Option<DescribeCfg>> {
     if let Some(p) = &cli.config_path {
         let cfg = describe_me_lib::load_config_from_path(p)?;
         if let Some(runtime) = cfg.runtime.as_ref() {
@@ -316,5 +353,25 @@ mod tests {
         assert_eq!(origins.allow_ip(), CliListOrigin::RuntimeDefault);
         assert_eq!(origins.allow_origin(), CliListOrigin::RuntimeDefault);
         assert_eq!(origins.trusted_proxy(), CliListOrigin::RuntimeDefault);
+    }
+
+    #[cfg(all(test, feature = "config"))]
+    #[test]
+    fn allow_config_exposure_accepts_runtime_flag() {
+        let mut cli = base_cli();
+        cli.allow_config_exposure = false;
+
+        let cfg = DescribeConfig {
+            runtime: Some(describe_me_lib::domain::RuntimeConfig {
+                allow_config_exposure: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        assert!(resolve_allow_config_exposure(
+            cli.allow_config_exposure,
+            Some(&cfg)
+        ));
     }
 }

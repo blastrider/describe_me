@@ -2,6 +2,7 @@ use std::{
     borrow::Cow,
     convert::Infallible,
     future::Future,
+    io::{self, Write},
     net::IpAddr,
     pin::Pin,
     sync::{
@@ -25,6 +26,7 @@ use tokio_stream::wrappers::IntervalStream;
 
 use crate::application::capture_snapshot_with_view;
 use crate::application::error::{serialize_error_body, ErrorBody};
+use crate::application::exposure::SnapshotView;
 use crate::application::logging::LogEvent;
 use crate::domain::CaptureOptions;
 
@@ -281,6 +283,11 @@ pub(super) async fn sse_stream(
     }
 
     let max_payload = policy.sse_max_payload_bytes();
+    let max_payload_limit = if max_payload == 0 {
+        usize::MAX
+    } else {
+        max_payload
+    };
     let max_duration = policy.sse_max_stream_duration();
     let min_interval_ms = min_interval.as_millis().min(u128::from(u64::MAX)) as u64;
     let max_stream_s = max_duration.as_secs();
@@ -315,6 +322,7 @@ pub(super) async fn sse_stream(
     let stream = IntervalStream::new(ticker).then(move |_| {
         let exposure = exposure;
         let max_payload = max_payload;
+        let max_payload_limit = max_payload_limit;
         let metrics = metrics_for_stream.clone();
         let updates_cache = updates_cache.clone();
         let state_for_cache = state_for_cache.clone();
@@ -325,73 +333,149 @@ pub(super) async fn sse_stream(
                 updates_cache.ensure_fresh().await;
             }
 
+            let capture_opts = CaptureOptions {
+                with_services,
+                with_disk_usage: exposure.disk_partitions(),
+                with_listening_sockets: exposure.listening_sockets(),
+                resolve_socket_processes: false,
+                with_network_traffic: exposure.network_traffic(),
+                with_updates: false,
+                with_containers: exposure.containers_summary(),
+            };
             #[cfg(feature = "config")]
-            let config = state_for_cache.config_ref();
+            let config = state_for_cache.config();
 
-            let (payload, services_count, partitions_count, close_after) =
-                match capture_snapshot_with_view(
-                    CaptureOptions {
-                        with_services,
-                        with_disk_usage: true,
-                        with_listening_sockets: exposure.listening_sockets(),
-                        resolve_socket_processes: false,
-                        with_network_traffic: exposure.network_traffic(),
-                        with_updates: false,
-                        with_containers: exposure.containers_summary(),
-                    },
-                    exposure,
+            let capture_result = tokio::task::spawn_blocking({
+                let ctx = ctx.clone();
+                #[cfg(feature = "config")]
+                let config = config.clone();
+                move || {
                     #[cfg(feature = "config")]
-                    config,
-                    &ctx,
-                ) {
-                    Ok((_snapshot, mut view)) => {
-                        if exposure.updates() {
-                            if let Some(info) = updates_cache.peek().await {
-                                view.updates = Some(info);
-                            }
-                        }
-                        #[cfg(feature = "systemd")]
-                        let services_count = view
-                            .services_running
-                            .as_ref()
-                            .map(|services| services.len());
-                        #[cfg(not(feature = "systemd"))]
-                        let services_count = None::<usize>;
-                        let partitions_count = view
-                            .disk_usage
-                            .as_ref()
-                            .and_then(|du| du.partitions.as_ref().map(|p| p.len()));
-                        let payload = serde_json::to_string(&view)
-                            .unwrap_or_else(|e| json_err(e.to_string()));
-                        state_for_cache.cache_snapshot(view);
-                        (payload, services_count, partitions_count, None)
+                    {
+                        capture_snapshot_with_view(capture_opts, exposure, config.as_ref(), &ctx)
                     }
-                    Err(e) => (
-                        json_err(e.to_string()),
+                    #[cfg(not(feature = "config"))]
+                    {
+                        capture_snapshot_with_view(capture_opts, exposure, &ctx)
+                    }
+                }
+            })
+            .await;
+
+            let (
+                payload,
+                payload_len,
+                serialized_len,
+                oversize,
+                services_count,
+                partitions_count,
+                close_after,
+            ) = match capture_result {
+                Ok(Ok((_snapshot, mut view))) => {
+                    if exposure.updates() {
+                        if let Some(info) = updates_cache.peek().await {
+                            view.updates = Some(info);
+                        }
+                    }
+                    #[cfg(feature = "systemd")]
+                    let services_count = view
+                        .services_running
+                        .as_ref()
+                        .map(|services| services.len());
+                    #[cfg(not(feature = "systemd"))]
+                    let services_count = None::<usize>;
+                    let partitions_count = view
+                        .disk_usage
+                        .as_ref()
+                        .and_then(|du| du.partitions.as_ref().map(|p| p.len()));
+                    let payload_build = serialize_payload_with_limit(&view, max_payload_limit);
+                    state_for_cache.cache_snapshot(view).await;
+                    let (payload, payload_len, serialized_len, oversize, close_after) =
+                        match payload_build {
+                            PayloadBuild::Ok { payload, len } => {
+                                let payload_len = payload.len();
+                                (payload, payload_len, len, false, None)
+                            }
+                            PayloadBuild::Oversize { payload, len } => {
+                                let payload_len = payload.len();
+                                (payload, payload_len, len, true, Some(SseCloseReason::Limit))
+                            }
+                            PayloadBuild::Error { payload, len } => {
+                                let payload_len = payload.len();
+                                (
+                                    payload,
+                                    payload_len,
+                                    len,
+                                    false,
+                                    Some(SseCloseReason::Error),
+                                )
+                            }
+                        };
+                    (
+                        payload,
+                        payload_len,
+                        serialized_len,
+                        oversize,
+                        services_count,
+                        partitions_count,
+                        close_after,
+                    )
+                }
+                Ok(Err(e)) => {
+                    let payload = json_err(e.to_string());
+                    let payload_len = payload.len();
+                    (
+                        payload,
+                        payload_len,
+                        payload_len,
+                        false,
                         None,
                         None,
                         Some(SseCloseReason::Error),
-                    ),
-                };
-            let payload_len = payload.len();
+                    )
+                }
+                Err(e) => {
+                    let payload = json_err(e.to_string());
+                    let payload_len = payload.len();
+                    (
+                        payload,
+                        payload_len,
+                        payload_len,
+                        false,
+                        None,
+                        None,
+                        Some(SseCloseReason::Error),
+                    )
+                }
+            };
+            let mut close_after = close_after;
+
+            let (event, event_len) = if oversize || payload_len > max_payload_limit {
+                LogEvent::SsePayloadOversize {
+                    size: if oversize {
+                        serialized_len
+                    } else {
+                        payload_len
+                    },
+                    limit: max_payload,
+                }
+                .emit();
+                if close_after.is_none() {
+                    close_after = Some(SseCloseReason::Limit);
+                }
+                let error_payload = json_err("payload SSE trop volumineux");
+                let error_len = error_payload.len();
+                (Event::default().data(error_payload), error_len)
+            } else {
+                (Event::default().data(payload), payload_len)
+            };
 
             LogEvent::SseTick {
-                payload_bytes: payload_len,
+                payload_bytes: event_len,
                 services_count,
                 partitions: partitions_count,
             }
             .emit();
-
-            let event = if payload_len > max_payload {
-                LogEvent::SsePayloadOversize {
-                    size: payload_len,
-                    limit: max_payload,
-                }
-                .emit();
-                Event::default().data(json_err("payload SSE trop volumineux"))
-            } else {
-                Event::default().data(payload)
-            };
 
             if let Some(reason) = close_after {
                 metrics.set_reason(reason);
@@ -400,7 +484,7 @@ pub(super) async fn sse_stream(
             Ok::<StreamPayload, Infallible>(StreamPayload {
                 event,
                 close_after,
-                bytes: payload_len,
+                bytes: event_len,
             })
         }
     });
@@ -416,4 +500,91 @@ pub(super) async fn sse_stream(
 
 fn json_err(msg: impl Into<Cow<'static, str>>) -> String {
     serialize_error_body(ErrorBody { error: msg.into() })
+}
+
+enum PayloadBuild {
+    Ok { payload: String, len: usize },
+    Oversize { payload: String, len: usize },
+    Error { payload: String, len: usize },
+}
+
+fn serialize_payload_with_limit(view: &SnapshotView, max_payload_limit: usize) -> PayloadBuild {
+    let mut writer = LimitedWriter::new(max_payload_limit);
+    let result = serde_json::to_writer(&mut writer, view);
+    if result.is_ok() {
+        return match String::from_utf8(writer.into_inner()) {
+            Ok(payload) => {
+                let len = payload.len();
+                PayloadBuild::Ok { payload, len }
+            }
+            Err(err) => {
+                let payload = json_err(err.to_string());
+                let len = payload.len();
+                PayloadBuild::Error { payload, len }
+            }
+        };
+    }
+
+    if writer.exceeded() {
+        let payload = json_err("payload SSE trop volumineux");
+        let len = writer.bytes_seen();
+        return PayloadBuild::Oversize { payload, len };
+    }
+
+    let payload = json_err(result.unwrap_err().to_string());
+    let len = payload.len();
+    PayloadBuild::Error { payload, len }
+}
+
+struct LimitedWriter {
+    buf: Vec<u8>,
+    limit: usize,
+    bytes_seen: usize,
+    exceeded: bool,
+}
+
+impl LimitedWriter {
+    fn new(limit: usize) -> Self {
+        Self {
+            buf: Vec::new(),
+            limit,
+            bytes_seen: 0,
+            exceeded: false,
+        }
+    }
+
+    fn exceeded(&self) -> bool {
+        self.exceeded
+    }
+
+    fn bytes_seen(&self) -> usize {
+        self.bytes_seen
+    }
+
+    fn into_inner(self) -> Vec<u8> {
+        self.buf
+    }
+}
+
+impl Write for LimitedWriter {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        if self.exceeded {
+            return Err(io::Error::other("payload limit exceeded"));
+        }
+
+        let new_total = self.bytes_seen.saturating_add(data.len());
+        if new_total > self.limit {
+            self.exceeded = true;
+            self.bytes_seen = new_total;
+            return Err(io::Error::other("payload limit exceeded"));
+        }
+
+        self.buf.extend_from_slice(data);
+        self.bytes_seen = new_total;
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }

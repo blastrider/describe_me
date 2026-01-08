@@ -123,13 +123,20 @@ pub(super) async fn updates_page(
         let html = render_updates_page(&vm);
         let mut response = Html(html).into_response();
         attach_session_cookie(response.headers_mut(), &session, &state);
+        mark_response_no_store(response.headers_mut());
         return response;
     }
 
     state.updates_cache().ensure_fresh().await;
-    let updates = match state.updates_cache().peek_shared().await {
-        Some(info) => Some(info),
-        None => state.updates_cache().refresh_blocking_shared().await,
+    let cache_status = state.updates_cache().status().await;
+    let reuse_cached = cache_status.fresh
+        || (cache_status.data.is_some()
+            && cache_status.cooldown_active
+            && !cache_status.refreshing);
+    let updates = if reuse_cached {
+        cache_status.data
+    } else {
+        state.updates_cache().refresh_blocking_shared().await
     };
 
     let vm = UpdatesViewModel {
@@ -140,6 +147,7 @@ pub(super) async fn updates_page(
     let html = render_updates_page(&vm);
     let mut response = Html(html).into_response();
     attach_session_cookie(response.headers_mut(), &session, &state);
+    mark_response_no_store(response.headers_mut());
     response
 }
 
@@ -151,21 +159,38 @@ pub(super) async fn update_description(
     let session = guard.into_session();
     let description = ServerDescription::try_from(payload.text.as_str())
         .map_err(|err| WebError::bad_request(err.to_string()))?;
-    match set_server_description_with(&state.ctx(), description.as_ref()) {
-        Ok(()) => {
+    let description_value = description.into_inner();
+    let ctx = state.ctx();
+    let stored = tokio::task::spawn_blocking({
+        let description_value = description_value.clone();
+        move || set_server_description_with(&ctx, description_value.as_str())
+    })
+    .await;
+    match stored {
+        Ok(Ok(())) => {
             let mut response = (
                 StatusCode::OK,
                 Json(DescriptionResponse {
-                    description: description.into_inner(),
+                    description: description_value,
                 }),
             )
                 .into_response();
             attach_session_cookie(response.headers_mut(), &session, &state);
             Ok(response)
         }
-        Err(err) => {
+        Ok(Err(err)) => {
             LogEvent::SystemError {
                 location: Cow::Borrowed("web_description_update"),
+                error: Cow::Owned(err.to_string()),
+            }
+            .emit();
+            Err(WebError::internal(
+                "Impossible d'enregistrer la description.",
+            ))
+        }
+        Err(err) => {
+            LogEvent::SystemError {
+                location: Cow::Borrowed("web_description_update_task"),
                 error: Cow::Owned(err.to_string()),
             }
             .emit();
@@ -182,32 +207,57 @@ pub(super) async fn update_tags(
     Json(payload): Json<TagsPayload>,
 ) -> Result<Response, WebError> {
     let session = guard.into_session();
-    let result = match payload.op {
-        TagOperation::Clear => clear_server_tags_with(&state.ctx()).map(|_| Vec::new()),
+    enum TagsUpdate {
+        Clear,
+        Set(Vec<String>),
+        Add(Vec<String>),
+        Remove(Vec<String>),
+    }
+
+    let update = match payload.op {
+        TagOperation::Clear => TagsUpdate::Clear,
         op => {
             let batch = TagsBatch::try_from(payload.tags)
                 .map_err(|err| WebError::bad_request(err.to_string()))?;
             let tags = batch.into_strings();
             match op {
-                TagOperation::Set => {
-                    set_server_tags_with(&state.ctx(), tags.iter().map(|t| t.as_str()))
-                }
-                TagOperation::Add => {
-                    add_server_tags_with(&state.ctx(), tags.iter().map(|t| t.as_str()))
-                }
-                TagOperation::Remove => {
-                    remove_server_tags_with(&state.ctx(), tags.iter().map(|t| t.as_str()))
-                }
+                TagOperation::Set => TagsUpdate::Set(tags),
+                TagOperation::Add => TagsUpdate::Add(tags),
+                TagOperation::Remove => TagsUpdate::Remove(tags),
                 TagOperation::Clear => unreachable!("handled earlier"),
             }
         }
     };
+    let ctx = state.ctx();
+    let result = tokio::task::spawn_blocking(move || match update {
+        TagsUpdate::Clear => clear_server_tags_with(&ctx).map(|_| Vec::new()),
+        TagsUpdate::Set(tags) => set_server_tags_with(&ctx, tags.iter().map(|t| t.as_str())),
+        TagsUpdate::Add(tags) => add_server_tags_with(&ctx, tags.iter().map(|t| t.as_str())),
+        TagsUpdate::Remove(tags) => remove_server_tags_with(&ctx, tags.iter().map(|t| t.as_str())),
+    })
+    .await;
     let mut response = match result {
-        Ok(list) => (StatusCode::OK, Json(TagsResponse { tags: list.clone() })).into_response(),
-        Err(DescribeError::System(msg)) => return Err(WebError::internal(msg)),
-        Err(err) => return Err(WebError::internal(err.to_string())),
+        Ok(Ok(list)) => (StatusCode::OK, Json(TagsResponse { tags: list.clone() })).into_response(),
+        Ok(Err(DescribeError::System(msg))) => {
+            LogEvent::SystemError {
+                location: Cow::Borrowed("web_tags_update"),
+                error: Cow::Owned(msg),
+            }
+            .emit();
+            return Err(WebError::internal("Impossible d'enregistrer les tags."));
+        }
+        Ok(Err(err)) => return Err(WebError::internal(err.to_string())),
+        Err(err) => {
+            LogEvent::SystemError {
+                location: Cow::Borrowed("web_tags_update_task"),
+                error: Cow::Owned(err.to_string()),
+            }
+            .emit();
+            return Err(WebError::internal("Impossible d'enregistrer les tags."));
+        }
     };
     attach_session_cookie(response.headers_mut(), &session, &state);
+    mark_response_no_store(response.headers_mut());
     Ok(response)
 }
 
@@ -217,8 +267,9 @@ pub(super) async fn history_series(
     Query(query): Query<HistoryRequestQuery>,
 ) -> Result<impl IntoResponse, WebError> {
     let session = guard.into_session();
+    let server = normalize_history_server_param(query.server)?;
     let params = HistoryQueryParams {
-        server: query.server,
+        server,
         window: query.window,
         limit: query.limit,
         ip: session.ip().to_string(),
@@ -227,7 +278,30 @@ pub(super) async fn history_series(
     let payload = build_history_series_response(&state, params).await?;
     let mut response = Json(payload).into_response();
     attach_session_cookie(response.headers_mut(), &session, &state);
+    mark_response_no_store(response.headers_mut());
     Ok(response)
+}
+
+fn normalize_history_server_param(server: Option<String>) -> Result<Option<String>, WebError> {
+    let Some(raw) = server else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    const HISTORY_SERVER_ID_LEN: usize = 32;
+    if trimmed.len() != HISTORY_SERVER_ID_LEN {
+        return Err(WebError::bad_request(
+            "Paramètre server invalide (attendu: hex sur 32 caractères).",
+        ));
+    }
+    if !trimmed.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return Err(WebError::bad_request(
+            "Paramètre server invalide (attendu: hex sur 32 caractères).",
+        ));
+    }
+    Ok(Some(trimmed.to_ascii_lowercase()))
 }
 
 pub(super) async fn containers_api(
@@ -235,7 +309,7 @@ pub(super) async fn containers_api(
     guard: AuthGuard,
 ) -> Result<Response, WebError> {
     let session = guard.into_session();
-    let mut response = match state.latest_snapshot() {
+    let mut response = match state.ensure_snapshot_fresh().await {
         Some(value) => {
             let Some(containers) = value.view.containers.as_ref() else {
                 return Err(WebError::forbidden(
@@ -263,6 +337,7 @@ pub(super) async fn containers_api(
         ))?,
     };
     attach_session_cookie(response.headers_mut(), &session, &state);
+    mark_response_no_store(response.headers_mut());
     Ok(response)
 }
 
@@ -275,16 +350,39 @@ pub(super) async fn metrics_export(State(state): State<AppState>, guard: AuthGua
 describe_me_up 0
 ";
 
-    let mut response = match state.latest_snapshot() {
+    let mut response = match state.ensure_snapshot_fresh().await {
         Some(cached) => {
             let age_secs = cached.captured_at.elapsed().as_secs();
-            let payload = build_metrics_text(&cached.view, age_secs);
+            let view = cached.view.clone();
+            let metrics_state = state.runtime.extension_metrics.clone();
+            let payload = match tokio::task::spawn_blocking(move || {
+                build_metrics_text(&view, age_secs, metrics_state.as_ref())
+            })
+            .await
+            {
+                Ok(payload) => Some(payload),
+                Err(err) => {
+                    LogEvent::SystemError {
+                        location: Cow::Borrowed("metrics_render"),
+                        error: Cow::Owned(err.to_string()),
+                    }
+                    .emit();
+                    None
+                }
+            };
 
-            Response::builder()
-                .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, content_type)
-                .body(Body::from(payload))
-                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+            match payload {
+                Some(payload) => Response::builder()
+                    .status(StatusCode::OK)
+                    .header(header::CONTENT_TYPE, content_type)
+                    .body(Body::from(payload))
+                    .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()),
+                None => Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .header(header::CONTENT_TYPE, content_type.clone())
+                    .body(Body::from(unavailable))
+                    .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()),
+            }
         }
         None => Response::builder()
             .status(StatusCode::SERVICE_UNAVAILABLE)
@@ -293,6 +391,7 @@ describe_me_up 0
             .unwrap_or_else(|_| StatusCode::SERVICE_UNAVAILABLE.into_response()),
     };
     attach_session_cookie(response.headers_mut(), &session, &state);
+    mark_response_no_store(response.headers_mut());
     response
 }
 
@@ -335,5 +434,6 @@ pub(super) async fn host_logs(
     let session = guard.into_session();
     let mut response = Json(page).into_response();
     attach_session_cookie(response.headers_mut(), &session, &state);
+    mark_response_no_store(response.headers_mut());
     Ok(response)
 }

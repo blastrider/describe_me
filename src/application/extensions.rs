@@ -1,4 +1,5 @@
 use describe_me_plugin_sdk::PluginOutput;
+use rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256};
 use std::borrow::Cow;
 #[cfg(feature = "config")]
@@ -9,6 +10,8 @@ use std::fs::{File, Metadata};
 use std::io::{self, Read};
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -16,6 +19,10 @@ use std::thread;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 use thiserror::Error;
 
+#[cfg(all(unix, any(feature = "cli", feature = "systemd")))]
+use nix::sys::signal::{kill, Signal};
+#[cfg(all(unix, any(feature = "cli", feature = "systemd")))]
+use nix::unistd::Pid;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
@@ -23,6 +30,7 @@ mod policy;
 
 use crate::application::error::{serialize_error_body, ErrorBody};
 use crate::application::logging::LogEvent;
+use crate::domain::validate_plugin_name;
 #[cfg(feature = "config")]
 use crate::domain::{DescribeConfig, ExtensionsConfig, PluginDefinition};
 pub use policy::PluginPolicy;
@@ -88,6 +96,12 @@ pub enum PluginExecutionError {
     },
     #[error("validation {path}: {message}")]
     Validation { path: String, message: String },
+    #[error("nom de plugin invalide {name} pour {command}: {message}")]
+    InvalidName {
+        name: String,
+        command: String,
+        message: String,
+    },
     #[error("lecture binaire {path}: {source}")]
     BinaryIo {
         path: String,
@@ -143,6 +157,11 @@ pub fn execute_process(spec: &PluginProcess<'_>) -> Result<PluginOutput, PluginE
     let command_str = spec.path.display().to_string();
 
     let mut command = Command::new(&spec.path);
+    #[cfg(unix)]
+    {
+        // Isolate plugin into its own process group to ensure we can terminate all descendants.
+        command.process_group(0);
+    }
     command
         .args(spec.args)
         .stdin(Stdio::null())
@@ -191,6 +210,11 @@ pub fn execute_process(spec: &PluginProcess<'_>) -> Result<PluginOutput, PluginE
         .take()
         .map(|r| spawn_reader(r, STDERR_LIMIT_BYTES, stderr_tx));
 
+    if let Err(err) = verify_child_identity(&child, &spec.path, &spec.identity) {
+        kill_process_tree(&mut child);
+        return Err(err);
+    }
+
     let mut stdout_result: Option<Result<Vec<u8>, StreamReadError>> = None;
     let mut stderr_result: Option<Result<Vec<u8>, StreamReadError>> = None;
     let mut limit_error: Option<PluginExecutionError> = None;
@@ -230,7 +254,7 @@ pub fn execute_process(spec: &PluginProcess<'_>) -> Result<PluginOutput, PluginE
                 });
             }
             if limit_error.is_some() && !killed {
-                let _ = child.kill();
+                kill_process_tree(&mut child);
                 killed = true;
             }
         }
@@ -270,7 +294,7 @@ pub fn execute_process(spec: &PluginProcess<'_>) -> Result<PluginOutput, PluginE
             }
             Ok(None) => {
                 if started.elapsed() >= timeout {
-                    let _ = child.kill();
+                    kill_process_tree(&mut child);
                     let _ = child.wait();
                     drop(stdout_rx);
                     drop(stderr_rx);
@@ -282,7 +306,7 @@ pub fn execute_process(spec: &PluginProcess<'_>) -> Result<PluginOutput, PluginE
                 thread::sleep(Duration::from_millis(20));
             }
             Err(err) => {
-                let _ = child.kill();
+                kill_process_tree(&mut child);
                 return Err(PluginExecutionError::Wait {
                     command: command_str.clone(),
                     source: err,
@@ -407,6 +431,15 @@ pub fn execute_configured_plugins_with_policy(
     cfg: &DescribeConfig,
     policy: &PluginPolicy,
 ) -> (BTreeMap<String, PluginOutput>, Vec<PluginFailure>) {
+    if let Err(err) = cfg.validate_plugin_names() {
+        let failure = PluginFailure {
+            name: "config".into(),
+            command: "extensions.plugins".into(),
+            error: err.to_string(),
+            logged: false,
+        };
+        return (BTreeMap::new(), vec![failure]);
+    }
     let Some(extensions) = cfg.extensions.as_ref() else {
         return (BTreeMap::new(), Vec::new());
     };
@@ -451,7 +484,7 @@ fn run_extensions(
                     logged: false,
                 };
                 if is_prelaunch_error(&err) {
-                    emit_plugin_failure(&failure);
+                    emit_failure(&failure);
                     failure.logged = true;
                     sleep_bruteforce_jitter();
                 }
@@ -481,11 +514,19 @@ pub fn log_failures(failures: &[PluginFailure]) {
         if failure.logged {
             continue;
         }
-        emit_plugin_failure(failure);
+        emit_failure(failure);
     }
 }
 
-fn emit_plugin_failure(failure: &PluginFailure) {
+fn emit_failure(failure: &PluginFailure) {
+    if failure.command == "extensions.plugins" && failure.name == "config" {
+        LogEvent::ConfigError {
+            path: Cow::Owned(failure.command.clone()),
+            error: Cow::Owned(failure.error.clone()),
+        }
+        .emit();
+        return;
+    }
     LogEvent::PluginError {
         plugin: Cow::Owned(failure.name.clone()),
         command: Cow::Owned(failure.command.clone()),
@@ -516,6 +557,13 @@ pub fn run_ad_hoc_plugin_with_policy(
     timeout: Duration,
     policy: &PluginPolicy,
 ) -> Result<PluginOutput, PluginExecutionError> {
+    if let Err(err) = validate_plugin_name(plugin_name) {
+        return Err(PluginExecutionError::InvalidName {
+            name: plugin_name.to_string(),
+            command: binary_path.to_string(),
+            message: err.to_string(),
+        });
+    }
     match prepare_plugin_process(binary_path, plugin_name, args, timeout, policy) {
         Ok(spec) => execute_process(&spec),
         Err(err) => {
@@ -685,6 +733,36 @@ fn enforce_file_identity(
     Ok(())
 }
 
+fn verify_child_identity(
+    child: &std::process::Child,
+    path: &Path,
+    expected: &PluginFileIdentity,
+) -> Result<(), PluginExecutionError> {
+    #[cfg(target_os = "linux")]
+    {
+        let exe_path = PathBuf::from(format!("/proc/{}/exe", child.id()));
+        if let Ok(()) = enforce_file_identity(&exe_path, expected) {
+            return Ok(());
+        }
+    }
+    enforce_file_identity(path, expected)
+}
+
+#[cfg(all(unix, any(feature = "cli", feature = "systemd")))]
+fn kill_process_tree(child: &mut std::process::Child) {
+    let pid = child.id() as i32;
+    if pid > 0 {
+        // Send the signal to the whole process group to catch forked descendants.
+        let _ = kill(Pid::from_raw(-pid), Signal::SIGKILL);
+    }
+    let _ = child.kill();
+}
+
+#[cfg(not(all(unix, any(feature = "cli", feature = "systemd"))))]
+fn kill_process_tree(child: &mut std::process::Child) {
+    let _ = child.kill();
+}
+
 fn build_plugin_env(plugin_name: &str, policy: &PluginPolicy) -> Vec<(OsString, OsString)> {
     let allowlist = if policy.allowed_env.is_empty() {
         DEFAULT_PLUGIN_ENV_ALLOWLIST
@@ -732,7 +810,7 @@ fn build_plugin_env(plugin_name: &str, policy: &PluginPolicy) -> Vec<(OsString, 
 
 fn generate_plugin_token() -> String {
     let mut bytes = [0u8; 16];
-    fastrand::fill(&mut bytes);
+    OsRng.fill_bytes(&mut bytes);
     hex::encode(bytes)
 }
 
@@ -780,6 +858,7 @@ fn is_prelaunch_error(error: &PluginExecutionError) -> bool {
         PluginExecutionError::Validation { .. }
             | PluginExecutionError::BinaryIo { .. }
             | PluginExecutionError::ValidationFailed { .. }
+            | PluginExecutionError::InvalidName { .. }
     )
 }
 
@@ -821,7 +900,7 @@ mod tests {
             path: script_path,
             args: &[],
             timeout: Duration::from_millis(100),
-            env: Vec::new(),
+            env: vec![(OsString::from("PATH"), OsString::from("/bin:/usr/bin"))],
             identity,
         };
         let err = execute_process(&spec).unwrap_err();
@@ -1006,6 +1085,20 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, PluginExecutionError::Validation { .. }));
+    }
+
+    #[test]
+    fn run_ad_hoc_plugin_rejects_invalid_name() {
+        let err = run_ad_hoc_plugin_with_policy(
+            "/usr/lib/describe_me/plugins/describe-me-plugin-invalid",
+            "Bad/Name",
+            &[],
+            Duration::from_secs(1),
+            &PluginPolicy::default(),
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, PluginExecutionError::InvalidName { .. }));
     }
 
     #[test]

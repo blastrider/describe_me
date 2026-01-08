@@ -1,5 +1,9 @@
 let eventSource = null;
 let reconnectTimer = null;
+let reconnectAttempt = 0;
+
+const RECONNECT_BASE_MS = 4000;
+const RECONNECT_MAX_MS = 30000;
 
 function restartStream() {
   stopStream();
@@ -33,6 +37,7 @@ function connectSse() {
 
   eventSource.onopen = () => {
     hideTokenPrompt();
+    reconnectAttempt = 0;
     sensitiveNodes.forEach((node) => node.classList.remove('blurred'));
   };
 
@@ -99,13 +104,18 @@ function handleSseMessage(payload) {
   }
 }
 
-function scheduleReconnect(delay = 4000) {
+function scheduleReconnect() {
   if (tokenOverlay.classList.contains('visible')) {
     return;
   }
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
   }
+  const backoff = RECONNECT_BASE_MS * Math.pow(2, reconnectAttempt);
+  const capped = Math.min(RECONNECT_MAX_MS, backoff);
+  const jitter = Math.floor(capped * 0.2 * Math.random());
+  const delay = capped + jitter;
+  reconnectAttempt = Math.min(reconnectAttempt + 1, 8);
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
     connectSse();

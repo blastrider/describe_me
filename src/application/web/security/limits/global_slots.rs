@@ -1,5 +1,7 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use super::super::WebRoute;
+
 #[derive(Debug, Default)]
 pub(crate) struct GlobalSlots {
     active: AtomicU32,
@@ -43,5 +45,61 @@ impl GlobalSlots {
                 }
             })
             .ok();
+    }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct GlobalSlotsByRoute {
+    html: GlobalSlots,
+    sse: GlobalSlots,
+    history: GlobalSlots,
+    logs: GlobalSlots,
+    metrics: GlobalSlots,
+}
+
+impl GlobalSlotsByRoute {
+    pub(crate) fn new() -> Self {
+        Self {
+            html: GlobalSlots::new(),
+            sse: GlobalSlots::new(),
+            history: GlobalSlots::new(),
+            logs: GlobalSlots::new(),
+            metrics: GlobalSlots::new(),
+        }
+    }
+
+    pub(crate) fn for_route(&self, route: WebRoute) -> &GlobalSlots {
+        match route {
+            WebRoute::Html => &self.html,
+            WebRoute::Sse => &self.sse,
+            WebRoute::History => &self.history,
+            WebRoute::Logs => &self.logs,
+            WebRoute::Metrics => &self.metrics,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn global_slots_is_concurrency_not_window() {
+        let slots = GlobalSlots::new();
+        assert!(slots.try_acquire(1).is_ok());
+        assert!(slots.try_acquire(1).is_err());
+        slots.release();
+        assert!(slots.try_acquire(1).is_ok());
+    }
+
+    #[test]
+    fn global_slots_by_route_is_isolated() {
+        let slots = GlobalSlotsByRoute::new();
+        let html = slots.for_route(WebRoute::Html);
+        let sse = slots.for_route(WebRoute::Sse);
+
+        assert!(html.try_acquire(1).is_ok());
+        assert!(html.try_acquire(1).is_err());
+        assert!(sse.try_acquire(1).is_ok());
     }
 }

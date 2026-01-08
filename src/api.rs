@@ -4,7 +4,7 @@
 
 pub mod system {
     //! Capture système de base et contexte runtime.
-    pub use crate::application::{disk_usage, AppContext};
+    pub use crate::application::{disk_usage, AppContext, MetadataStoreHealth};
     pub use crate::domain::{
         CaptureOptions, DescribeError, DiskPartition, DiskUsage, ServiceInfo, SystemSnapshot,
         UpdatePackage, UpdatesInfo,
@@ -45,6 +45,7 @@ pub mod exposure {
     };
 }
 
+#[cfg(feature = "serde")]
 pub mod errors {
     //! Structures d'erreur JSON communes (HTTP, plugins, SSE).
     pub use crate::application::error::{serialize_error_body, ErrorBody};
@@ -90,6 +91,7 @@ pub mod containers {
     pub use crate::domain::{ContainerInfo, ContainersSnapshot, ContainersSummary};
 }
 
+#[cfg(feature = "serde")]
 pub mod plugins {
     //! Extensions/plug-ins ad hoc.
     pub use crate::application::extensions::{
@@ -114,17 +116,20 @@ pub mod config {
     pub use crate::application::{filter_services, load_config_from_path};
     #[cfg(feature = "config")]
     pub use crate::domain::{DescribeConfig, ServiceSelection};
+    #[cfg(feature = "config")]
     pub mod runtime {
-        pub use crate::application::config::runtime::{
-            ExposureConfigExt, HistoryConfigExt, WebAccessConfigExt,
-        };
+        #[cfg(feature = "web")]
+        pub use crate::application::config::runtime::WebAccessConfigExt;
+        pub use crate::application::config::runtime::{ExposureConfigExt, HistoryConfigExt};
     }
 }
 
 #[doc(hidden)]
 // TODO: retirer ces réexports plats à la prochaine version majeure ; préférez les sous-modules.
+#[cfg(feature = "config")]
 pub use config::*;
 pub use containers::*;
+#[cfg(feature = "serde")]
 pub use errors::*;
 pub use exposure::*;
 pub use health::*;
@@ -134,6 +139,8 @@ pub use logs::*;
 pub use metadata::*;
 pub use net::*;
 pub use pagination::*;
+#[cfg(feature = "serde")]
 pub use plugins::*;
 pub use system::*;
+#[cfg(feature = "web")]
 pub use web::*;

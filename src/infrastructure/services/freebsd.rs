@@ -1,10 +1,14 @@
 use crate::application::services::ServiceBackend;
 use crate::application::AppContext;
 use crate::domain::{DescribeError, ServiceInfo};
+use crate::infrastructure::command;
 use std::collections::HashSet;
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 const SERVICE_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+const SERVICE_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+const SERVICE_COMMAND_MAX_OUTPUT: usize = 512 * 1024;
 
 /// FreeBSD rc.d backend using `service` listings.
 #[derive(Debug, Default, Clone, Copy)]
@@ -42,9 +46,19 @@ fn list_services_with_flag(flag: &str) -> Result<Vec<String>, DescribeError> {
         .env("PATH", SERVICE_PATH)
         .stdin(Stdio::null());
 
-    let output = cmd
-        .output()
-        .map_err(|err| DescribeError::External(format!("service {flag}: {err}")))?;
+    let output = command::run_command_with_timeout(
+        cmd,
+        SERVICE_COMMAND_TIMEOUT,
+        SERVICE_COMMAND_MAX_OUTPUT,
+        &format!("service {flag}"),
+    )
+    .map_err(|err| DescribeError::External(format!("service {flag}: {err}")))?;
+    if output.stdout_truncated || output.stderr_truncated {
+        return Err(DescribeError::External(format!(
+            "service {flag} output exceeded limit"
+        )));
+    }
+    let output = output.output;
 
     if !output.status.success() {
         return Err(DescribeError::External(format!(
@@ -65,8 +79,21 @@ fn probe_service_status(name: &str) -> ServiceInfo {
         .env("PATH", SERVICE_PATH)
         .stdin(Stdio::null());
 
-    match cmd.output() {
+    match command::run_command_with_timeout(
+        cmd,
+        SERVICE_COMMAND_TIMEOUT,
+        SERVICE_COMMAND_MAX_OUTPUT,
+        "service onestatus",
+    ) {
         Ok(output) => {
+            if output.stdout_truncated || output.stderr_truncated {
+                return ServiceInfo {
+                    name: name.to_string(),
+                    state: "unknown".to_string(),
+                    summary: Some("status output exceeded limit".to_string()),
+                };
+            }
+            let output = output.output;
             let running = output.status.success();
             let stdout = String::from_utf8_lossy(&output.stdout);
             let stderr = String::from_utf8_lossy(&output.stderr);

@@ -3,16 +3,11 @@ use super::{
     limits::{SecurityPolicy, SecurityState, SsePolicy},
     SecurityRejection, TokenKey, WebRoute,
 };
-use crate::application::sync::lock_expect;
-use std::{
-    collections::HashMap,
-    net::IpAddr,
-    sync::{Arc, Mutex as StdMutex},
-    time::Duration,
-};
+use std::{collections::HashMap, net::IpAddr, sync::Arc, time::Duration};
+use tokio::sync::Mutex;
 use tracing::warn;
 
-pub(super) fn acquire_permit(
+pub(super) async fn acquire_permit(
     state: &SecurityState,
     policy: &SecurityPolicy,
     request: &AuthRequest,
@@ -21,7 +16,10 @@ pub(super) fn acquire_permit(
         return Ok(None);
     }
 
-    match state.acquire_sse(request.remote_ip, request.token_key, policy) {
+    match state
+        .acquire_sse(request.remote_ip, request.token_key, policy)
+        .await
+    {
         Ok(permit) => Ok(permit),
         Err(delay) => {
             let delay = policy.adjust_retry(request.route, delay);
@@ -45,17 +43,17 @@ pub(super) struct ActiveSse {
 
 #[derive(Debug)]
 pub(super) struct ActiveSseState {
-    inner: StdMutex<ActiveSse>,
+    inner: Mutex<ActiveSse>,
 }
 
 impl ActiveSseState {
     pub(super) fn new() -> Arc<Self> {
         Arc::new(Self {
-            inner: StdMutex::new(ActiveSse::default()),
+            inner: Mutex::new(ActiveSse::default()),
         })
     }
 
-    pub(super) fn try_acquire(
+    pub(super) async fn try_acquire(
         self: &Arc<Self>,
         ip: IpAddr,
         token: TokenKey,
@@ -65,7 +63,8 @@ impl ActiveSseState {
             return Ok(None);
         }
 
-        let mut inner = lock_expect(self.inner.lock(), "ActiveSseState");
+        let mut inner = self.inner.lock().await;
+        let apply_token_limit = limits.max_active_per_token() > 0 && token != TokenKey::Anonymous;
 
         if limits.max_active_per_ip() > 0 {
             let current = inner.per_ip.get(&ip).copied().unwrap_or(0);
@@ -74,7 +73,7 @@ impl ActiveSseState {
             }
         }
 
-        if limits.max_active_per_token() > 0 {
+        if apply_token_limit {
             let current = inner.per_token.get(&token).copied().unwrap_or(0);
             if current >= limits.max_active_per_token() {
                 return Err(Duration::from_secs(0));
@@ -89,7 +88,7 @@ impl ActiveSseState {
         }
 
         let mut track_token = false;
-        if limits.max_active_per_token() > 0 {
+        if apply_token_limit {
             let entry = inner.per_token.entry(token).or_insert(0);
             *entry += 1;
             track_token = true;
@@ -104,8 +103,51 @@ impl ActiveSseState {
         }))
     }
 
-    pub(super) fn release(&self, ip: IpAddr, token: TokenKey, track_ip: bool, track_token: bool) {
-        let mut inner = lock_expect(self.inner.lock(), "ActiveSseState");
+    pub(super) async fn release(
+        &self,
+        ip: IpAddr,
+        token: TokenKey,
+        track_ip: bool,
+        track_token: bool,
+    ) {
+        let mut inner = self.inner.lock().await;
+        Self::release_inner(&mut inner, ip, token, track_ip, track_token);
+    }
+
+    pub(super) fn try_release(
+        &self,
+        ip: IpAddr,
+        token: TokenKey,
+        track_ip: bool,
+        track_token: bool,
+    ) -> bool {
+        match self.inner.try_lock() {
+            Ok(mut inner) => {
+                Self::release_inner(&mut inner, ip, token, track_ip, track_token);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    pub(super) fn release_blocking(
+        &self,
+        ip: IpAddr,
+        token: TokenKey,
+        track_ip: bool,
+        track_token: bool,
+    ) {
+        let mut inner = self.inner.blocking_lock();
+        Self::release_inner(&mut inner, ip, token, track_ip, track_token);
+    }
+
+    fn release_inner(
+        inner: &mut ActiveSse,
+        ip: IpAddr,
+        token: TokenKey,
+        track_ip: bool,
+        track_token: bool,
+    ) {
         if track_ip {
             if let Some(count) = inner.per_ip.get_mut(&ip) {
                 *count = count.saturating_sub(1);
@@ -136,8 +178,21 @@ pub(crate) struct SsePermit {
 
 impl Drop for SsePermit {
     fn drop(&mut self) {
-        self.state
-            .release(self.ip, self.token, self.track_ip, self.track_token);
+        let state = Arc::clone(&self.state);
+        let ip = self.ip;
+        let token = self.token;
+        let track_ip = self.track_ip;
+        let track_token = self.track_token;
+        if state.try_release(ip, token, track_ip, track_token) {
+            return;
+        }
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                state.release(ip, token, track_ip, track_token).await;
+            });
+        } else {
+            state.release_blocking(ip, token, track_ip, track_token);
+        }
     }
 }
 
@@ -147,15 +202,19 @@ mod tests {
     use crate::application::web::security::auth::Credential;
     use axum::http::StatusCode;
     use std::net::Ipv4Addr;
+    use std::sync::Arc;
 
     fn request(ip: IpAddr, token: TokenKey) -> AuthRequest {
         AuthRequest {
             route: WebRoute::Sse,
+            request_path: Arc::from("/sse"),
             remote_ip: ip,
             credential: Credential::None,
             token_key: token,
             require_token: true,
             trusted_ip: false,
+            purge_session_cookie: false,
+            client_claim: None,
         }
     }
 
@@ -166,9 +225,32 @@ mod tests {
         let req = request(IpAddr::V4(Ipv4Addr::LOCALHOST), TokenKey::Anonymous);
 
         let _first = acquire_permit(&state, &policy, &req)
+            .await
             .expect("first permit ok")
             .expect("permit expected");
-        let err = acquire_permit(&state, &policy, &req).expect_err("second permit should fail");
+        let err = acquire_permit(&state, &policy, &req)
+            .await
+            .expect_err("second permit should fail");
         assert_eq!(err.status, StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn anonymous_tokens_do_not_share_per_token_limit() {
+        let state = SecurityState::new();
+        let policy = SecurityPolicy::default();
+        let req_local = request(IpAddr::V4(Ipv4Addr::LOCALHOST), TokenKey::Anonymous);
+        let req_other = request(
+            IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)),
+            TokenKey::Anonymous,
+        );
+
+        let _first = acquire_permit(&state, &policy, &req_local)
+            .await
+            .expect("first permit ok")
+            .expect("permit expected");
+        let _second = acquire_permit(&state, &policy, &req_other)
+            .await
+            .expect("second permit ok")
+            .expect("permit expected");
     }
 }

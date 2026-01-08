@@ -1,4 +1,5 @@
 use super::*;
+use crate::domain::DescribeError;
 use axum::{extract::ConnectInfo, http::Request};
 use std::net::IpAddr;
 use std::sync::OnceLock;
@@ -31,6 +32,16 @@ pub(super) fn build_security(token: Option<&str>) -> WebSecurity {
 #[cfg(not(feature = "config"))]
 pub(super) fn build_security(token: Option<&str>) -> WebSecurity {
     WebSecurity::build(make_access(token)).unwrap()
+}
+
+#[cfg(feature = "config")]
+pub(super) fn build_security_result(access: WebAccess) -> Result<WebSecurity, DescribeError> {
+    WebSecurity::build(access, None)
+}
+
+#[cfg(not(feature = "config"))]
+pub(super) fn build_security_result(access: WebAccess) -> Result<WebSecurity, DescribeError> {
+    WebSecurity::build(access)
 }
 
 pub(super) fn make_parts(path: &str, ip: IpAddr, token: Option<&str>) -> Parts {

@@ -7,3 +7,7 @@
   - old behavior
   - new behavior
   - test that locks it in
+
+Review notes:
+- When you identify a point in a review, file it under the correct thematic rubric in `snapshot/REVUE - INNLOG - 27-12-2025.md`.
+- When you address a point from `snapshot/REVUE - INNLOG - 27-12-2025.md`, strike through the line to mark it done.

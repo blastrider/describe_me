@@ -3,6 +3,7 @@ use std::time::Duration;
 use super::super::WebRoute;
 
 const DEFAULT_TOKEN_AFFINITY_LIMIT: u32 = 2;
+pub(crate) const TOKEN_IP_SPREAD_MAX_IPS: u32 = 32;
 
 #[derive(Debug)]
 pub(crate) struct SecurityPolicy {
@@ -10,6 +11,7 @@ pub(crate) struct SecurityPolicy {
     sse: SsePolicy,
     history: RoutePolicy,
     logs: RoutePolicy,
+    metrics: RoutePolicy,
     allow_multiplier: u32,
     brute_force: BruteForcePolicy,
     token_affinity_limit: u32,
@@ -22,6 +24,7 @@ impl SecurityPolicy {
             sse: SsePolicy::default(),
             history: RoutePolicy::new(Duration::from_secs(60), 24, 16, 120),
             logs: RoutePolicy::new(Duration::from_secs(60), 6, 4, 40),
+            metrics: RoutePolicy::new(Duration::from_secs(60), 24, 16, 120),
             allow_multiplier: 2,
             brute_force: BruteForcePolicy::default(),
             token_affinity_limit: DEFAULT_TOKEN_AFFINITY_LIMIT,
@@ -49,18 +52,21 @@ impl SecurityPolicy {
             cfg.logs.per_token,
             cfg.logs.global,
         );
+        let metrics = RoutePolicy::new(
+            duration_from_secs(cfg.history.window_seconds, 60),
+            cfg.history.per_ip,
+            cfg.history.per_token,
+            cfg.history.global,
+        );
         let brute_force = BruteForcePolicy::from_config(&cfg.brute_force);
-        let affinity_limit = if cfg.token_ip_affinity_limit == 0 {
-            DEFAULT_TOKEN_AFFINITY_LIMIT
-        } else {
-            cfg.token_ip_affinity_limit
-        };
+        let affinity_limit = cfg.token_ip_affinity_limit;
 
         Self {
             html,
             sse,
             history,
             logs,
+            metrics,
             allow_multiplier: cfg.allowlist_multiplier.max(1),
             brute_force,
             token_affinity_limit: affinity_limit,
@@ -73,6 +79,7 @@ impl SecurityPolicy {
             WebRoute::Sse => &self.sse.route,
             WebRoute::History => &self.history,
             WebRoute::Logs => &self.logs,
+            WebRoute::Metrics => &self.metrics,
         }
     }
 
@@ -275,7 +282,7 @@ impl BruteForcePolicy {
             ceiling: Duration::from_secs(5 * 60),
             quarantine: Duration::from_secs(45 * 60),
             token_failure_threshold: 6,
-            token_ip_spread: 3,
+            token_ip_spread: 2,
             sse_min_retry: Duration::from_secs(2),
             token_spread_ttl: Duration::from_secs(45 * 60),
             token_spread_cleanup_interval: Duration::from_secs(60),
@@ -284,9 +291,14 @@ impl BruteForcePolicy {
 
     #[cfg(feature = "config")]
     fn from_config(cfg: &crate::domain::BruteForceConfig) -> Self {
+        // Thresholds must be >= 1 to avoid immediate lock on first failure.
+        let threshold = cfg.threshold.max(1);
+        let token_failure_threshold = cfg.token_failure_threshold.max(1);
+        let token_ip_spread = cfg.token_ip_spread.clamp(1, TOKEN_IP_SPREAD_MAX_IPS);
+
         Self {
             window: duration_from_secs(cfg.window_seconds, 300),
-            threshold: cfg.threshold,
+            threshold,
             initial_backoff: duration_from_secs(cfg.initial_backoff_seconds, 15),
             multiplier: if cfg.backoff_multiplier <= 1.0 {
                 3.0
@@ -295,8 +307,8 @@ impl BruteForcePolicy {
             },
             ceiling: duration_from_secs(cfg.backoff_ceiling_seconds, 5 * 60),
             quarantine: duration_from_secs(cfg.quarantine_seconds, 45 * 60),
-            token_failure_threshold: cfg.token_failure_threshold,
-            token_ip_spread: cfg.token_ip_spread,
+            token_failure_threshold,
+            token_ip_spread,
             sse_min_retry: duration_from_secs(cfg.sse_min_retry_seconds, 2),
             token_spread_ttl: duration_from_secs(cfg.token_spread_ttl_seconds, 45 * 60),
             token_spread_cleanup_interval: duration_from_secs(cfg.token_spread_cleanup_seconds, 60),
@@ -367,4 +379,102 @@ fn duration_from_secs(value: u64, fallback: u64) -> Duration {
 fn duration_from_millis(value: u64, fallback: u64) -> Duration {
     let ms = if value == 0 { fallback } else { value };
     Duration::from_millis(ms.max(1))
+}
+
+#[cfg(all(test, feature = "config"))]
+mod tests {
+    use super::{SecurityPolicy, DEFAULT_TOKEN_AFFINITY_LIMIT, TOKEN_IP_SPREAD_MAX_IPS};
+    use crate::domain::WebSecurityConfig;
+
+    #[test]
+    fn token_affinity_limit_allows_zero_from_config() {
+        let cfg = WebSecurityConfig {
+            token_ip_affinity_limit: 0,
+            ..WebSecurityConfig::default()
+        };
+
+        let policy = SecurityPolicy::from_config(&cfg);
+
+        assert_eq!(policy.token_affinity_limit(false), 0);
+        assert_eq!(policy.token_affinity_limit(true), 0);
+    }
+
+    #[test]
+    fn token_affinity_limit_uses_default_when_unspecified() {
+        let cfg = WebSecurityConfig::default();
+        let policy = SecurityPolicy::from_config(&cfg);
+
+        assert_eq!(
+            policy.token_affinity_limit(false),
+            DEFAULT_TOKEN_AFFINITY_LIMIT
+        );
+    }
+
+    #[test]
+    fn brute_force_threshold_is_clamped_to_one() {
+        let cfg = WebSecurityConfig {
+            brute_force: crate::domain::BruteForceConfig {
+                threshold: 0,
+                ..crate::domain::BruteForceConfig::default()
+            },
+            ..WebSecurityConfig::default()
+        };
+
+        let policy = SecurityPolicy::from_config(&cfg);
+
+        assert_eq!(policy.brute_force().threshold(), 1);
+    }
+
+    #[test]
+    fn token_failure_threshold_is_clamped_to_one() {
+        let cfg = WebSecurityConfig {
+            brute_force: crate::domain::BruteForceConfig {
+                token_failure_threshold: 0,
+                ..crate::domain::BruteForceConfig::default()
+            },
+            ..WebSecurityConfig::default()
+        };
+
+        let policy = SecurityPolicy::from_config(&cfg);
+
+        assert_eq!(policy.brute_force().token_failure_threshold(), 1);
+    }
+
+    #[test]
+    fn token_ip_spread_is_clamped_to_bounds() {
+        let cfg_low = WebSecurityConfig {
+            brute_force: crate::domain::BruteForceConfig {
+                token_ip_spread: 0,
+                ..crate::domain::BruteForceConfig::default()
+            },
+            ..WebSecurityConfig::default()
+        };
+        let policy_low = SecurityPolicy::from_config(&cfg_low);
+        assert_eq!(policy_low.brute_force().token_ip_spread(), 1);
+
+        let cfg_high = WebSecurityConfig {
+            brute_force: crate::domain::BruteForceConfig {
+                token_ip_spread: TOKEN_IP_SPREAD_MAX_IPS + 10,
+                ..crate::domain::BruteForceConfig::default()
+            },
+            ..WebSecurityConfig::default()
+        };
+        let policy_high = SecurityPolicy::from_config(&cfg_high);
+        assert_eq!(
+            policy_high.brute_force().token_ip_spread(),
+            TOKEN_IP_SPREAD_MAX_IPS
+        );
+    }
+
+    #[test]
+    fn token_ip_spread_default_matches_config_default() {
+        let policy_default = SecurityPolicy::default();
+        let policy_cfg = SecurityPolicy::from_config(&WebSecurityConfig::default());
+
+        assert_eq!(
+            policy_default.brute_force().token_ip_spread(),
+            policy_cfg.brute_force().token_ip_spread()
+        );
+        assert_eq!(policy_default.brute_force().token_ip_spread(), 2);
+    }
 }

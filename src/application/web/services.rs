@@ -7,9 +7,9 @@ use crate::{
         history::HistoryQueryError,
         logging::LogEvent,
         logs::{self, HOST_LOGS_DEFAULT_LINES, HOST_LOGS_MAX_LINES},
-        metrics::render_prometheus_metrics,
+        metrics::render_prometheus_metrics_with_state,
     },
-    domain::{HistorySeriesDto, HostLogsPage},
+    domain::{DescribeError, HistorySeriesDto, HostLogsPage},
 };
 
 use super::{error::WebError, state::AppState};
@@ -32,6 +32,16 @@ pub async fn build_history_series_response(
     state: &AppState,
     params: HistoryQueryParams,
 ) -> Result<HistorySeriesDto, WebError> {
+    enum HistoryFetchError {
+        Disabled,
+        Paranoid,
+        InvalidLimit,
+        InvalidServer,
+        NotFound,
+        Storage(DescribeError),
+        Identity(DescribeError),
+    }
+
     let HistoryQueryParams {
         server,
         window,
@@ -45,71 +55,96 @@ pub async fn build_history_series_response(
         ));
     }
 
-    let settings = state.ctx().history().settings_snapshot();
-    if !settings.is_active() {
-        return Err(WebError::service_unavailable(
-            "L'historique n'est pas activé sur cette instance.",
-        ));
-    }
-
-    if settings.paranoid_mode {
-        return Err(WebError::forbidden(
-            "Mode paranoïaque actif : l'historique n'est consultable que depuis la CLI locale.",
-        ));
-    }
-
-    let requested_server = if let Some(id) = server {
-        id
-    } else if let Some(default_id) = state.ctx().history().default_server_id() {
-        default_id
-    } else {
-        return Err(WebError::not_found(
-            "Aucune donnée historique disponible pour ce serveur.",
-        ));
-    };
-
-    let max_window_secs = settings.max_window_seconds.max(1) as u64;
-    let requested_window = window.filter(|v| *v > 0).unwrap_or(max_window_secs);
-    let window_secs = requested_window.min(max_window_secs);
-    let retention_cap = settings.retention_points.max(16) as usize;
-    let default_limit = retention_cap.min(256);
-    let limit = limit
-        .filter(|v| *v > 0)
-        .unwrap_or(default_limit)
-        .min(retention_cap);
-
-    let rounding = settings.rounding_seconds.max(1);
-    let series = match state.ctx().history().query_series(
-        &requested_server,
-        Duration::from_secs(window_secs),
-        limit,
-        rounding,
-    ) {
-        Ok(series) => series,
-        Err(HistoryQueryError::Disabled) => {
-            return Err(WebError::service_unavailable(
-                "L'historique n'est pas actif sur cette instance.",
-            ))
+    let history = state.ctx().history().clone();
+    let series = tokio::task::spawn_blocking(move || {
+        let settings = history.settings_snapshot();
+        if !settings.is_active() {
+            return Err(HistoryFetchError::Disabled);
         }
-        Err(HistoryQueryError::InvalidLimit | HistoryQueryError::InvalidServer) => {
-            return Err(WebError::bad_request("Paramètres history invalides."))
+        if settings.paranoid_mode {
+            return Err(HistoryFetchError::Paranoid);
         }
-        Err(HistoryQueryError::NotFound) => {
-            return Err(WebError::not_found(
-                "Aucune donnée historique disponible pour ce serveur.",
-            ))
-        }
-        Err(HistoryQueryError::Storage(err)) => {
-            LogEvent::SystemError {
-                location: Cow::Borrowed("history_query"),
-                error: Cow::Owned(err.to_string()),
+
+        let requested_server = match server {
+            Some(id) => id,
+            None => history
+                .default_server_id()
+                .map_err(HistoryFetchError::Identity)?,
+        };
+
+        let max_window_secs = settings.max_window_seconds.max(1) as u64;
+        let requested_window = window.filter(|v| *v > 0).unwrap_or(max_window_secs);
+        let window_secs = requested_window.min(max_window_secs);
+        let retention_cap = settings.retention_points.max(16) as usize;
+        let default_limit = retention_cap.min(256);
+        let limit = limit
+            .filter(|v| *v > 0)
+            .unwrap_or(default_limit)
+            .min(retention_cap);
+
+        let rounding = settings.rounding_seconds.max(1);
+        history
+            .query_series(
+                &requested_server,
+                Duration::from_secs(window_secs),
+                limit,
+                rounding,
+            )
+            .map_err(|err| match err {
+                HistoryQueryError::Disabled => HistoryFetchError::Disabled,
+                HistoryQueryError::InvalidLimit => HistoryFetchError::InvalidLimit,
+                HistoryQueryError::InvalidServer => HistoryFetchError::InvalidServer,
+                HistoryQueryError::NotFound => HistoryFetchError::NotFound,
+                HistoryQueryError::Storage(err) => HistoryFetchError::Storage(err),
+            })
+    })
+    .await;
+
+    let series =
+        match series {
+            Ok(Ok(series)) => series,
+            Ok(Err(HistoryFetchError::Disabled)) => {
+                return Err(WebError::service_unavailable(
+                    "L'historique n'est pas activé sur cette instance.",
+                ))
             }
-            .emit();
-            return Err(WebError::internal(
-                "Lecture de l'historique impossible pour le moment.",
-            ));
-        }
-    };
+            Ok(Err(HistoryFetchError::Paranoid)) => return Err(WebError::forbidden(
+                "Mode paranoïaque actif : l'historique n'est consultable que depuis la CLI locale.",
+            )),
+            Ok(Err(HistoryFetchError::InvalidLimit | HistoryFetchError::InvalidServer)) => {
+                return Err(WebError::bad_request("Paramètres history invalides."))
+            }
+            Ok(Err(HistoryFetchError::NotFound)) => {
+                return Err(WebError::not_found(
+                    "Aucune donnée historique disponible pour ce serveur.",
+                ))
+            }
+            Ok(Err(HistoryFetchError::Storage(err))) => {
+                LogEvent::SystemError {
+                    location: Cow::Borrowed("history_query"),
+                    error: Cow::Owned(err.to_string()),
+                }
+                .emit();
+                return Err(WebError::internal(
+                    "Lecture de l'historique impossible pour le moment.",
+                ));
+            }
+            Ok(Err(HistoryFetchError::Identity(err))) => {
+                return Err(WebError::service_unavailable(format!(
+                    "Impossible de récupérer l'identité du serveur: {err}"
+                )))
+            }
+            Err(err) => {
+                LogEvent::SystemError {
+                    location: Cow::Borrowed("history_query_task"),
+                    error: Cow::Owned(err.to_string()),
+                }
+                .emit();
+                return Err(WebError::internal(
+                    "Lecture de l'historique impossible pour le moment.",
+                ));
+            }
+        };
 
     let allow_disk = state.exposure().disk_partitions();
     let point_count = series.points.len() as u32;
@@ -133,8 +168,9 @@ pub async fn build_history_series_response(
 pub fn build_metrics_text(
     view: &crate::application::exposure::SnapshotView,
     age_secs: u64,
+    metrics_state: &crate::application::metrics::ExtensionMetricsState,
 ) -> String {
-    render_prometheus_metrics(view, age_secs)
+    render_prometheus_metrics_with_state(view, age_secs, Some(metrics_state))
 }
 
 pub async fn build_host_logs_response(params: LogsQueryParams) -> Result<HostLogsPage, WebError> {
@@ -155,7 +191,7 @@ pub async fn build_host_logs_response(params: LogsQueryParams) -> Result<HostLog
             .emit();
             Err(WebError::new(
                 StatusCode::BAD_GATEWAY,
-                format!("Impossible de lire les logs hôte: {err}"),
+                "Impossible de lire les logs hôte.".to_string(),
             ))
         }
         Err(err) => {

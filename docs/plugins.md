@@ -40,7 +40,7 @@ code de sortie fourni (`PluginErrorReport::with_exit_code`). L’API historique
 ```bash
 cargo build --release -p describe-me-plugin-inventory
 # Exécution via la CLI (injecte le handshake et le timeout)
-describe-me plugin run --name inventory --arg --probe --arg /etc/ssl/certs
+describe-me plugin run --name inventory --sha256 <hash> --arg --probe --arg /etc/ssl/certs
 ```
 
 Les binaires doivent s’appeler `describe-me-plugin-<nom>` et n’acceptent que des arguments sérialisables sur stdout en JSON.
@@ -51,13 +51,14 @@ Les binaires doivent s’appeler `describe-me-plugin-<nom>` et n’acceptent que
 2. Vérifier les permissions (`0755`) et la présence du bit exécutable.
 3. Calculer l’empreinte SHA-256 (ex. `sha256sum /usr/lib/describe_me/plugins/...`).
 
-`describe_me` refuse tout binaire hors de ce répertoire et vérifie l’empreinte avant chaque lancement.
+`describe_me` refuse tout binaire hors de ce répertoire et vérifie l’empreinte avant chaque lancement. La CLI requiert `--sha256` ou une configuration `extensions.plugins.sha256` pour autoriser l’exécution.
 
 ## 5. Déclarer le plugin dans la configuration
 
 ```toml
 [extensions]
 [[extensions.plugins]]
+# Format: [a-z0-9_-], 1..64 caractères, unique.
 name = "inventory"
 path = "/usr/lib/describe_me/plugins/describe-me-plugin-inventory"
 sha256 = "7f51e8..."
@@ -79,13 +80,35 @@ Lorsqu’un paquet Debian ou une image installe un plugin :
 
 ## 7. Diagnostic
 
-- `describe-me plugin run --name <nom>` permet de tester manuellement un plugin installé.
+- `describe-me plugin run --name <nom>` refuse l’exécution sans empreinte SHA-256 (`--sha256` ou configuration) et permet de tester manuellement un plugin installé.
 - Les erreurs (hash incorrect, permissions, timeout, JSON invalide, handshake manquant) sont visibles dans les logs (`LogEvent::PluginError`) et dans la sortie CLI.
+- En cas de timeout ou de dépassement de limites, la CLI tue le groupe de processus du plugin (SIGKILL) pour éviter les enfants orphelins.
 - En cas de rejet, `describe_me` applique un jitter (100–500 ms) pour ralentir les tentatives répétées.
 
 En suivant ces étapes, tout nouveau module reste aligné sur la politique de sécurité : poignée de main stricte, binaire whiteliste, hash immuable et configuration explicite.
 
-## 8. Protocole minimal (interop Python/Go)
+## 8. Export Prometheus des extensions
+
+Les valeurs numériques exportées par un plugin peuvent être exposées via
+Prometheus sous `describe_me_extension_value`.
+
+- Seuls les champs numériques sont pris en compte (entier/float).
+- Les clés sont normalisées en `[A-Za-z0-9_]`, tronquées à 64 caractères et
+  les clés non-ASCII sont ignorées.
+- Les collisions après normalisation sont résolues de façon déterministe
+  (première clé triée par `(signal_normalisé, clé_brute)`), les doublons sont
+  comptés comme "droppés".
+- Le label `extension` utilise le nom du plugin validé (format [a-z0-9_-], max 64).
+- Un maximum de 100 signaux par plugin est exporté par scrape.
+- Les signaux ignorés sont comptabilisés dans
+  `describe_me_extension_dropped{extension="<nom>"}` (gauge par scrape, émis si >0)
+  même sans état partagé.
+- Le cumulatif `describe_me_extension_dropped_total{extension="<nom>"}` (counter)
+  n'est émis que si l'appelant fournit un état d'export (ex: serveur web).
+- Si trop de noms de plugins distincts apparaissent, l'excédent est agrégé sous
+  `extension="__overflow__"` pour éviter une croissance mémoire illimitée.
+
+## 9. Protocole minimal (interop Python/Go)
 
 - Le lanceur fournit quatre variables d’environnement :  
   `DESCRIBE_ME_HOST=describe_me`, `DESCRIBE_ME_PLUGIN_NAME=<nom>`,
@@ -117,7 +140,7 @@ sys.stdout.flush()
 sys.exit(0)
 ```
 
-## 9. Confinement et règles de chemin
+## 10. Confinement et règles de chemin
 
 - Par défaut, seuls les binaires situés sous `/usr/lib/describe_me/plugins/` sont autorisés. Les chemins sont **canonicalisés** (résolution symlinks) et les composants `..` sont refusés ; une cible finale hors du root (ex. symlink qui pointe ailleurs) est rejetée.
 - Les permissions Unix sont vérifiées : binaire régulier, bit exécutable requis (sauf override), et refus si group/world-writable.

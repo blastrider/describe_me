@@ -1,9 +1,10 @@
 use crate::application::logging::LogEvent;
 use crate::application::web::security::IpMatcher;
 use crate::domain::DescribeError;
+use axum::body::Body;
 use axum::extract::ConnectInfo;
 use axum::extract::Request;
-use axum::http::{header, HeaderValue, StatusCode, Uri};
+use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use futures_util::future::BoxFuture;
 use std::borrow::Cow;
@@ -66,6 +67,14 @@ impl OriginPolicy {
         Ok(policy)
     }
 
+    pub(crate) fn cors_allowlist(&self) -> Arc<[String]> {
+        self.allowed
+            .iter()
+            .map(AllowedOrigin::as_origin)
+            .collect::<Vec<_>>()
+            .into()
+    }
+
     fn is_trusted_proxy<B>(&self, req: &Request<B>) -> bool {
         if self.trusted_proxies.is_empty() {
             return false;
@@ -81,7 +90,12 @@ impl OriginPolicy {
     pub fn allows<B>(&self, req: &Request<B>) -> bool {
         let origin_header = match req.headers().get(header::ORIGIN) {
             Some(origin) => origin,
-            None => return true,
+            None => {
+                if !self.allowed.is_empty() && !is_idempotent_method(req.method()) {
+                    return false;
+                }
+                return true;
+            }
         };
         let origin_str = match origin_header.to_str() {
             Ok(value) => value,
@@ -95,7 +109,7 @@ impl OriginPolicy {
             Err(_) => return false,
         };
 
-        let host_authority = match effective_host(req) {
+        let host_authority = match effective_host(req, self) {
             Some(auth) => auth,
             None => return false,
         };
@@ -157,6 +171,18 @@ impl AllowedOrigin {
         Ok(Self { scheme, host, port })
     }
 
+    fn as_origin(&self) -> String {
+        let host = if self.host.contains(':') && !self.host.starts_with('[') {
+            format!("[{}]", self.host)
+        } else {
+            self.host.clone()
+        };
+        match self.port {
+            Some(port) => format!("{}://{}:{}", self.scheme.as_str(), host, port),
+            None => format!("{}://{}", self.scheme.as_str(), host),
+        }
+    }
+
     fn matches(&self, candidate: &Uri) -> bool {
         let Some(host) = candidate.host() else {
             return false;
@@ -173,7 +199,7 @@ impl AllowedOrigin {
             .or_else(|| default_port(candidate.scheme_str()));
         match self.port {
             Some(port) => candidate_port == Some(port),
-            None => true,
+            None => candidate_port == default_port(Some(self.scheme.as_str())),
         }
     }
 }
@@ -209,7 +235,27 @@ impl OriginScheme {
     }
 }
 
-fn effective_host<B>(req: &Request<B>) -> Option<axum::http::uri::Authority> {
+fn effective_host<B>(
+    req: &Request<B>,
+    policy: &OriginPolicy,
+) -> Option<axum::http::uri::Authority> {
+    let has_forwarded = req.headers().contains_key("x-forwarded-host")
+        || req.headers().contains_key(header::FORWARDED);
+    if policy.is_trusted_proxy(req) {
+        if let Some(auth) = forwarded_host(req.headers().get(header::FORWARDED)) {
+            return Some(auth);
+        }
+        if let Some(auth) = host_header_value(req.headers().get("x-forwarded-host")) {
+            return Some(auth);
+        }
+    } else if has_forwarded {
+        let ip = req
+            .extensions()
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|info| info.0.ip());
+        debug!(?ip, "forwarded_host_ignored_untrusted");
+    }
+
     if let Some(host) = req.headers().get(header::HOST) {
         if let Ok(host_str) = host.to_str() {
             if let Ok(auth) = host_str.parse() {
@@ -228,6 +274,15 @@ fn effective_host<B>(req: &Request<B>) -> Option<axum::http::uri::Authority> {
         return Some(auth);
     }
     None
+}
+
+fn host_header_value(value: Option<&HeaderValue>) -> Option<axum::http::uri::Authority> {
+    value
+        .and_then(|val| val.to_str().ok())
+        .and_then(|text| text.split(',').next())
+        .map(|part| part.trim().trim_matches('"').trim_matches('\''))
+        .filter(|part| !part.is_empty())
+        .and_then(|part| part.parse().ok())
 }
 
 fn default_port(scheme: Option<&str>) -> Option<u16> {
@@ -291,6 +346,42 @@ fn forwarded_proto(value: Option<&HeaderValue>) -> Option<String> {
     None
 }
 
+fn forwarded_host(value: Option<&HeaderValue>) -> Option<axum::http::uri::Authority> {
+    let text = value.and_then(|val| val.to_str().ok())?;
+    for segment in text.split(',') {
+        for directive in segment.split(';') {
+            let mut kv = directive.splitn(2, '=');
+            let key = kv.next().map(str::trim);
+            if key.map(|value| value.eq_ignore_ascii_case("host")) != Some(true) {
+                continue;
+            }
+            if let Some(raw_val) = kv.next() {
+                let trimmed = raw_val.trim().trim_matches('"').trim_matches('\'');
+                if trimmed.is_empty()
+                    || trimmed.eq_ignore_ascii_case("unknown")
+                    || trimmed.starts_with('_')
+                {
+                    return None;
+                }
+                return trimmed.parse().ok();
+            }
+        }
+    }
+    None
+}
+
+fn is_idempotent_method(method: &Method) -> bool {
+    matches!(
+        method,
+        &Method::GET
+            | &Method::HEAD
+            | &Method::PUT
+            | &Method::DELETE
+            | &Method::OPTIONS
+            | &Method::TRACE
+    )
+}
+
 #[allow(dead_code)]
 pub(crate) fn is_origin_allowed<B>(req: &Request<B>, policy: &OriginPolicy) -> bool {
     policy.allows(req)
@@ -341,6 +432,23 @@ where
     fn call(&mut self, req: Request<B>) -> Self::Future {
         let mut inner = self.inner.clone();
         let policy = self.policy.clone();
+        let origin = req
+            .headers()
+            .get(header::ORIGIN)
+            .and_then(|h| h.to_str().ok())
+            .map(|value| value.to_string());
+        let request_method = req
+            .headers()
+            .get(header::ACCESS_CONTROL_REQUEST_METHOD)
+            .and_then(|h| h.to_str().ok())
+            .map(|value| value.to_string());
+        let request_headers = req
+            .headers()
+            .get(header::ACCESS_CONTROL_REQUEST_HEADERS)
+            .and_then(|h| h.to_str().ok())
+            .map(|value| value.to_string());
+        let is_preflight =
+            req.method() == Method::OPTIONS && origin.is_some() && request_method.is_some();
 
         Box::pin(async move {
             if !policy.allows(&req) {
@@ -354,10 +462,15 @@ where
                     .get(header::HOST)
                     .and_then(|h| h.to_str().ok())
                     .unwrap_or("<none>");
+                let ip = req
+                    .extensions()
+                    .get::<ConnectInfo<SocketAddr>>()
+                    .map(|info| info.0.ip());
                 LogEvent::SecurityIncident {
                     category: Cow::Borrowed("origin_not_allowed"),
                     route: Cow::Owned(req.uri().path().to_string()),
-                    ip: None,
+                    request_path: Some(Cow::Owned(req.uri().path().to_string())),
+                    ip: ip.map(|value| Cow::Owned(value.to_string())),
                     token: None,
                     detail: Some(Cow::Owned(format!("origin={origin_val} host={host_val}"))),
                 }
@@ -370,7 +483,173 @@ where
                 return Ok(response);
             }
 
-            inner.call(req).await
+            if is_preflight {
+                let mut response = Response::builder()
+                    .status(StatusCode::NO_CONTENT)
+                    .body(Body::empty())
+                    .expect("preflight response");
+                if let Some(origin) = origin.as_deref() {
+                    apply_preflight_headers(
+                        response.headers_mut(),
+                        origin,
+                        request_method.as_deref(),
+                        request_headers.as_deref(),
+                    );
+                }
+                return Ok(response);
+            }
+
+            let mut response = inner.call(req).await?;
+            if let Some(origin) = origin.as_deref() {
+                apply_cors_headers(response.headers_mut(), origin);
+            }
+            Ok(response)
         })
+    }
+}
+
+const DEFAULT_CORS_METHODS: &str = "GET, POST, PUT, DELETE, OPTIONS";
+const DEFAULT_CORS_HEADERS: &str = "authorization, content-type, x-describe-me-token";
+
+fn apply_cors_headers(headers: &mut HeaderMap, origin: &str) {
+    if let Ok(value) = HeaderValue::from_str(origin) {
+        headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, value);
+    }
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_CREDENTIALS,
+        HeaderValue::from_static("true"),
+    );
+    append_vary(headers, "Origin");
+}
+
+fn apply_preflight_headers(
+    headers: &mut HeaderMap,
+    origin: &str,
+    request_method: Option<&str>,
+    request_headers: Option<&str>,
+) {
+    apply_cors_headers(headers, origin);
+
+    let methods = request_method.unwrap_or(DEFAULT_CORS_METHODS);
+    if let Ok(value) = HeaderValue::from_str(methods) {
+        headers.insert(header::ACCESS_CONTROL_ALLOW_METHODS, value);
+    }
+
+    let allow_headers = request_headers.unwrap_or(DEFAULT_CORS_HEADERS);
+    if let Ok(value) = HeaderValue::from_str(allow_headers) {
+        headers.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, value);
+    }
+
+    headers.insert(
+        header::ACCESS_CONTROL_MAX_AGE,
+        HeaderValue::from_static("600"),
+    );
+    append_vary(headers, "Access-Control-Request-Method");
+    append_vary(headers, "Access-Control-Request-Headers");
+}
+
+fn append_vary(headers: &mut HeaderMap, value: &'static str) {
+    headers.append(header::VARY, HeaderValue::from_static(value));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::routing::get;
+    use axum::Router;
+    use tower::Service;
+
+    fn build_policy() -> OriginPolicy {
+        OriginPolicy::from_allowlist(vec!["https://public.example.com".to_string()])
+            .expect("origin policy")
+    }
+
+    fn vary_contains(headers: &HeaderMap, needle: &str) -> bool {
+        headers.get_all(header::VARY).iter().any(|value| {
+            value
+                .to_str()
+                .map(|text| {
+                    text.split(',')
+                        .any(|part| part.trim().eq_ignore_ascii_case(needle))
+                })
+                .unwrap_or(false)
+        })
+    }
+
+    #[tokio::test]
+    async fn cors_headers_added_for_allowed_origin() {
+        let mut app = Router::new()
+            .route("/api/x", get(|| async { Response::new(Body::empty()) }))
+            .layer(OriginCheckLayer::new(build_policy()));
+
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri("/api/x")
+            .header(header::HOST, "internal:8080")
+            .header(header::ORIGIN, "https://public.example.com")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = Service::call(&mut app, request).await.expect("response");
+        assert_eq!(
+            response.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+            Some(&HeaderValue::from_static("https://public.example.com"))
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_CREDENTIALS),
+            Some(&HeaderValue::from_static("true"))
+        );
+        assert!(vary_contains(response.headers(), "Origin"));
+    }
+
+    #[tokio::test]
+    async fn cors_preflight_returns_no_content() {
+        let mut app = Router::new()
+            .route(
+                "/api/description",
+                get(|| async {
+                    Response::builder()
+                        .status(StatusCode::IM_A_TEAPOT)
+                        .body(Body::empty())
+                        .expect("response")
+                }),
+            )
+            .layer(OriginCheckLayer::new(build_policy()));
+
+        let request = Request::builder()
+            .method(Method::OPTIONS)
+            .uri("/api/description")
+            .header(header::HOST, "internal:8080")
+            .header(header::ORIGIN, "https://public.example.com")
+            .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
+            .header(header::ACCESS_CONTROL_REQUEST_HEADERS, "authorization")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = Service::call(&mut app, request).await.expect("response");
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            response.headers().get(header::ACCESS_CONTROL_ALLOW_METHODS),
+            Some(&HeaderValue::from_static("POST"))
+        );
+        assert_eq!(
+            response.headers().get(header::ACCESS_CONTROL_ALLOW_HEADERS),
+            Some(&HeaderValue::from_static("authorization"))
+        );
+        assert_eq!(
+            response.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+            Some(&HeaderValue::from_static("https://public.example.com"))
+        );
+        assert!(vary_contains(response.headers(), "Origin"));
+        assert!(vary_contains(
+            response.headers(),
+            "Access-Control-Request-Method"
+        ));
+        assert!(vary_contains(
+            response.headers(),
+            "Access-Control-Request-Headers"
+        ));
     }
 }

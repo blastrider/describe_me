@@ -162,6 +162,14 @@ fn parse_op_and_pct(tail: &str) -> Result<(Cmp, f64), DescribeError> {
     let pct: f64 = pct_str
         .parse()
         .map_err(|_| DescribeError::Parse("pourcentage invalide".into()))?;
+    if !pct.is_finite() {
+        return Err(DescribeError::Parse("pourcentage invalide".into()));
+    }
+    if !(0.0..=100.0).contains(&pct) {
+        return Err(DescribeError::Parse(
+            "pourcentage hors limite (0..=100)".into(),
+        ));
+    }
     let op = parse_op(op_str).unwrap();
     Ok((op, pct))
 }
@@ -244,9 +252,9 @@ pub fn eval_check(s: &SystemSnapshot, c: &Check) -> Result<CheckResult, Describe
                 let found = s.services_running.iter().find(|svc| svc.name == *name);
                 match found {
                     Some(svc) => {
-                        let ok_state = svc.state.to_ascii_lowercase().contains(&exp);
+                        let ok_state = svc.state.to_ascii_lowercase() == exp;
                         let msg = format!(
-                            "service={}: state='{}' expect*='{}' -> {}",
+                            "service={}: state='{}' expect='{}' -> {}",
                             name,
                             svc.state,
                             expect,

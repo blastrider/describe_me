@@ -1,5 +1,9 @@
 use anyhow::Result;
-use describe_me_lib::{AppContext, CaptureOptions, DescribeConfig, DescribeError};
+#[cfg(feature = "config")]
+use describe_me_lib::DescribeConfig;
+use describe_me_lib::{AppContext, CaptureOptions, DescribeError};
+#[cfg(not(feature = "config"))]
+type DescribeConfig = ();
 
 use crate::describe_me::args::CliConfig;
 

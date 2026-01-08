@@ -20,6 +20,11 @@ When you touch:
 - Security: `src/security.rs` + web security modules
 - Plugins: `describe_me_plugin_sdk` + domain plugin config
 
+When doing a code review:
+- Read `snapshot/REVUE - INNLOG - 27-12-2025.md` first to avoid duplicating recommendations.
+- When you address an item from `snapshot/REVUE - INNLOG - 27-12-2025.md`, strike through the line to mark it done.
+- Marquer toutes les revues (fichiers dont le nom commence par `REVUE`) avec un statut « à checker » dans vos notes/réponses tant qu’elles ne sont pas soldées.
+
 ## 2) Output contract (what you must produce)
 
 For every change request, output:
@@ -33,7 +38,7 @@ If you could not run a command, state it explicitly and why (missing toolchain/t
 
 ## 3) Mandatory local verification (run after code edits)
 
-Always run, in this order:
+Always run, in this order, and do not skip Clippy (fix issues before launching the full test matrix):
 
 - `cargo fmt --all`
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
@@ -60,6 +65,23 @@ If the repo has multiple crates, include `--workspace` everywhere.
 - No `.unwrap()` / `.expect()` in non-test code unless guarded by invariants and justified.
 - Avoid cloning large data; prefer borrowing (`&str`, slices, `Arc`) and builders.
 - Keep modules small and single-purpose; use `mod.rs` only as a router when needed.
+
+### Rust official guidelines (idiomatic defaults)
+
+- Follow Rust official conventions as the default (naming, patterns, iterator usage, error shapes).
+- API design: `new()` should not fail; use `try_new()` / `from_*()` / `parse()` when validation can fail.
+- Prefer enums/newtypes over booleans/strings to encode invariants (“make invalid states unrepresentable”).
+- Keep `pub` minimal; design public surfaces intentionally (esp. `src/api.rs`).
+- Prefer borrowing (`&T`, `&str`, slices) and iterators; avoid manual indexing when not required.
+
+### Maintainability (human-first)
+
+- Keep files/modules focused: one responsibility per file/module; split when scope grows.
+- Keep functions readable: shallow nesting, early returns, extract helpers for complex branches.
+- Avoid cleverness: prefer explicit, boring code over macro-heavy or overly generic abstractions.
+- Prefer cohesive types over global/shared mutable state; document invariants when state is required.
+- Keep changes reviewable: minimal diff surface, localized edits, stable behavior unless requested.
+
 
 ## 5) Security rules
 
@@ -101,3 +123,5 @@ If the repo has multiple crates, include `--workspace` everywhere.
 
 - Comments only for non-obvious rationale, security invariants, or platform quirks.
 - Keep doc comments short and accurate.
+- Pour chaque ajout à impact significatif (sécurité, orchestration, comportement runtime), produire une documentation associée (README/docs/CHANGELOG) expliquant l’intention, l’usage et les risques.
+- Quand tu touches aux singletons/globales (metadata store, state_dir override, history identity, caches), nettoie toujours l’état global dans les tests (`reset_metadata_store_for_tests`, `clear_state_dir_override_for_tests`, etc.), puis rerun au minimum `cargo test --all-targets --all-features` pour éviter de laisser des verrous empoisonnés ou des caches incohérents.

@@ -5,6 +5,7 @@ pub const HOST_LOGS_DEFAULT_LINES: usize = 200;
 pub const HOST_LOGS_MAX_LINES: usize = 1000;
 
 /// Parameters for host log tailing.
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 pub struct TailParams {
     pub lines: usize,
@@ -39,7 +40,10 @@ pub fn tail_host_logs_with_ctx(
     Ok(page)
 }
 
-#[cfg(test)]
+#[cfg(all(
+    test,
+    any(all(feature = "journald", target_os = "linux"), target_os = "freebsd")
+))]
 mod tests {
     use super::*;
     use std::any::type_name;

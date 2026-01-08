@@ -3,28 +3,64 @@ use std::sync::Arc;
 #[cfg(feature = "serde")]
 use crate::application::containers::ContainersCacheService;
 use crate::application::history::{HistoryMode, HistoryService, HistorySettings};
-use crate::application::metadata::registry::{init_metadata_store, metadata_store};
+use crate::application::metadata::registry::{metadata_store, metadata_store_health};
 use crate::domain::DescribeError;
 use crate::domain::HistoryProfile;
 use crate::infrastructure::storage::{MetadataBackend, MetadataStore};
 use std::sync::Mutex;
+
+/// Statut de persistance du store metadata exposé par [`AppContext`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MetadataStoreHealth {
+    /// Store persistant disponible.
+    Persistent,
+    /// Store persistant indisponible, fallback en mémoire.
+    FallbackInMemory,
+    /// Store exclusivement en mémoire (`AppContext::in_memory`).
+    InMemoryOnly,
+}
 
 /// Contexte applicatif injectable (métadonnées, historique, cache conteneurs).
 #[allow(dead_code)]
 #[derive(Clone)]
 pub struct AppContext {
     metadata: MetadataStore,
+    metadata_mode: MetadataStoreMode,
     history: HistoryService,
     #[cfg(feature = "serde")]
     containers: Arc<ContainersCacheService>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MetadataStoreMode {
+    SharedRegistry,
+    InMemoryOnly,
+    CustomPersistent,
+}
+
 impl AppContext {
+    /// Construit un contexte best-effort (fallback in-memory si la persistance échoue).
     pub fn new_default() -> Result<Self, DescribeError> {
-        let default_store = MetadataStore::open_default()?;
-        init_metadata_store(default_store);
         Ok(Self {
             metadata: metadata_store(),
+            metadata_mode: MetadataStoreMode::SharedRegistry,
+            history: HistoryService::new(),
+            #[cfg(feature = "serde")]
+            containers: Arc::new(ContainersCacheService::default()),
+        })
+    }
+
+    /// Construit un contexte strict : erreur si la persistance n'est pas disponible.
+    pub fn new_default_strict() -> Result<Self, DescribeError> {
+        let metadata = metadata_store();
+        if metadata_store_health() != MetadataStoreHealth::Persistent {
+            return Err(DescribeError::System(
+                "metadata store degraded (fallback in-memory)".into(),
+            ));
+        }
+        Ok(Self {
+            metadata,
+            metadata_mode: MetadataStoreMode::SharedRegistry,
             history: HistoryService::new(),
             #[cfg(feature = "serde")]
             containers: Arc::new(ContainersCacheService::default()),
@@ -41,6 +77,7 @@ impl AppContext {
         let _ = history.configure(settings);
         Self {
             metadata,
+            metadata_mode: MetadataStoreMode::InMemoryOnly,
             history,
             #[cfg(feature = "serde")]
             containers: Arc::new(ContainersCacheService::default()),
@@ -51,9 +88,18 @@ impl AppContext {
     pub(crate) fn with_metadata_backend(metadata_backend: Arc<dyn MetadataBackend>) -> Self {
         Self {
             metadata: MetadataStore::new_with_backend(metadata_backend),
+            metadata_mode: MetadataStoreMode::CustomPersistent,
             history: HistoryService::new(),
             #[cfg(feature = "serde")]
             containers: Arc::new(ContainersCacheService::default()),
+        }
+    }
+
+    pub fn metadata_store_health(&self) -> MetadataStoreHealth {
+        match self.metadata_mode {
+            MetadataStoreMode::SharedRegistry => metadata_store_health(),
+            MetadataStoreMode::InMemoryOnly => MetadataStoreHealth::InMemoryOnly,
+            MetadataStoreMode::CustomPersistent => MetadataStoreHealth::Persistent,
         }
     }
 
@@ -130,14 +176,31 @@ impl MetadataBackend for InMemoryMetadataBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::metadata::registry;
     use crate::application::metadata::{
         add_server_tags_with, clear_server_description_with, clear_server_tags_with,
         load_server_description_with, load_server_tags_with, set_server_description_with,
         set_server_tags_with,
     };
     use crate::application::test_support::dummy_snapshot;
+    use crate::infrastructure::storage::{
+        reset_metadata_backend_factory_for_tests, set_metadata_backend_factory,
+        state_dir_test_lock, MetadataBackendFactory,
+    };
+    #[cfg(feature = "serde")]
     use crate::ContainersSnapshot;
     use std::time::Duration;
+
+    struct FailingFactory;
+
+    impl MetadataBackendFactory for FailingFactory {
+        fn open_default(
+            &self,
+        ) -> Result<Box<dyn crate::infrastructure::storage::MetadataBackend>, DescribeError>
+        {
+            Err(DescribeError::System("boom".into()))
+        }
+    }
 
     #[test]
     fn in_memory_context_roundtrips_metadata() {
@@ -225,5 +288,27 @@ mod tests {
             .ok();
         // ctx2 n'a pas de snapshot enregistré, donc aucun point
         assert!(series2.is_none() || series2.unwrap().points.is_empty());
+    }
+
+    #[test]
+    fn metadata_fallback_is_reported_and_strict_fails() {
+        let _guard = state_dir_test_lock();
+        reset_metadata_backend_factory_for_tests();
+        registry::reset_metadata_store_for_tests();
+        set_metadata_backend_factory(Box::new(FailingFactory));
+        registry::reset_metadata_store_for_tests();
+
+        let ctx = AppContext::new_default().expect("ctx");
+        assert_eq!(
+            ctx.metadata_store_health(),
+            MetadataStoreHealth::FallbackInMemory
+        );
+        let err = AppContext::new_default_strict()
+            .err()
+            .expect("strict should fail");
+        assert!(matches!(err, DescribeError::System(_)));
+
+        reset_metadata_backend_factory_for_tests();
+        registry::reset_metadata_store_for_tests();
     }
 }

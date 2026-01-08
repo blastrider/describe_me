@@ -11,6 +11,7 @@
 //! ```text
 //! Request -> Auth -> RateLimit -> BruteForce -> TokenAffinity -> GlobalSlots -> Decision
 //! ```
+//! Note: `GlobalSlots` enforces per-route concurrency caps; SSE keeps a slot for the stream lifetime.
 //! This module is structured to keep these concerns isolated while staying extensible.
 
 mod auth;
@@ -32,6 +33,7 @@ use sse::acquire_permit;
 
 use crate::application::logging::LogEvent;
 use crate::domain::DescribeError;
+use crate::domain::SessionCookieSameSite;
 #[cfg(feature = "config")]
 use crate::domain::WebSecurityConfig;
 use axum::{
@@ -43,13 +45,15 @@ use axum::{
 pub(crate) use sse::SsePermit;
 use std::{
     borrow::Cow,
+    collections::hash_map::{DefaultHasher, RandomState},
     fmt,
-    hash::{Hash, Hasher},
+    hash::{BuildHasher, Hash, Hasher},
     net::IpAddr,
-    sync::Arc,
+    sync::{Arc, OnceLock},
     time::Duration,
 };
 use tokio::time::sleep;
+use tracing::info;
 
 #[derive(Debug)]
 pub(super) struct AuthSession {
@@ -59,6 +63,7 @@ pub(super) struct AuthSession {
     token: TokenKey,
     sse_permit: Option<SsePermit>,
     session_cookie: Option<Arc<str>>,
+    purge_session_cookie: bool,
     global_permit: Option<limits::GlobalPermit>,
 }
 
@@ -110,6 +115,13 @@ pub(super) fn attach_session_cookie(
             cookie,
             state.session_ttl(),
             state.session_cookie_secure(),
+            state.session_cookie_same_site(),
+        );
+    } else if session.purge_session_cookie {
+        clear_session_cookie(
+            headers,
+            state.session_cookie_secure(),
+            state.session_cookie_same_site(),
         );
     }
 }
@@ -125,6 +137,7 @@ pub(super) fn make_test_guard(route: WebRoute) -> AuthGuard {
             token: TokenKey::Anonymous,
             sse_permit: None,
             session_cookie: None,
+            purge_session_cookie: false,
             global_permit: None,
         },
     }
@@ -144,7 +157,7 @@ impl FromRequestParts<AppState> for AuthGuard {
             Err(rejection) => {
                 let wants_styled_html = matches!(route, WebRoute::Html | WebRoute::Logs)
                     && rejection.is_auth_failure()
-                    && accepts_html(parts);
+                    && accepts_html(parts, route);
                 let html_body = if wants_styled_html {
                     let nonce = parts
                         .extensions
@@ -155,7 +168,11 @@ impl FromRequestParts<AppState> for AuthGuard {
                 } else {
                     None
                 };
-                Err(rejection.into_response(state.session_cookie_secure(), html_body))
+                Err(rejection.into_response(
+                    state.session_cookie_secure(),
+                    state.session_cookie_same_site(),
+                    html_body,
+                ))
             }
         }
     }
@@ -187,15 +204,19 @@ impl WebSecurity {
             Some(raw) => {
                 let trimmed = raw.trim();
                 if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(
-                        TokenVerifier::parse(trimmed)
-                            .map_err(|err| DescribeError::Config(format!("web.token: {err}")))?,
-                    )
+                    return Err(DescribeError::Config(
+                        "web.token is empty/whitespace; refusing to start".into(),
+                    ));
                 }
+                Some(
+                    TokenVerifier::parse(trimmed)
+                        .map_err(|err| DescribeError::Config(format!("web.token: {err}")))?,
+                )
             }
-            None => None,
+            None => {
+                info!("auth disabled by config (web.token not set)");
+                None
+            }
         };
 
         let mut allow = Vec::new();
@@ -270,10 +291,23 @@ impl WebSecurity {
         &self.sessions
     }
 
+    pub(super) fn token_fingerprint(&self) -> Option<TokenFingerprint> {
+        self.token.as_ref().map(|token| token.fingerprint())
+    }
+
+    pub(super) fn client_claim(
+        &self,
+        ip: IpAddr,
+        user_agent: Option<&str>,
+    ) -> Option<session::ClientClaim> {
+        self.sessions.client_claim(ip, user_agent)
+    }
+
     fn log_incident(&self, category: &'static str, request: &AuthRequest, detail: Option<String>) {
         LogEvent::SecurityIncident {
             category: Cow::Borrowed(category),
             route: Cow::Borrowed(request.route.as_str()),
+            request_path: Some(Cow::Borrowed(request.request_path.as_ref())),
             ip: Some(Cow::Owned(request.remote_ip.to_string())),
             token: Some(Cow::Owned(request.token_key.to_string())),
             detail: detail.map(Cow::Owned),
@@ -294,13 +328,38 @@ impl WebSecurity {
         self.log_incident(category, request, Some(parts.join(" ")));
     }
 
+    async fn reject_token_affinity_violation(
+        &self,
+        request: &AuthRequest,
+        now: std::time::Instant,
+    ) -> SecurityRejection {
+        if let Err(rejection) = enforce_rate_limits(&self.state, &self.policy, request, now).await {
+            self.log_rejection("rate_limit", request, &rejection);
+            return rejection;
+        }
+
+        let failure = self
+            .state
+            .note_failure(
+                request.remote_ip,
+                request.token_key,
+                now,
+                &self.policy,
+                request.route,
+            )
+            .await;
+
+        uniform_auth_delay().await;
+        SecurityRejection::unauthorized(failure.retry_after())
+    }
+
     pub(super) async fn authorize(
         &self,
         parts: &Parts,
         route: WebRoute,
     ) -> Result<AuthSession, SecurityRejection> {
         let now = std::time::Instant::now();
-        let request = match self.build_request(parts, route, now, None) {
+        let request = match self.build_request(parts, route, now, None).await {
             Ok(req) => req,
             Err(rejection) => {
                 if rejection.is_auth_failure() {
@@ -335,6 +394,7 @@ impl WebSecurity {
                 return Err(rejection);
             }
         };
+        let authenticated = session_cookie.is_some();
         if !self
             .state
             .ensure_token_affinity(
@@ -355,15 +415,14 @@ impl WebSecurity {
                     self.policy.token_affinity_limit(request.trusted_ip)
                 )),
             );
-            uniform_auth_delay().await;
-            return Err(SecurityRejection::unauthorized(None));
+            return Err(self.reject_token_affinity_violation(&request, now).await);
         }
         if let Err(rejection) = enforce_rate_limits(&self.state, &self.policy, &request, now).await
         {
             self.log_rejection("rate_limit", &request, &rejection);
             return Err(rejection);
         }
-        let sse_permit = match acquire_permit(&self.state, &self.policy, &request) {
+        let sse_permit = match acquire_permit(&self.state, &self.policy, &request).await {
             Ok(permit) => permit,
             Err(rejection) => {
                 self.log_rejection("sse_permit_denied", &request, &rejection);
@@ -374,23 +433,26 @@ impl WebSecurity {
             }
         };
 
-        self.state
-            .note_success(request.remote_ip, request.token_key)
-            .await;
+        if authenticated {
+            self.state
+                .note_success(request.remote_ip, request.token_key)
+                .await;
+        }
 
         LogEvent::AuthOk {
             ip: Cow::Owned(request.remote_ip.to_string()),
             route: Cow::Borrowed(request.route.as_str()),
-            token: Cow::Owned(request.token_key.to_string()),
         }
         .emit();
 
+        let purge_session_cookie = request.purge_session_cookie && session_cookie.is_none();
         Ok(AuthSession {
             route: request.route,
             ip: request.remote_ip,
             token: request.token_key,
             sse_permit,
             session_cookie: session_cookie.map(|value| Arc::<str>::from(value.into_boxed_str())),
+            purge_session_cookie,
             global_permit,
         })
     }
@@ -402,12 +464,15 @@ impl WebSecurity {
         route: WebRoute,
     ) -> Result<AuthSession, SecurityRejection> {
         let now = std::time::Instant::now();
-        let request = match self.build_request(
-            parts,
-            route,
-            now,
-            Some(CredentialOverride::RawToken(token.to_owned())),
-        ) {
+        let request = match self
+            .build_request(
+                parts,
+                route,
+                now,
+                Some(CredentialOverride::RawToken(token.to_owned())),
+            )
+            .await
+        {
             Ok(req) => req,
             Err(rejection) => return Err(rejection),
         };
@@ -440,6 +505,7 @@ impl WebSecurity {
                 return Err(rejection);
             }
         };
+        let authenticated = session_cookie.is_some();
 
         if !self
             .state
@@ -461,8 +527,7 @@ impl WebSecurity {
                     self.policy.token_affinity_limit(request.trusted_ip)
                 )),
             );
-            uniform_auth_delay().await;
-            return Err(SecurityRejection::unauthorized(None));
+            return Err(self.reject_token_affinity_violation(&request, now).await);
         }
 
         if let Err(rejection) = enforce_rate_limits(&self.state, &self.policy, &request, now).await
@@ -471,28 +536,31 @@ impl WebSecurity {
             return Err(rejection);
         }
 
-        self.state
-            .note_success(request.remote_ip, request.token_key)
-            .await;
+        if authenticated {
+            self.state
+                .note_success(request.remote_ip, request.token_key)
+                .await;
+        }
 
         LogEvent::AuthOk {
             ip: Cow::Owned(request.remote_ip.to_string()),
             route: Cow::Borrowed(request.route.as_str()),
-            token: Cow::Owned(request.token_key.to_string()),
         }
         .emit();
 
+        let purge_session_cookie = request.purge_session_cookie && session_cookie.is_none();
         Ok(AuthSession {
             route: request.route,
             ip: request.remote_ip,
             token: request.token_key,
             sse_permit: None,
             session_cookie: session_cookie.map(|value| Arc::<str>::from(value.into_boxed_str())),
+            purge_session_cookie,
             global_permit,
         })
     }
 
-    fn build_request(
+    async fn build_request(
         &self,
         parts: &Parts,
         route: WebRoute,
@@ -504,11 +572,13 @@ impl WebSecurity {
             &self.trusted_proxies,
             &self.sessions,
             self.token.is_some(),
+            self.token.as_ref().map(|token| token.fingerprint()),
             parts,
             route,
             now,
             credential_override,
         )
+        .await
     }
 
     async fn verify_request(
@@ -542,15 +612,22 @@ pub(crate) enum WebRoute {
     Sse,
     History,
     Logs,
+    Metrics,
 }
 
 impl WebRoute {
     pub fn from_path(path: &str) -> Self {
         if path == "/sse" {
             WebRoute::Sse
-        } else if path.starts_with("/api/logs") || path == "/logs" || path == "/metrics" {
+        } else if path == "/metrics" {
+            WebRoute::Metrics
+        } else if path.starts_with("/api/logs") || path == "/logs" {
             WebRoute::Logs
         } else if path.starts_with("/api/history") {
+            WebRoute::History
+        } else if path == "/updates" || path == "/container" {
+            WebRoute::Logs
+        } else if path.starts_with("/api/") {
             WebRoute::History
         } else {
             WebRoute::Html
@@ -563,6 +640,7 @@ impl WebRoute {
             WebRoute::Sse => "/sse",
             WebRoute::History => "/api/history",
             WebRoute::Logs => "/api/logs",
+            WebRoute::Metrics => "/metrics",
         }
     }
 
@@ -572,7 +650,9 @@ impl WebRoute {
 }
 
 const GENERIC_AUTH_MESSAGE: &str = "authentification requise";
+const GENERIC_FORBIDDEN_MESSAGE: &str = "accès interdit";
 const GENERIC_RATE_LIMIT_MESSAGE: &str = "trop de requêtes, réessayez plus tard";
+const WWW_AUTHENTICATE_BEARER: &str = "Bearer realm=\"describe_me\"";
 
 #[derive(Debug)]
 pub(super) struct SecurityRejection {
@@ -592,8 +672,8 @@ impl SecurityRejection {
 
     pub(super) fn forbidden_ip() -> Self {
         Self {
-            status: StatusCode::UNAUTHORIZED,
-            body: GENERIC_AUTH_MESSAGE,
+            status: StatusCode::FORBIDDEN,
+            body: GENERIC_FORBIDDEN_MESSAGE,
             retry_after: None,
         }
     }
@@ -618,11 +698,24 @@ impl SecurityRejection {
         Self::rate_limited(retry)
     }
 
-    pub(super) fn into_response(self, secure_cookie: bool, html_body: Option<String>) -> Response {
+    pub(super) fn into_response(
+        self,
+        secure_cookie: bool,
+        same_site: SessionCookieSameSite,
+        html_body: Option<String>,
+    ) -> Response {
         let mut response = match html_body {
             Some(html) => (self.status, Html(html)).into_response(),
             None => (self.status, self.body).into_response(),
         };
+        if matches!(
+            self.status,
+            StatusCode::UNAUTHORIZED | StatusCode::TOO_MANY_REQUESTS
+        ) {
+            response
+                .headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        }
         if let Some(delay) = self.retry_after {
             let jittered = jitter(delay);
             let secs = retry_after_seconds(jittered);
@@ -631,7 +724,11 @@ impl SecurityRejection {
             }
         }
         if self.status == StatusCode::UNAUTHORIZED {
-            clear_session_cookie(response.headers_mut(), secure_cookie);
+            response.headers_mut().insert(
+                header::WWW_AUTHENTICATE,
+                HeaderValue::from_static(WWW_AUTHENTICATE_BEARER),
+            );
+            clear_session_cookie(response.headers_mut(), secure_cookie, same_site);
         }
         response
     }
@@ -641,17 +738,21 @@ impl SecurityRejection {
     }
 }
 
-fn accepts_html(parts: &Parts) -> bool {
-    parts
+fn accepts_html(parts: &Parts, route: WebRoute) -> bool {
+    let accept = parts
         .headers
         .get(header::ACCEPT)
-        .and_then(|value| value.to_str().ok())
-        .map(|raw| {
-            raw.contains("text/html")
-                || raw.contains("application/xhtml+xml")
-                || raw.contains("*/*")
-        })
-        .unwrap_or(true)
+        .and_then(|value| value.to_str().ok());
+    let wants_html =
+        accept.map(|raw| raw.contains("text/html") || raw.contains("application/xhtml+xml"));
+    let is_api_request = matches!(route, WebRoute::History | WebRoute::Metrics)
+        || parts.uri.path().starts_with("/api/");
+
+    if is_api_request {
+        return wants_html.unwrap_or(false);
+    }
+
+    wants_html.unwrap_or(false) || accept.map(|raw| raw.contains("*/*")).unwrap_or(true)
 }
 
 fn jitter(delay: Duration) -> Duration {
@@ -686,11 +787,13 @@ pub(super) enum TokenKey {
     Fingerprint(u64),
 }
 
+pub(super) type TokenFingerprint = [u8; 16];
+
 impl TokenKey {
+    /// Empreinte keyed (secret runtime), stable uniquement pendant la vie du process.
+    /// Ne doit pas être persistée.
     pub(super) fn from_value(token: &str) -> Self {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        token.hash(&mut hasher);
-        TokenKey::Fingerprint(hasher.finish())
+        TokenKey::Fingerprint(token_hash_state().hash_one(token))
     }
 }
 
@@ -701,6 +804,27 @@ impl fmt::Display for TokenKey {
             TokenKey::Fingerprint(fp) => write!(f, "fp:{fp:016x}"),
         }
     }
+}
+
+const TOKEN_KEY_PROBE: &str = "__token_key_probe__";
+
+fn token_hash_state() -> &'static RandomState {
+    static STATE: OnceLock<RandomState> = OnceLock::new();
+    STATE.get_or_init(|| {
+        let unkeyed = unkeyed_token_hash(TOKEN_KEY_PROBE);
+        loop {
+            let state = RandomState::new();
+            if state.hash_one(TOKEN_KEY_PROBE) != unkeyed {
+                return state;
+            }
+        }
+    })
+}
+
+fn unkeyed_token_hash(value: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -779,3 +903,5 @@ mod tests_bruteforce;
 mod tests_common;
 #[cfg(test)]
 mod tests_token_affinity;
+#[cfg(test)]
+mod tests_token_key;
