@@ -578,14 +578,17 @@ fn sanitize_invalid_label(raw: &str) -> String {
 }
 
 fn escape_label_value(raw: &str) -> String {
-    raw.chars()
-        .flat_map(|c| match c {
-            '\\' => "\\\\".chars().collect::<Vec<_>>(),
-            '"' => "\\\"".chars().collect(),
-            '\n' => "\\n".chars().collect(),
-            _ => vec![c],
-        })
-        .collect()
+    let mut out = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            c if c.is_control() => out.push(' '),
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -942,5 +945,12 @@ mod tests {
         let normalized = normalize_extension_label(&long);
         assert!(normalized.len() <= EXTENSION_LABEL_MAX_LEN);
         assert!(normalized.contains('_'));
+    }
+
+    #[test]
+    fn escape_label_value_filters_control_chars() {
+        let raw = "alpha\rbravo\ncharlie\t\"delta\"\\echo\u{001b}end";
+        let escaped = escape_label_value(raw);
+        assert_eq!(escaped, "alpha bravo\\ncharlie \\\"delta\\\"\\\\echo end");
     }
 }
