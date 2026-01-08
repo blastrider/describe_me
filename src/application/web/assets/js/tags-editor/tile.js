@@ -9,13 +9,14 @@
     return;
   }
   const {
-    DESCRIPTION_MAX_CHARS,
+    DESCRIPTION_MAX_BYTES,
     TAGS_MAX,
     TAG_LENGTH_LIMIT,
     DEFAULT_DESC_ENDPOINT,
     DEFAULT_TAG_ENDPOINT,
     TAG_OP_SET,
     sanitizeDescription,
+    descriptionByteLength,
     arraysEqual,
     dedupeTags,
     parseInputTags,
@@ -262,9 +263,10 @@
         return;
       }
       const normalized = sanitizeDescription(this.descInput.value || "");
-      if (normalized.length > DESCRIPTION_MAX_CHARS) {
+      const byteLen = descriptionByteLength(normalized);
+      if (byteLen > DESCRIPTION_MAX_BYTES) {
         this.setDescHint(
-          `La description ne peut pas dépasser ${DESCRIPTION_MAX_CHARS} caractères.`,
+          `La description ne peut pas dépasser ${DESCRIPTION_MAX_BYTES} octets (UTF-8).`,
           "error"
         );
         return;
