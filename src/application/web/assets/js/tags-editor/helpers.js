@@ -8,7 +8,7 @@
   const tags = (DescribeMe.tags = DescribeMe.tags || {});
 
   Object.assign(tags, {
-    DESCRIPTION_MAX_CHARS: 2048,
+    DESCRIPTION_MAX_BYTES: 2048,
     TAGS_MAX: 64,
     TAG_LENGTH_LIMIT: 48,
     DEFAULT_DESC_ENDPOINT: "/api/description",
@@ -57,6 +57,13 @@
         const separator = url.includes("?") ? "&" : "?";
         return `${url}${separator}server=${encodeURIComponent(serverId)}`;
       }
+    },
+    descriptionByteLength(value) {
+      const text = String(value ?? "");
+      if (typeof TextEncoder !== "undefined") {
+        return new TextEncoder().encode(text).length;
+      }
+      return encodeURIComponent(text).replace(/%[0-9A-F]{2}/g, "x").length;
     },
     async readJsonMessage(response) {
       try {
