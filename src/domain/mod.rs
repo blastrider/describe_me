@@ -10,8 +10,8 @@ pub mod server_metadata;
 #[cfg(feature = "config")]
 pub use config::{
     BruteForceConfig, CliDefaults, DescribeConfig, ExposureConfig, ExtensionsConfig, HistoryConfig,
-    PluginDefinition, RouteLimitConfig, RuntimeConfig, ServiceSelection, SseLimitConfig,
-    WebAccessConfig, WebSecurityConfig,
+    PluginDefinition, RouteLimitConfig, RuntimeConfig, ServiceSelection, SessionCookieSameSite,
+    SseLimitConfig, WebAccessConfig, WebSecurityConfig,
 };
 pub use error::DescribeError;
 pub use history_dto::{HistoryMetricDto, HistoryPointDto, HistorySeriesDto};
@@ -32,6 +32,17 @@ pub use server_metadata::{
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 use std::fmt;
+
+#[cfg(not(feature = "config"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "lowercase"))]
+pub enum SessionCookieSameSite {
+    #[default]
+    Lax,
+    Strict,
+    None,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
