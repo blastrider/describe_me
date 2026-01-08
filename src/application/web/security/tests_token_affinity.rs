@@ -77,6 +77,7 @@ async fn logs_token_affinity_violation() {
     LogEvent::SecurityIncident {
         category: Cow::Borrowed("test"),
         route: Cow::Borrowed("/"),
+        request_path: None,
         ip: None,
         token: None,
         detail: None,
@@ -140,5 +141,53 @@ async fn logs_token_affinity_violation() {
     assert!(
         found,
         "expected token_affinity_violation log, got {records_snapshot:?}"
+    );
+}
+
+#[tokio::test]
+async fn token_affinity_violation_triggers_rate_limit() {
+    let hash = cached_hash();
+    let security = build_security(Some(hash));
+    let token = "secret";
+
+    let ip1 = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 20));
+    let ip2 = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 21));
+    let ip3 = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 22));
+
+    let parts1 = make_parts("/", ip1, Some(token));
+    let parts2 = make_parts("/", ip2, Some(token));
+    let parts3 = make_parts("/", ip3, Some(token));
+
+    let _ = security
+        .authorize(&parts1, WebRoute::Html)
+        .await
+        .expect("first request should succeed");
+    let _ = security
+        .authorize(&parts2, WebRoute::Html)
+        .await
+        .expect("second request should succeed");
+
+    let err = security
+        .authorize(&parts3, WebRoute::Html)
+        .await
+        .expect_err("third request should be rejected");
+    assert_eq!(err.status, StatusCode::UNAUTHORIZED);
+
+    let mut rate_limited = false;
+    for _ in 0..20 {
+        let err = security
+            .authorize(&parts3, WebRoute::Html)
+            .await
+            .expect_err("affinity violation should be rejected");
+        if err.status == StatusCode::TOO_MANY_REQUESTS {
+            assert!(err.retry_after.is_some());
+            rate_limited = true;
+            break;
+        }
+    }
+
+    assert!(
+        rate_limited,
+        "expected rate limiting after repeated violations"
     );
 }
