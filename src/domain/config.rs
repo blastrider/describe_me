@@ -2,8 +2,9 @@ use super::error::DescribeError;
 use super::history_profile::HistoryProfile;
 use super::plugin::validate_plugin_name;
 #[cfg(feature = "serde")]
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
+use std::path::Path;
 
 /// Configuration haut-niveau.
 #[derive(Debug, Clone, Default)]
@@ -187,6 +188,25 @@ impl DescribeConfig {
         }
         Ok(())
     }
+
+    pub fn validate_runtime(&self) -> Result<(), DescribeError> {
+        if let Some(runtime) = self.runtime.as_ref() {
+            if let Some(state_dir) = runtime.state_dir.as_deref() {
+                if state_dir.is_empty() {
+                    return Err(DescribeError::Config(
+                        "runtime.state_dir ne peut pas être vide".into(),
+                    ));
+                }
+                let path = Path::new(state_dir);
+                if !path.is_absolute() {
+                    return Err(DescribeError::Config(
+                        "runtime.state_dir doit être un chemin absolu".into(),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Contrôle fin des champs JSON sensibles.
@@ -255,11 +275,31 @@ where
     use serde::Deserialize;
 
     let value = Option::<String>::deserialize(deserializer)?;
-    match value {
-        Some(v) if !v.trim().is_empty() => Ok(v),
-        Some(_) => Err(serde::de::Error::custom("sha256 ne peut pas être vide")),
-        None => Err(serde::de::Error::missing_field("sha256")),
+    let Some(v) = value else {
+        return Err(serde::de::Error::missing_field("sha256"));
+    };
+
+    let trimmed = v.trim();
+    if trimmed.is_empty() {
+        return Err(serde::de::Error::custom("sha256 ne peut pas être vide"));
     }
+
+    let normalized = trimmed.to_ascii_lowercase();
+    if normalized.len() != 64 {
+        return Err(serde::de::Error::custom(
+            "sha256 doit contenir 64 caractères hexadécimaux",
+        ));
+    }
+    if !normalized
+        .chars()
+        .all(|c| matches!(c, '0'..='9' | 'a'..='f'))
+    {
+        return Err(serde::de::Error::custom(
+            "sha256 doit être une valeur hexadécimale (0-9, a-f)",
+        ));
+    }
+
+    Ok(normalized)
 }
 
 #[cfg(all(test, feature = "serde"))]
@@ -336,6 +376,55 @@ sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     }
 
     #[test]
+    fn plugin_sha256_rejects_invalid_length() {
+        let err: Result<DescribeConfig, _> = toml::from_str(
+            r#"
+[extensions]
+[[extensions.plugins]]
+name = "demo"
+path = "/usr/lib/describe_me/plugins/describe-me-plugin-demo"
+sha256 = "abc"
+"#,
+        );
+        let err = err.expect_err("sha256 length rejected");
+        assert!(err.to_string().contains("sha256"));
+    }
+
+    #[test]
+    fn plugin_sha256_rejects_non_hex_chars() {
+        let err: Result<DescribeConfig, _> = toml::from_str(
+            r#"
+[extensions]
+[[extensions.plugins]]
+name = "demo"
+path = "/usr/lib/describe_me/plugins/describe-me-plugin-demo"
+sha256 = "zz51e83f0f1b8b1e7f51e83f0f1b8b1e7f51e83f0f1b8b1e7f51e83f0f1b8b1e"
+"#,
+        );
+        let err = err.expect_err("sha256 hex rejected");
+        assert!(err.to_string().contains("sha256"));
+    }
+
+    #[test]
+    fn plugin_sha256_is_normalized_to_lowercase() {
+        let cfg: DescribeConfig = toml::from_str(
+            r#"
+[extensions]
+[[extensions.plugins]]
+name = "demo"
+path = "/usr/lib/describe_me/plugins/describe-me-plugin-demo"
+sha256 = "ABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCD"
+"#,
+        )
+        .expect("deserialize config");
+
+        assert_eq!(
+            cfg.extensions.unwrap().plugins[0].sha256,
+            "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd"
+        );
+    }
+
+    #[test]
     fn validate_plugin_names_rejects_invalid_chars() {
         let cfg: DescribeConfig = toml::from_str(
             r#"
@@ -353,6 +442,17 @@ sha256 = "7f51e83f0f1b8b1e7f51e83f0f1b8b1e7f51e83f0f1b8b1e7f51e83f0f1b8b1e"
             matches!(err, DescribeError::Config(msg) if msg.contains("extensions.plugins[0].name"))
         );
     }
+}
+
+/// Paramétrage SameSite des cookies de session web.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "lowercase"))]
+pub enum SessionCookieSameSite {
+    #[default]
+    Lax,
+    Strict,
+    None,
 }
 
 /// Paramétrage global des limites de sécurité côté web.
@@ -375,7 +475,12 @@ pub struct WebSecurityConfig {
     /// Politique anti-bruteforce (authentification, tokens).
     pub brute_force: BruteForceConfig,
     /// Durée de vie maximale (en secondes) des cookies de session émis par le serveur web.
+    /// La valeur est bornée à [60s, WEB_SESSION_SECONDS] et un warning est émis si elle sort
+    /// des bornes (la valeur effective clampée est utilisée).
     pub session_ttl_seconds: Option<u64>,
+    /// Attribut SameSite des cookies de session (lax/strict/none).
+    /// None => valeur par défaut (Lax). SameSite=None nécessite Secure, sinon fallback Lax.
+    pub session_cookie_same_site: Option<SessionCookieSameSite>,
 }
 
 impl Default for WebSecurityConfig {
@@ -389,6 +494,7 @@ impl Default for WebSecurityConfig {
             token_ip_affinity_limit: 2,
             brute_force: BruteForceConfig::default(),
             session_ttl_seconds: None,
+            session_cookie_same_site: None,
         }
     }
 }
@@ -415,7 +521,8 @@ pub struct RouteLimitConfig {
     pub per_ip: u32,
     /// Nombre de requêtes autorisées par token dans la fenêtre.
     pub per_token: u32,
-    /// Limite globale (toutes IP confondues) sur la même fenêtre.
+    /// Limite globale de concurrence (toutes IP confondues) pour la route.
+    /// Ce n'est pas un quota par fenêtre; `window_seconds` ne s'applique qu'à `per_ip`/`per_token`.
     pub global: u32,
 }
 
@@ -467,7 +574,8 @@ pub struct SseLimitConfig {
     pub per_ip: u32,
     /// Nombre de connexions SSE autorisées par token dans la fenêtre.
     pub per_token: u32,
-    /// Limite globale de connexions SSE sur la fenêtre.
+    /// Limite globale de concurrence des connexions SSE.
+    /// Un slot est conservé pendant toute la durée de la connexion SSE (pas par fenêtre).
     pub global: u32,
     /// Nombre maximal de connexions SSE actives simultanément par IP.
     pub max_active_per_ip: u32,
@@ -526,6 +634,7 @@ pub struct BruteForceConfig {
     /// Nombre d'échecs déclenchant le verrouillage doux du token.
     pub token_failure_threshold: u32,
     /// Nombre minimal d'IP distinctes pour verrouiller le token.
+    /// Valeur bornée à [1..=32] (au-delà, clampée à 32).
     pub token_ip_spread: u32,
     /// Délai minimal conseillé entre deux tentatives SSE échouées (secondes).
     pub sse_min_retry_seconds: u64,
