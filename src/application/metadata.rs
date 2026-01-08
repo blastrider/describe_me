@@ -1,13 +1,17 @@
 use crate::application::context::AppContext;
-use crate::domain::{server_metadata, DescribeError};
+use crate::domain::{
+    server_metadata, DescribeError, MetadataValidationError, ServerDescription, TagsBatch,
+};
 use crate::infrastructure::storage;
 use std::collections::BTreeSet;
 use std::path::Path;
+use tracing::warn;
 
 pub mod registry;
 
 pub fn set_server_description_with(ctx: &AppContext, text: &str) -> Result<(), DescribeError> {
-    ctx.metadata_store().set_description(text)
+    let desc = ServerDescription::try_from(text).map_err(map_validation_error)?;
+    ctx.metadata_store().set_description(desc.as_ref())
 }
 
 pub fn load_server_description_with(ctx: &AppContext) -> Result<Option<String>, DescribeError> {
@@ -24,9 +28,13 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
-    let normalized = normalize_tags(tags);
-    persist_tags_with(ctx, &normalized)?;
-    Ok(normalized)
+    let requested: Vec<String> = tags
+        .into_iter()
+        .map(|tag| tag.as_ref().to_string())
+        .collect();
+    let validated = validate_tags(requested)?;
+    persist_tags_with(ctx, &validated)?;
+    Ok(validated)
 }
 
 /// Adds tags to the existing list, returning the normalized result.
@@ -36,14 +44,14 @@ where
     S: AsRef<str>,
 {
     let mut current = load_server_tags_with(ctx)?;
-    let mut additions = normalize_tags(tags);
+    let mut additions: Vec<String> = tags.into_iter().map(|t| t.as_ref().to_string()).collect();
     if additions.is_empty() {
         return Ok(current);
     }
     current.append(&mut additions);
-    current = unique_sorted(current);
-    persist_tags_with(ctx, &current)?;
-    Ok(current)
+    let validated = validate_tags(current)?;
+    persist_tags_with(ctx, &validated)?;
+    Ok(validated)
 }
 
 /// Removes the provided tags.
@@ -55,17 +63,20 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
-    let to_remove = normalize_tags(tags);
+    let to_remove: BTreeSet<String> = tags
+        .into_iter()
+        .filter_map(|tag| normalize_tag_for_removal(tag.as_ref()))
+        .collect();
     if to_remove.is_empty() {
         return load_server_tags_with(ctx);
     }
-    let remove_set: BTreeSet<String> = to_remove.into_iter().collect();
     let retained: Vec<String> = load_server_tags_with(ctx)?
         .into_iter()
-        .filter(|tag| !remove_set.contains(tag))
+        .filter(|tag| !to_remove.contains(tag))
         .collect();
-    persist_tags_with(ctx, &retained)?;
-    Ok(retained)
+    let validated = validate_tags(retained)?;
+    persist_tags_with(ctx, &validated)?;
+    Ok(validated)
 }
 
 /// Loads the normalized tag list (empty if unset).
@@ -81,7 +92,7 @@ pub fn load_server_tags_with(ctx: &AppContext) -> Result<Vec<String>, DescribeEr
             .filter(|entry| !entry.is_empty())
             .map(|entry| entry.to_string())
             .collect::<Vec<_>>();
-        Ok(unique_sorted(list))
+        validate_tags(list)
     } else {
         Ok(Vec::new())
     }
@@ -93,8 +104,15 @@ pub fn clear_server_tags_with(ctx: &AppContext) -> Result<(), DescribeError> {
 }
 
 /// Override the directory where the metadata database is stored.
+///
+/// Must be called before the metadata store is first accessed. Once initialized,
+/// overrides are ignored to avoid switching backends under active use; a warning
+/// is emitted in that case.
 pub fn override_state_directory<P: AsRef<Path>>(path: P) {
-    storage::set_state_dir_override(path.as_ref())
+    if registry::metadata_store_initialized() {
+        warn!("metadata state_dir override after initialisation: override will apply after reset");
+    }
+    storage::set_state_dir_override(path.as_ref());
 }
 
 fn persist_tags_with(ctx: &AppContext, tags: &[String]) -> Result<(), DescribeError> {
@@ -105,28 +123,33 @@ fn persist_tags_with(ctx: &AppContext, tags: &[String]) -> Result<(), DescribeEr
     }
 }
 
-fn normalize_tags<I, S>(tags: I) -> Vec<String>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<str>,
-{
-    let mut set = BTreeSet::new();
-    for tag in tags {
-        if let Some(clean) = normalize_tag(tag.as_ref()) {
-            set.insert(clean);
-        }
+fn validate_tags(raw: Vec<String>) -> Result<Vec<String>, DescribeError> {
+    if raw.is_empty() {
+        return Ok(Vec::new());
     }
-    set.into_iter().collect()
+    let validated = raw
+        .into_iter()
+        .map(|tag| server_metadata::ServerTag::try_from(tag.as_str()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(map_validation_error)?;
+    let batch = TagsBatch::try_from(
+        validated
+            .into_iter()
+            .map(|t| t.into_inner())
+            .collect::<Vec<_>>(),
+    )
+    .map_err(map_validation_error)?;
+    Ok(batch.as_strings())
 }
 
-fn unique_sorted(mut tags: Vec<String>) -> Vec<String> {
-    tags.sort();
-    tags.dedup();
-    tags
+fn normalize_tag_for_removal(raw: &str) -> Option<String> {
+    server_metadata::ServerTag::try_from(raw)
+        .ok()
+        .map(|t| t.into_inner())
 }
 
-fn normalize_tag(raw: &str) -> Option<String> {
-    server_metadata::normalize_tag(raw)
+fn map_validation_error(err: MetadataValidationError) -> DescribeError {
+    DescribeError::Config(err.to_string())
 }
 
 #[cfg(test)]
@@ -145,6 +168,7 @@ mod tests {
         std::env::remove_var("STATE_DIRECTORY");
         let dir = tempdir().expect("tempdir");
         super::override_state_directory(dir.path());
+        registry::reset_metadata_store_for_tests();
         let db_path = crate::infrastructure::storage::metadata_db_path_for_tests();
         assert!(
             db_path.starts_with(dir.path()),
@@ -159,7 +183,7 @@ mod tests {
     }
 
     fn wait_for_metadata_upgrade(store: &MetadataStore) {
-        let deadline = Instant::now() + Duration::from_millis(200);
+        let deadline = Instant::now() + Duration::from_secs(1);
         while Instant::now() < deadline {
             let _ = store.get_description();
             if registry::metadata_store_health() == MetadataStoreHealth::Persistent {
@@ -303,5 +327,25 @@ mod tests {
 
         registry::reset_metadata_store_for_tests();
         crate::infrastructure::storage::clear_state_dir_override_for_tests();
+    }
+
+    #[test]
+    fn description_validation_is_enforced() {
+        with_temp_state_dir(|| {
+            let ctx = AppContext::new_default().expect("ctx");
+            let long = "x".repeat(server_metadata::DESCRIPTION_MAX_BYTES + 1);
+            let err = set_server_description_with(&ctx, &long).unwrap_err();
+            assert!(matches!(err, DescribeError::Config(_)));
+        });
+    }
+
+    #[test]
+    fn tags_validation_is_enforced() {
+        with_temp_state_dir(|| {
+            let ctx = AppContext::new_default().expect("ctx");
+            let too_long = "x".repeat(server_metadata::TAG_LENGTH_LIMIT + 1);
+            let err = set_server_tags_with(&ctx, [&too_long]).unwrap_err();
+            assert!(matches!(err, DescribeError::Config(_)));
+        });
     }
 }
