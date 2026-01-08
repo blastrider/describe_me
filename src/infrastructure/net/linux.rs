@@ -414,25 +414,59 @@ fn collect_network_traffic_from_path(
             continue;
         }
 
-        let parse_field = |idx: usize| -> Result<u64, DescribeError> {
-            fields[idx].parse::<u64>().map_err(|err| {
-                DescribeError::Parse(format!(
-                    "invalid counter '{}' for interface {name}: {err}",
-                    fields[idx]
-                ))
-            })
+        let parse_field = |idx: usize| -> Option<u64> { fields[idx].parse::<u64>().ok() };
+        let (
+            rx_bytes,
+            rx_packets,
+            rx_errors,
+            rx_dropped,
+            tx_bytes,
+            tx_packets,
+            tx_errors,
+            tx_dropped,
+        ) = match (
+            parse_field(0),
+            parse_field(1),
+            parse_field(2),
+            parse_field(3),
+            parse_field(8),
+            parse_field(9),
+            parse_field(10),
+            parse_field(11),
+        ) {
+            (
+                Some(rx_bytes),
+                Some(rx_packets),
+                Some(rx_errors),
+                Some(rx_dropped),
+                Some(tx_bytes),
+                Some(tx_packets),
+                Some(tx_errors),
+                Some(tx_dropped),
+            ) => (
+                rx_bytes, rx_packets, rx_errors, rx_dropped, tx_bytes, tx_packets, tx_errors,
+                tx_dropped,
+            ),
+            _ => {
+                debug!(
+                    interface = name,
+                    line = trimmed,
+                    "invalid /proc/net/dev counters; skipping line"
+                );
+                continue;
+            }
         };
 
         let entry = NetworkInterfaceTraffic {
             name: name.to_string(),
-            rx_bytes: parse_field(0)?,
-            rx_packets: parse_field(1)?,
-            rx_errors: parse_field(2)?,
-            rx_dropped: parse_field(3)?,
-            tx_bytes: parse_field(8)?,
-            tx_packets: parse_field(9)?,
-            tx_errors: parse_field(10)?,
-            tx_dropped: parse_field(11)?,
+            rx_bytes,
+            rx_packets,
+            rx_errors,
+            rx_dropped,
+            tx_bytes,
+            tx_packets,
+            tx_errors,
+            tx_dropped,
         };
 
         interfaces.push(entry);
