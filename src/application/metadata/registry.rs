@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::application::context::MetadataStoreHealth;
@@ -117,6 +118,8 @@ struct SwitchableMetadataBackend {
     fallback: Arc<FallbackMetadataBackend>,
     retry: Mutex<RetryState>,
     health: AtomicU8,
+    self_ref: OnceLock<Weak<SwitchableMetadataBackend>>,
+    operation_gate: Mutex<()>,
 }
 
 impl SwitchableMetadataBackend {
@@ -134,6 +137,8 @@ impl SwitchableMetadataBackend {
             fallback,
             retry: Mutex::new(RetryState::new(health)),
             health: AtomicU8::new(health_flag),
+            self_ref: OnceLock::new(),
+            operation_gate: Mutex::new(()),
         }
     }
 
@@ -142,6 +147,22 @@ impl SwitchableMetadataBackend {
             HEALTH_PERSISTENT => MetadataStoreHealth::Persistent,
             _ => MetadataStoreHealth::FallbackInMemory,
         }
+    }
+
+    fn with_backend<T, F>(&self, op: F) -> Result<T, DescribeError>
+    where
+        F: FnOnce(&dyn MetadataBackend) -> Result<T, DescribeError>,
+    {
+        let _guard = self
+            .operation_gate
+            .lock()
+            .expect("SwitchableMetadataBackend");
+        let backend = self
+            .inner
+            .read()
+            .expect("SwitchableMetadataBackend")
+            .clone();
+        op(backend.as_ref())
     }
 
     fn set_backend(&self, backend: Arc<dyn MetadataBackend>, health: MetadataStoreHealth) {
@@ -163,6 +184,10 @@ impl SwitchableMetadataBackend {
         self.fallback.clear();
         self.set_backend(backend, health);
         self.reset_retry(health);
+    }
+
+    fn set_self(&self, weak: Weak<SwitchableMetadataBackend>) {
+        let _ = self.self_ref.set(weak);
     }
 
     fn migrate_fallback(&self, backend: &dyn MetadataBackend) -> (bool, bool) {
@@ -214,9 +239,22 @@ impl SwitchableMetadataBackend {
             retry.next_retry_at = now + METADATA_RETRY_DELAY;
         }
 
+        let Some(self_arc) = self.self_ref.get().and_then(Weak::upgrade) else {
+            let mut retry = self.retry.lock().expect("SwitchableMetadataBackend");
+            retry.upgrade_in_progress = false;
+            return;
+        };
+        thread::spawn(move || self_arc.perform_upgrade());
+    }
+
+    fn perform_upgrade(self: Arc<Self>) {
         let result = MetadataStore::open_default();
         match result {
             Ok(store) => {
+                let _gate = self
+                    .operation_gate
+                    .lock()
+                    .expect("SwitchableMetadataBackend");
                 let backend = store.backend();
                 let (migrated_description, migrated_tags) = self.migrate_fallback(backend.as_ref());
                 self.set_backend(backend, MetadataStoreHealth::Persistent);
@@ -242,62 +280,32 @@ impl SwitchableMetadataBackend {
 impl MetadataBackend for SwitchableMetadataBackend {
     fn set_description(&self, text: &str) -> Result<(), DescribeError> {
         self.maybe_upgrade();
-        let backend = self
-            .inner
-            .read()
-            .expect("SwitchableMetadataBackend")
-            .clone();
-        backend.set_description(text)
+        self.with_backend(|backend| backend.set_description(text))
     }
 
     fn get_description(&self) -> Result<Option<String>, DescribeError> {
         self.maybe_upgrade();
-        let backend = self
-            .inner
-            .read()
-            .expect("SwitchableMetadataBackend")
-            .clone();
-        backend.get_description()
+        self.with_backend(|backend| backend.get_description())
     }
 
     fn clear_description(&self) -> Result<(), DescribeError> {
         self.maybe_upgrade();
-        let backend = self
-            .inner
-            .read()
-            .expect("SwitchableMetadataBackend")
-            .clone();
-        backend.clear_description()
+        self.with_backend(|backend| backend.clear_description())
     }
 
     fn set_tags_raw(&self, payload: &str) -> Result<(), DescribeError> {
         self.maybe_upgrade();
-        let backend = self
-            .inner
-            .read()
-            .expect("SwitchableMetadataBackend")
-            .clone();
-        backend.set_tags_raw(payload)
+        self.with_backend(|backend| backend.set_tags_raw(payload))
     }
 
     fn get_tags_raw(&self) -> Result<Option<String>, DescribeError> {
         self.maybe_upgrade();
-        let backend = self
-            .inner
-            .read()
-            .expect("SwitchableMetadataBackend")
-            .clone();
-        backend.get_tags_raw()
+        self.with_backend(|backend| backend.get_tags_raw())
     }
 
     fn clear_tags(&self) -> Result<(), DescribeError> {
         self.maybe_upgrade();
-        let backend = self
-            .inner
-            .read()
-            .expect("SwitchableMetadataBackend")
-            .clone();
-        backend.clear_tags()
+        self.with_backend(|backend| backend.clear_tags())
     }
 }
 
@@ -322,6 +330,7 @@ fn init_store_state() -> MetadataStoreState {
         }
     };
     let switchable = Arc::new(SwitchableMetadataBackend::new(backend, fallback, health));
+    switchable.set_self(Arc::downgrade(&switchable));
     let store =
         MetadataStore::new_with_backend(Arc::clone(&switchable) as Arc<dyn MetadataBackend>);
     MetadataStoreState { store, switchable }
@@ -335,6 +344,10 @@ pub(crate) fn metadata_store() -> MetadataStore {
 pub(crate) fn metadata_store_health() -> MetadataStoreHealth {
     let guard = lock_expect(store_lock().lock(), "MetadataStore");
     guard.switchable.health()
+}
+
+pub(crate) fn metadata_store_initialized() -> bool {
+    METADATA_STORE.get().is_some()
 }
 
 #[cfg(any(test, feature = "internals"))]
