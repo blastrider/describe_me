@@ -546,6 +546,9 @@ pub struct PluginRunCommand {
     /// Nom logique du plugin (ex: certificates, inventory).
     #[arg(long = "name", value_name = "NAME")]
     pub name: String,
+    /// Empreinte SHA-256 attendue (sinon lue via config.extensions.plugins).
+    #[arg(long = "sha256", value_name = "HEX")]
+    pub sha256: Option<String>,
     /// Arguments transmis au plugin (répéter --arg pour plusieurs valeurs).
     #[arg(long = "arg", value_name = "ARG", action = ArgAction::Append)]
     pub args: Vec<String>,
@@ -583,11 +586,31 @@ pub fn hash_web_token(token: &str, algorithm: TokenHashAlgorithm) -> Result<Stri
 pub fn read_token_from_stdin() -> Result<String> {
     use std::io::{self, Read};
 
-    let mut buffer = String::new();
-    io::stdin()
-        .read_to_string(&mut buffer)
-        .context("lecture du token depuis stdin")?;
-    Ok(buffer.trim_end_matches(&['\n', '\r'][..]).to_owned())
+    const MAX_TOKEN_STDIN_BYTES: usize = 4096;
+
+    let mut buffer = Vec::new();
+    let mut stdin = io::stdin();
+    let mut chunk = [0u8; 512];
+    let mut total = 0usize;
+    loop {
+        let read = stdin
+            .read(&mut chunk)
+            .context("lecture du token depuis stdin")?;
+        if read == 0 {
+            break;
+        }
+        total = total.saturating_add(read);
+        if total > MAX_TOKEN_STDIN_BYTES {
+            anyhow::bail!(
+                "le token stdin dépasse la limite de {} octets",
+                MAX_TOKEN_STDIN_BYTES
+            );
+        }
+        buffer.extend_from_slice(&chunk[..read]);
+    }
+    let text =
+        String::from_utf8(buffer).map_err(|err| anyhow!("token stdin invalide UTF-8: {err}"))?;
+    Ok(text.trim_end_matches(&['\n', '\r'][..]).to_owned())
 }
 
 #[cfg(test)]
