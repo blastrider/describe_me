@@ -289,10 +289,12 @@ where
     F: FnOnce(LaunchContext) -> PluginResult<T>,
     T: Serialize,
 {
-    let ctx = LaunchContext::from_env()
-        .map_err(|err| PluginErrorReport::new(err.to_string()).with_exit_code(config.default_exit_code))?;
-    ctx.validate(&config)
-        .map_err(|err| PluginErrorReport::new(err.to_string()).with_exit_code(config.default_exit_code))?;
+    let ctx = LaunchContext::from_env().map_err(|err| {
+        PluginErrorReport::new(err.to_string()).with_exit_code(config.default_exit_code)
+    })?;
+    ctx.validate(&config).map_err(|err| {
+        PluginErrorReport::new(err.to_string()).with_exit_code(config.default_exit_code)
+    })?;
     let payload = handler(ctx)?;
     serialize_payload(payload).map_err(|err| err.with_exit_code(config.default_exit_code))
 }
@@ -363,8 +365,8 @@ pub enum PluginRuntimeError {
 }
 
 fn run_plugin_instance<P: Plugin>(plugin: P) -> Result<(), PluginRuntimeError> {
-    let ctx = LaunchContext::from_env()
-        .map_err(|err| PluginRuntimeError::Launch(err.to_string()))?;
+    let ctx =
+        LaunchContext::from_env().map_err(|err| PluginRuntimeError::Launch(err.to_string()))?;
     let plugin_name = plugin.name();
     ctx.validate(&PluginConfig::new(plugin_name))
         .map_err(|err| PluginRuntimeError::Launch(err.to_string()))?;
@@ -618,8 +620,7 @@ mod tests {
                 );
                 assert_eq!(code, 0);
                 assert!(stderr.is_empty());
-                let json: serde_json::Value =
-                    serde_json::from_slice(&stdout).expect("valid json");
+                let json: serde_json::Value = serde_json::from_slice(&stdout).expect("valid json");
                 assert_eq!(json["status"], "ok");
             },
         );
