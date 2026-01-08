@@ -2,13 +2,14 @@ use crate::application::history::HistoryBackend;
 use crate::application::sync::lock_expect;
 use crate::domain::DescribeError;
 use crate::infrastructure::storage::metadata_db_path;
-use fastrand;
+use rand_core::{OsRng, RngCore};
 use redb::{Database, ReadableTable, TableDefinition, TableError};
 use std::collections::HashMap;
-use std::fs;
-use std::io;
-use std::path::PathBuf;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use tracing::warn;
 
 const HISTORY_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("history_samples");
 const HISTORY_DB_FILE: &str = "history.redb";
@@ -79,13 +80,20 @@ impl DiskStorage {
     pub(crate) fn open_or_create() -> Result<Self, DescribeError> {
         let path = history_db_path();
         if let Some(dir) = path.parent() {
+            ensure_not_symlink(dir, "répertoire histoire")?;
             fs::create_dir_all(dir).map_err(|err| {
                 DescribeError::System(format!(
                     "impossible de créer le répertoire histoire {}: {err}",
                     dir.display()
                 ))
             })?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o700));
+            }
         }
+        ensure_not_symlink(path.as_path(), "fichier history")?;
         let db = if path.exists() {
             Database::builder()
                 .open(path.as_path())
@@ -95,6 +103,11 @@ impl DiskStorage {
                 .create(path.as_path())
                 .map_err(|err| map_db_err(err.into()))?
         };
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(path.as_path(), fs::Permissions::from_mode(0o600));
+        }
         Ok(Self { db })
     }
 
@@ -214,9 +227,11 @@ impl HistoryBuffer {
 
     fn from_slice(data: &[u8]) -> Self {
         if data.len() < 5 {
+            warn!("history buffer corrompu (longueur insuffisante)");
             return Self::default();
         }
         if data[0] != ENCODING_VERSION {
+            warn!(version = data[0], "version de buffer history inconnue");
             return Self::default();
         }
         let claimed = u32::from_le_bytes(data[1..5].try_into().unwrap()) as usize;
@@ -227,6 +242,11 @@ impl HistoryBuffer {
         let mut points = Vec::with_capacity(capped);
         for _ in 0..capped {
             if data.len() < offset + 14 {
+                warn!(
+                    expected_bytes = 14,
+                    remaining = data.len().saturating_sub(offset),
+                    "history buffer tronqué, points ignorés"
+                );
                 break;
             }
             let ts_bytes: [u8; 8] = data[offset..offset + 8].try_into().unwrap();
@@ -305,22 +325,107 @@ pub(crate) fn history_identity_path() -> PathBuf {
     }
 }
 
+pub(crate) fn generate_identity_string() -> String {
+    let mut bytes = [0u8; 16];
+    OsRng.fill_bytes(&mut bytes);
+    hex::encode(bytes)
+}
+
 pub(crate) fn load_or_create_identity() -> Result<String, DescribeError> {
     let path = history_identity_path();
     if let Some(parent) = path.parent() {
+        ensure_not_symlink(parent, "répertoire histoire")?;
         fs::create_dir_all(parent).map_err(map_io_err)?;
-    }
-    if let Ok(existing) = fs::read_to_string(&path) {
-        let trimmed = existing.trim();
-        if !trimmed.is_empty() {
-            return Ok(trimmed.to_owned());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
         }
     }
-    let mut bytes = [0u8; 16];
-    fastrand::fill(&mut bytes);
-    let id = hex::encode(bytes);
-    fs::write(&path, &id).map_err(map_io_err)?;
-    Ok(id)
+    ensure_not_symlink(&path, "fichier identity")?;
+    if let Some(existing) = read_identity(&path)? {
+        return Ok(existing);
+    }
+
+    let id = generate_identity_string();
+
+    match write_identity(&path, &id, true) {
+        Ok(()) => Ok(id),
+        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+            // Lost the race: re-read the value written by the winner.
+            if let Some(existing) = read_identity_with_retry(&path)? {
+                return Ok(existing);
+            }
+            // Invalid existing value: rewrite with a fresh ID.
+            write_identity(&path, &id, false).map_err(map_io_err)?;
+            Ok(id)
+        }
+        Err(err) => Err(map_io_err(err)),
+    }
+}
+
+fn read_identity(path: &PathBuf) -> Result<Option<String>, DescribeError> {
+    match fs::read_to_string(path) {
+        Ok(existing) => match validate_identity(existing.trim()) {
+            Ok(id) => Ok(Some(id)),
+            Err(reason) => {
+                warn!(%reason, path=%path.display(), "history identity invalid, regenerating");
+                Ok(None)
+            }
+        },
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(map_io_err(err)),
+    }
+}
+
+fn read_identity_with_retry(path: &PathBuf) -> Result<Option<String>, DescribeError> {
+    for _ in 0..3 {
+        if let Some(id) = read_identity(path)? {
+            return Ok(Some(id));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    Ok(None)
+}
+
+fn ensure_not_symlink(path: &Path, context: &str) -> Result<(), DescribeError> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => Err(map_io_err(io::Error::other(format!(
+            "{context} ne doit pas être un lien symbolique: {}",
+            path.display()
+        )))),
+        _ => Ok(()),
+    }
+}
+
+fn write_identity(path: &PathBuf, id: &str, create_new: bool) -> Result<(), io::Error> {
+    let mut opts = OpenOptions::new();
+    opts.write(true);
+    if create_new {
+        opts.create_new(true);
+    } else {
+        opts.create(true).truncate(true);
+    }
+    let mut file = opts.open(path)?;
+    file.write_all(id.as_bytes())?;
+    let _ = file.sync_all();
+    Ok(())
+}
+
+fn validate_identity(raw: &str) -> Result<String, String> {
+    if raw.is_empty() {
+        return Err("identity vide".into());
+    }
+    if raw.len() != 32 {
+        return Err("identity doit faire 32 caractères hex".into());
+    }
+    if !raw.is_ascii() {
+        return Err("identity doit être ASCII".into());
+    }
+    if !raw.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err("identity doit être hexadécimal".into());
+    }
+    Ok(raw.to_ascii_lowercase())
 }
 
 fn map_io_err(err: io::Error) -> DescribeError {
@@ -330,6 +435,9 @@ fn map_io_err(err: io::Error) -> DescribeError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infrastructure::storage::{clear_state_dir_override_for_tests, state_dir_test_lock};
+    use std::env;
+    use tempfile::tempdir;
 
     #[test]
     fn buffer_roundtrips_points() {
@@ -390,5 +498,40 @@ mod tests {
         let decoded = HistoryBuffer::from_slice(&encoded);
         assert_eq!(decoded.points.len(), 1);
         assert_eq!(decoded.points[0].timestamp, 1);
+    }
+
+    #[test]
+    fn identity_creation_is_stable_under_race() {
+        let _guard = state_dir_test_lock();
+        let tmp = tempdir().expect("tmpdir");
+        env::set_var("DESCRIBE_ME_STATE_DIR", tmp.path());
+
+        let t1 = std::thread::spawn(|| load_or_create_identity().expect("id1"));
+        let t2 = std::thread::spawn(|| load_or_create_identity().expect("id2"));
+
+        let id1 = t1.join().expect("join1");
+        let id2 = t2.join().expect("join2");
+        assert_eq!(id1, id2);
+
+        clear_state_dir_override_for_tests();
+        env::remove_var("DESCRIBE_ME_STATE_DIR");
+    }
+
+    #[test]
+    fn invalid_identity_is_regenerated() {
+        let _guard = state_dir_test_lock();
+        let tmp = tempdir().expect("tmpdir");
+        env::set_var("DESCRIBE_ME_STATE_DIR", tmp.path());
+
+        let path = history_identity_path();
+        fs::create_dir_all(path.parent().unwrap()).expect("mkdirs");
+        fs::write(&path, "not-hex").expect("write invalid identity");
+
+        let id = load_or_create_identity().expect("regen");
+        assert_eq!(id.len(), 32);
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
+
+        clear_state_dir_override_for_tests();
+        env::remove_var("DESCRIBE_ME_STATE_DIR");
     }
 }
