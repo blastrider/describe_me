@@ -116,7 +116,7 @@ liste directement depuis le navigateur (mêmes validations côté API).
 
 ## Plugins externes
 
-- Créez un plugin via la crate `describe_me_plugin_sdk` (trait `Plugin`, type `PluginOutput`, macro `describe_me_plugin_main!`) puis exécutez-le à la demande avec `describe-me plugin run --name certificates --arg foo --timeout 5`. Cette commande ne peut lancer que des binaires whitelistes (`/usr/lib/describe_me/plugins/describe-me-plugin-<nom>`) et force la poignée de main d’environnement (`DESCRIBE_ME_*`).
+- Créez un plugin via la crate `describe_me_plugin_sdk` (trait `Plugin`, type `PluginOutput`, macro `describe_me_plugin_main!`) puis exécutez-le à la demande avec `describe-me plugin run --name certificates --sha256 <hash> --arg foo --timeout 5` (ou laissez la CLI lire `extensions.plugins.sha256` depuis la config). Cette commande ne peut lancer que des binaires whitelistes (`/usr/lib/describe_me/plugins/describe-me-plugin-<nom>`), force la poignée de main d’environnement (`DESCRIBE_ME_*`) et refuse tout binaire non fingerprinté.
 - Listez des plugins à exécuter automatiquement en ajoutant :
 
 ```toml
@@ -135,7 +135,7 @@ sha256 = "<fingerprinted value>"
 timeout_secs = 4
 ```
 
-Tous les plugins doivent vivre sous `/usr/lib/describe_me/plugins/`, être épinglés via `sha256` (64 hexa) et ne produisent de sortie valide que lorsqu’ils détectent `DESCRIBE_ME_HOST=describe_me`, `DESCRIBE_ME_PLUGIN_PROTO=v1` et un jeton non vide. Toute divergence (chemin, hash, poignée de main) annule l’exécution et logue `LogEvent::PluginError`.
+Tous les plugins doivent vivre sous `/usr/lib/describe_me/plugins/`, être épinglés via `sha256` (64 hexa, fourni en config ou via `--sha256`) et ne produisent de sortie valide que lorsqu’ils détectent `DESCRIBE_ME_HOST=describe_me`, `DESCRIBE_ME_PLUGIN_PROTO=v1` et un jeton non vide. Toute divergence (chemin, hash, poignée de main) annule l’exécution et logue `LogEvent::PluginError`.
 
 > Consultez [`docs/plugins.md`](./plugins.md) pour un tutoriel complet (SDK, packaging, calcul du hash).
 
