@@ -21,7 +21,6 @@ pub enum MetadataStoreHealth {
 }
 
 /// Contexte applicatif injectable (métadonnées, historique, cache conteneurs).
-#[allow(dead_code)]
 #[derive(Clone)]
 pub struct AppContext {
     metadata: MetadataStore,
@@ -35,6 +34,7 @@ pub struct AppContext {
 enum MetadataStoreMode {
     SharedRegistry,
     InMemoryOnly,
+    #[cfg(test)]
     CustomPersistent,
 }
 
@@ -84,7 +84,7 @@ impl AppContext {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn with_metadata_backend(metadata_backend: Arc<dyn MetadataBackend>) -> Self {
         Self {
             metadata: MetadataStore::new_with_backend(metadata_backend),
@@ -99,6 +99,7 @@ impl AppContext {
         match self.metadata_mode {
             MetadataStoreMode::SharedRegistry => metadata_store_health(),
             MetadataStoreMode::InMemoryOnly => MetadataStoreHealth::InMemoryOnly,
+            #[cfg(test)]
             MetadataStoreMode::CustomPersistent => MetadataStoreHealth::Persistent,
         }
     }
@@ -117,7 +118,6 @@ impl AppContext {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Default)]
 struct InMemoryMetaState {
     description: Option<String>,
@@ -230,6 +230,13 @@ mod tests {
             .query_series(&server_id, Duration::from_secs(60), 10, 1)
             .expect("query series");
         assert!(!series.points.is_empty());
+    }
+
+    #[test]
+    fn custom_metadata_backend_reports_persistent() {
+        let backend = Arc::new(InMemoryMetadataBackend::default());
+        let ctx = AppContext::with_metadata_backend(backend);
+        assert_eq!(ctx.metadata_store_health(), MetadataStoreHealth::Persistent);
     }
 
     #[cfg(feature = "serde")]
