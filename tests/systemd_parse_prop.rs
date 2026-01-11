@@ -1,4 +1,4 @@
-#![cfg(feature = "systemd")]
+#![cfg(all(feature = "systemd", feature = "internals"))]
 
 use proptest::prelude::*;
 
