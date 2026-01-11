@@ -7,13 +7,11 @@ pub mod services;
 
 #[cfg(all(feature = "systemd", target_os = "linux"))]
 pub mod systemd {
-    #[allow(unused_imports)]
     pub use super::services::systemd::*;
 }
 
 #[cfg(all(feature = "systemd", target_os = "freebsd"))]
 pub mod rc {
-    #[allow(unused_imports)]
     pub use super::services::freebsd::*;
 }
 
