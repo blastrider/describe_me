@@ -5,7 +5,6 @@ pub const HOST_LOGS_DEFAULT_LINES: usize = 200;
 pub const HOST_LOGS_MAX_LINES: usize = 1000;
 
 /// Parameters for host log tailing.
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 pub struct TailParams {
     pub lines: usize,

@@ -32,7 +32,7 @@ impl SlidingWindowQueue {
         removed
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn register(&mut self, now: Instant) -> usize {
         self.purge(now);
         self.hits.push_back(now);
@@ -60,7 +60,7 @@ impl SlidingWindowQueue {
         self.hits.front().copied()
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn newest(&self) -> Option<Instant> {
         self.hits.back().copied()
     }
@@ -84,6 +84,7 @@ mod tests {
         assert_eq!(removed, 1);
         assert_eq!(queue.len(), 1);
         assert_eq!(queue.oldest(), Some(start + Duration::from_secs(5)));
+        assert_eq!(queue.newest(), Some(start + Duration::from_secs(5)));
     }
 
     #[test]

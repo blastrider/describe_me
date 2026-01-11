@@ -1,5 +1,9 @@
 use anyhow::{bail, Result};
-use describe_me_lib::{DescribeConfig, WebAccess, WebTlsConfig};
+#[cfg(feature = "config")]
+use describe_me_lib::domain::DescribeConfig;
+use describe_me_lib::{WebAccess, WebTlsConfig};
+#[cfg(not(feature = "config"))]
+type DescribeConfig = ();
 
 use crate::describe_me::allowlists::resolve_web_list;
 use crate::describe_me::args::CliConfig;
@@ -14,31 +18,42 @@ pub fn build_web_access(
 ) -> WebAccess {
     let mut web_access = WebAccess::default();
 
-    let web_cfg = cfg.and_then(|cfg| cfg.web.as_ref());
-    if let Some(web_cfg) = web_cfg {
-        if let Some(token) = web_cfg.token.as_ref() {
-            web_access.token = Some(token.clone());
-        }
-        if let Some(tls_cfg) = web_cfg.tls.as_ref() {
-            if !tls_cfg.cert_path.is_empty() && !tls_cfg.key_path.is_empty() {
-                web_access.tls = Some(WebTlsConfig {
-                    cert_path: tls_cfg.cert_path.clone(),
-                    key_path: tls_cfg.key_path.clone(),
-                });
+    let (config_allow_ips, config_allow_origins, config_trusted_proxies) = {
+        #[cfg(feature = "config")]
+        {
+            let web_cfg = cfg.and_then(|cfg| cfg.web.as_ref());
+            if let Some(web_cfg) = web_cfg {
+                if let Some(token) = web_cfg.token.as_ref() {
+                    web_access.token = Some(token.clone());
+                }
+                if let Some(tls_cfg) = web_cfg.tls.as_ref() {
+                    if !tls_cfg.cert_path.is_empty() && !tls_cfg.key_path.is_empty() {
+                        web_access.tls = Some(WebTlsConfig {
+                            cert_path: tls_cfg.cert_path.clone(),
+                            key_path: tls_cfg.key_path.clone(),
+                        });
+                    }
+                }
+                if web_cfg.dev_insecure_session_cookie {
+                    web_access.session_cookie_secure = false;
+                }
             }
+            (
+                web_cfg.map(|cfg| cfg.allow_ips.as_slice()),
+                web_cfg.map(|cfg| cfg.allow_origins.as_slice()),
+                web_cfg.map(|cfg| cfg.trusted_proxies.as_slice()),
+            )
         }
-        if web_cfg.dev_insecure_session_cookie {
-            web_access.session_cookie_secure = false;
+        #[cfg(not(feature = "config"))]
+        {
+            let _ = cfg;
+            (None, None, None)
         }
-    }
+    };
 
     if let Some(token) = &cli.web.token {
         web_access.token = Some(token.clone());
     }
-
-    let config_allow_ips = web_cfg.map(|cfg| cfg.allow_ips.as_slice());
-    let config_allow_origins = web_cfg.map(|cfg| cfg.allow_origins.as_slice());
-    let config_trusted_proxies = web_cfg.map(|cfg| cfg.trusted_proxies.as_slice());
 
     // Precedence is: CLI > config > runtime defaults.
     web_access.allow_ips = resolve_web_list(
@@ -93,6 +108,8 @@ pub fn start_web_server(
     ctx: describe_me_lib::AppContext,
 ) -> Result<()> {
     use std::net::SocketAddr;
+    #[cfg(not(feature = "config"))]
+    let _ = cfg;
 
     let addr: SocketAddr = bind
         .parse()
@@ -124,7 +141,7 @@ pub fn start_web_server(
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "config"))]
 mod tests {
     use super::*;
     use crate::describe_me::args;

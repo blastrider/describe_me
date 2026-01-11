@@ -138,13 +138,6 @@ impl UpdatesCache {
         });
     }
 
-    #[allow(dead_code)]
-    pub async fn refresh_blocking(&self) -> Option<UpdatesInfo> {
-        self.refresh_blocking_shared()
-            .await
-            .map(|info| (*info).clone())
-    }
-
     pub(crate) async fn refresh_blocking_shared(&self) -> Option<Arc<UpdatesInfo>> {
         loop {
             let notified = self.inner.notify.notified();

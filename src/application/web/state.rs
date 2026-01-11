@@ -533,7 +533,6 @@ impl AppState {
     }
 
     #[cfg(feature = "config")]
-    #[allow(dead_code)]
     pub fn config(&self) -> Option<DescribeConfig> {
         self.static_cfg.config.clone()
     }

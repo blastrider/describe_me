@@ -614,14 +614,12 @@ fn read_freebsd_version(args: &[&str]) -> Option<String> {
     Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-#[cfg(any(target_os = "freebsd", test, feature = "internals"))]
-#[cfg_attr(feature = "internals", allow(dead_code))]
+#[cfg(any(target_os = "freebsd", test))]
 fn parse_pkg_version_output(output: &str) -> Vec<UpdatePackage> {
     output.lines().filter_map(parse_pkg_version_line).collect()
 }
 
-#[cfg(any(target_os = "freebsd", test, feature = "internals"))]
-#[cfg_attr(feature = "internals", allow(dead_code))]
+#[cfg(any(target_os = "freebsd", test))]
 fn parse_pkg_version_line(line: &str) -> Option<UpdatePackage> {
     let trimmed = line.trim();
     if trimmed.is_empty() {
@@ -641,8 +639,7 @@ fn parse_pkg_version_line(line: &str) -> Option<UpdatePackage> {
     })
 }
 
-#[cfg(any(target_os = "freebsd", test, feature = "internals"))]
-#[cfg_attr(feature = "internals", allow(dead_code))]
+#[cfg(any(target_os = "freebsd", test))]
 fn extract_pkg_available_version(line: &str) -> Option<String> {
     let marker = "(index has";
     let idx = line.find(marker)?;
