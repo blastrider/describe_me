@@ -177,16 +177,6 @@ struct ContainersCache {
 
 #[cfg(feature = "serde")]
 impl ContainersCache {
-    #[allow(dead_code)]
-    fn fresh_snapshot(&self, now: Instant) -> Option<ContainersSnapshot> {
-        match (self.state.data.as_ref(), self.state.last_success) {
-            (Some(snapshot), Some(ts)) if now.duration_since(ts) < CONTAINERS_CACHE_TTL => {
-                Some(snapshot.clone())
-            }
-            _ => None,
-        }
-    }
-
     fn reuse_stale(&self, now: Instant) -> Option<ContainersSnapshot> {
         match (self.state.data.as_ref(), self.state.last_success) {
             (Some(snapshot), Some(ts))
@@ -287,26 +277,6 @@ impl ContainersCacheService {
         let mut guard = lock_expect(self.cache.lock(), "ContainersCacheService");
         guard.store(snapshot, Instant::now());
     }
-}
-
-#[cfg(feature = "serde")]
-#[allow(dead_code)]
-pub fn capture_containers_with_cache(
-    service: &ContainersCacheService,
-) -> Result<ContainersSnapshot, ContainersCaptureError> {
-    service.capture()
-}
-
-#[cfg(feature = "serde")]
-#[allow(dead_code)]
-#[deprecated(note = "Use AppContext::containers_cache().capture()")]
-pub fn capture_containers_cached() -> Result<ContainersSnapshot, ContainersCaptureError> {
-    Err(ContainersCaptureError::Plugin {
-        message: "capture_containers_cached removed; use AppContext::containers_cache().capture()"
-            .into(),
-        exit_code: None,
-        soft: false,
-    })
 }
 
 #[cfg(feature = "serde")]
