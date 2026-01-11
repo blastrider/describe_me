@@ -4,7 +4,6 @@
 //! Key roles:
 //! - `SecurityPolicy`: configuration of thresholds, windows, cooldowns and limits per route.
 //! - `SecurityState`: in-memory counters and trackers updated for each request.
-//! - `WebSecurityEngine`: internal orchestrator applying the policy on the state.
 //! - `WebSecurity`: Axum-facing facade (auth guards, hooks, SSE permits, logging).
 //!
 //! Typical request flow:
@@ -57,7 +56,7 @@ use tracing::info;
 
 #[derive(Debug)]
 pub(super) struct AuthSession {
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     route: WebRoute,
     ip: IpAddr,
     token: TokenKey,
@@ -447,6 +446,7 @@ impl WebSecurity {
 
         let purge_session_cookie = request.purge_session_cookie && session_cookie.is_none();
         Ok(AuthSession {
+            #[cfg(test)]
             route: request.route,
             ip: request.remote_ip,
             token: request.token_key,
@@ -550,6 +550,7 @@ impl WebSecurity {
 
         let purge_session_cookie = request.purge_session_cookie && session_cookie.is_none();
         Ok(AuthSession {
+            #[cfg(test)]
             route: request.route,
             ip: request.remote_ip,
             token: request.token_key,
