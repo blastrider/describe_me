@@ -37,7 +37,6 @@ impl From<WebRoute> for RouteKey {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug)]
 pub(crate) struct RateLimiter {
     ip_counters: SlidingWindowCounters<IpAddr>,
@@ -56,11 +55,6 @@ impl RateLimiter {
             ip_counters: SlidingWindowCounters::new(),
             token_counters: SlidingWindowCounters::new(),
         }
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn default() -> Self {
-        Self::new()
     }
 
     pub(crate) async fn register_ip_hit(
@@ -112,7 +106,6 @@ impl RateLimiter {
         }
     }
 }
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RateLimitDecision {
     allowed: bool,
