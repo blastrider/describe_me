@@ -382,7 +382,7 @@ fn is_idempotent_method(method: &Method) -> bool {
     )
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn is_origin_allowed<B>(req: &Request<B>, policy: &OriginPolicy) -> bool {
     policy.allows(req)
 }
