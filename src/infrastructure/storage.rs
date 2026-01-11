@@ -60,7 +60,6 @@ pub(crate) struct MetadataStore {
     backend: Arc<dyn MetadataBackend>,
 }
 
-#[allow(dead_code)]
 impl MetadataStore {
     fn new(backend: Arc<dyn MetadataBackend>) -> Self {
         Self { backend }
