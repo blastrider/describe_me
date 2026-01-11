@@ -637,8 +637,8 @@ mod tests {
     fn decode_procnet_ipv6_roundtrip_known_address() {
         use std::net::Ipv6Addr;
         let target = Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 1);
-        let encoded = "B80D0120000000000000000001000000";
-        let decoded = decode_procnet_ipv6(encoded).unwrap();
+        let encoded = encode_procnet_ipv6(target);
+        let decoded = decode_procnet_ipv6(&encoded).unwrap();
         assert_eq!(decoded, target);
     }
 
@@ -663,7 +663,6 @@ mod tests {
     }
 
     // Helper used only inside tests to build procfs-encoded hex from an IPv6 address.
-    #[allow(dead_code)]
     fn encode_procnet_ipv6(addr: std::net::Ipv6Addr) -> String {
         let octets = addr.octets();
         let mut encoded = String::new();
