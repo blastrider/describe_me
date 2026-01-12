@@ -1,5 +1,8 @@
 # Lecture des logs hôte (journald)
 
+Note operateur : ce document est un complement. Voir `docs/observability.md`
+pour la vue canon (logs + metriques + depannage).
+
 - **CLI** : `describe-me logs --lines 200` lit les dernières lignes journald via `journalctl --output=short-iso-precise`. La commande borne automatiquement la lecture (`HOST_LOGS_MAX_LINES`) et signale si journald est indisponible.
 - **Web** : le tableau de bord affiche un aperçu dans une tuile large et un bouton « Détails » vers `/logs` (page dédiée). L’API `GET /api/logs?lines=N` renvoie `{ entries, truncated }` et respecte le même bornage.
 - **Conteneur** : montez `/run/systemd/journal/socket:/run/systemd/journal/socket:ro` pour exposer journald à l’image (déjà prévu dans `docker/docker-compose.yml`).
