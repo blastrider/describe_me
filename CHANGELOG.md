@@ -1,6 +1,9 @@
 ## Unreleased
 
-- Ajoutez vos changements ici.
+- Docs: ajoute des guides operateur `docs/installation.md`, `docs/config.md`, `docs/security.md`, `docs/observability.md` et un point d'entree `docs/guide.md`.
+- Docs: met a jour `README.md` (table des docs canon, exemples de config reels) et corrige les references TLS/config.
+- Docs: ajuste `docs/utilisateurs/guide.md` (config files existants + liens vers les nouveaux guides).
+- Docs: pointe `docs/cli.md`, `docs/logs.md` et `docs/logging.md` vers la doc canon (config/observabilite).
 
 ## v0.6.0 - 2026-01-12
 
