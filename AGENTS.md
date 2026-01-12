@@ -115,6 +115,8 @@ If the repo has multiple crates, include `--workspace` everywhere.
 - `src/api.rs` is the stable facade. Don’t break it without explicit instruction.
 - New capabilities: add behind modules/features and keep old paths working if possible.
 - Décider une règle : pas de renaming public (on déplace, on pub use).
+- Ton organisation actuelle est saine ; le bon move, c’est de poursuivre les splits ciblés et préserver les chemins via façades/ré-exports.
+
 
 ## 9) Documentation & comments
 
