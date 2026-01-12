@@ -30,7 +30,7 @@ cargo test --features "systemd config net web"
 
 # Snapshot CLI
 ./target/release/describe-me --with-services --net-listen \
-  --config ./src/examples/config.toml --pretty
+  --config ./config.local.toml --pretty
 
 # Dashboard SSE (HTTP)
 ./target/release/describe-me \
@@ -39,7 +39,7 @@ cargo test --features "systemd config net web"
   --with-services
 ```
 
-Pour HTTPS, ajoutez un bloc `[web.tls]` (voir `src/examples/config_tls.toml`) ou placez l’app derrière un reverse-proxy (Caddy/Nginx/Traefik) en renseignant `allow_origins` et `trusted_proxies`. Le cookie `describe_me_session` est `HttpOnly+Secure`, donc il n’est envoyé qu’en HTTPS ; pour un dev local en clair, utilisez explicitement `--web-dev` (ou `web.dev_insecure_session_cookie = true`) et gardez ce mode hors prod.
+Pour HTTPS, ajoutez un bloc `[web.tls]` (voir `docs/config.reference.toml` ou `packaging/config/config.toml`) ou placez l’app derrière un reverse-proxy (Caddy/Nginx/Traefik) en renseignant `allow_origins` et `trusted_proxies`. Le cookie `describe_me_session` est `HttpOnly+Secure`, donc il n’est envoyé qu’en HTTPS ; pour un dev local en clair, utilisez explicitement `--web-dev` (ou `web.dev_insecure_session_cookie = true`) et gardez ce mode hors prod.
 
 ## Extensions & plugins
 
@@ -107,12 +107,26 @@ L’unité définit `DESCRIBE_ME_JOURNALCTL=/usr/bin/journalctl` par défaut; su
 
 ## Documentation
 
-- Guide utilisateur complet : `docs/utilisateurs/guide.md`
+Docs canon (opérateur/utilisateur) :
+- Guide utilisateur (quickstart) : `docs/guide.md`
+- Installation : `docs/installation.md`
+- Configuration : `docs/config.md` + `docs/config.reference.toml`
+- Sécurité opérateur : `docs/security.md`
+- Observabilité : `docs/observability.md`
+- CLI : `docs/cli.md`
+- Plugins : `docs/plugins.md`
+
+Compléments :
 - Architecture & internals : `docs/architecture.md`, `docs/application-layer.md`, `docs/web-security.md`, etc.
-- Exemples de configuration : `src/examples/config.toml`, `src/examples/config_http.toml`, `src/examples/config_tls.toml`
-- Gabarit complet documenté : `docs/config.reference.toml`
 - Packaging & service : `packaging/systemd/describe-me.service`
 - Environnement Vagrant multi‑distros (VMs + HTTPS + systemd) : `infras/README.md`
+
+### Exemples de configuration (fichiers du repo)
+
+- `docs/config.reference.toml` — gabarit complet commenté.
+- `packaging/config/config.toml` — profil Debian/HTTPS (prod).
+- `docker/config.dev.toml` — config dev HTTP (compose).
+- `config.local.toml` — config dev local hors conteneur.
 
 ## Plateformes supportées
 
