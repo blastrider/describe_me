@@ -1,3 +1,5 @@
+Note: For operator usage, see `docs/observability.md`.
+
 ## Logging Guide
 
 `describe_me` relies on [`tracing`](https://docs.rs/tracing) for structured logging. To keep
