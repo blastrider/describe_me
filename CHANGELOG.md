@@ -1,5 +1,9 @@
 ## Unreleased
 
+- Ajoutez vos changements ici.
+
+## v0.6.0 - 2026-01-12
+
 - Web (auth/session) : sessions réutilisables avec TTL glissant aligné sur `WEB_SESSION_SECONDS`, cookie `describe_me_session` rafraîchi automatiquement via `attach_session_cookie` sur toutes les routes protégées, et fallback Bearer conservé pour la CLI.
 - Web UI : login modal en JSON vers `/auth/login` (same-origin), SSE basculé sur `EventSource('/sse')` avec re-auth propre sur 401, fetch APIs (`history`, `logs`, `containers`, tags) utilisant uniquement le cookie HttpOnly.
 - Sécurité : cookie Max-Age synchronisé avec le TTL serveur, suppression du stockage client de jeton, 401 nettoie le cookie côté backend.
