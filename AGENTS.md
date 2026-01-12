@@ -38,7 +38,7 @@ If you could not run a command, state it explicitly and why (missing toolchain/t
 
 ## 3) Mandatory local verification (run after code edits)
 
-Always run, in this order, and do not skip Clippy (fix issues before launching the full test matrix):
+Tell the user to run instead of running them by yourself, in this order, and do not skip Clippy (fix issues before launching the full test matrix):
 
 - `cargo fmt --all`
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
@@ -47,10 +47,6 @@ Always run, in this order, and do not skip Clippy (fix issues before launching t
 Then run a feature matrix sanity check (fast but catches cfg breaks):
 
 - `cargo test --workspace --no-default-features`
-- `cargo test --workspace --features "cli"`
-- `cargo test --workspace --features "cli net"`
-- `cargo test --workspace --features "cli systemd"`
-- `cargo test --workspace --features "cli web"`
 - `cargo test --workspace --features "cli web config net systemd"`
 - `cargo test --workspace --features "internals"`
 
@@ -118,6 +114,7 @@ If the repo has multiple crates, include `--workspace` everywhere.
 
 - `src/api.rs` is the stable facade. Don’t break it without explicit instruction.
 - New capabilities: add behind modules/features and keep old paths working if possible.
+- Décider une règle : pas de renaming public (on déplace, on pub use).
 
 ## 9) Documentation & comments
 

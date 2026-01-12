@@ -39,6 +39,10 @@ pub mod exposure {
     #[cfg(feature = "serde")]
     pub use crate::application::capture_snapshot_with_view;
     #[cfg(feature = "serde")]
+    pub use crate::application::exposure::view::DiskUsageView;
+    #[cfg(all(feature = "serde", feature = "systemd"))]
+    pub use crate::application::exposure::view::{ServiceStateCount, ServiceSummary};
+    #[cfg(feature = "serde")]
     pub use crate::application::exposure::SnapshotView;
     pub use crate::application::exposure::{
         Exposure, ExposureBuilder, ExposureCaptureContext, ExposureFlagSource, ExposureOverrides,
