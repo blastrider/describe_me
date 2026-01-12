@@ -48,6 +48,9 @@ un fichier TOML (`DescribeConfig`). Il peut définir :
 Les erreurs de lecture/parsing sont remontées par `DescribeError::Config`
 et journalisées (`LogEvent::ConfigError`).
 
+Voir `docs/config.md` pour les emplacements/precedence et
+`docs/config.reference.toml` pour le gabarit complet.
+
 ## Sortie combinée
 
 Le mode CLI assemble :
@@ -94,7 +97,7 @@ Le fichier est écrit dans `DESCRIBE_ME_STATE_DIR` s’il est défini, sinon dan
 `STATE_DIRECTORY` (systemd) ou, à défaut, dans les emplacements XDG/`LOCALAPPDATA`.
 Il est désormais possible de forcer explicitement ce répertoire via le fichier
 de configuration : ajoutez `state_dir = "/var/lib/describe-me"` dans la section
-`[runtime]` (ex. `config_tls.toml`) et toutes les commandes CLI/Web utiliseront
+`[runtime]` (ex. `docs/config.reference.toml`) et toutes les commandes CLI/Web utiliseront
 ce chemin pour `metadata.redb`.
 Les snapshots (CLI, JSON, SSE) réutilisent automatiquement ce contenu et l’interface web
 affiche un bloc « Description » modifiable (formulaire avec sauvegarde immédiate via `POST /api/description`).

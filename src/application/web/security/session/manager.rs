@@ -1,65 +1,29 @@
-use super::{TokenFingerprint, TokenKey};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
-use percent_encoding::percent_decode_str;
 use rand_core::{OsRng, RngCore};
 use std::{
-    collections::hash_map::DefaultHasher,
-    collections::HashMap,
-    hash::Hasher,
-    net::IpAddr,
     sync::Arc,
     time::{Duration, Instant},
 };
 use tokio::sync::Mutex;
-
-use axum::http::{header, HeaderMap, HeaderValue};
 use tracing::warn;
+
+use axum::http::HeaderMap;
 
 use crate::application::web::WEB_SESSION_SECONDS;
 use crate::domain::SessionCookieSameSite;
 
-pub(super) const SESSION_COOKIE_PREFIX: &str = "sess:v1:";
+use super::super::{TokenFingerprint, TokenKey};
+use super::claim::{compute_client_claim, ClientClaim};
+use super::cookie::{clear_session_cookie, session_id_from_cookie_header, set_session_cookie};
+use super::store::{SessionEntry, SessionStore, SESSION_STORE_MAX_ENTRIES};
+use super::SESSION_COOKIE_PREFIX;
+
 const SESSION_TTL_DEFAULT: Duration = Duration::from_secs(WEB_SESSION_SECONDS);
 const SESSION_TTL_MIN: Duration = Duration::from_secs(60);
 const SESSION_TTL_MAX: Duration = Duration::from_secs(WEB_SESSION_SECONDS);
 const SESSION_MAX_AGE_DEFAULT: Duration =
     Duration::from_secs(WEB_SESSION_SECONDS.saturating_mul(4));
-const CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
-const SESSION_UA_MAX_LEN: usize = 256;
-const SESSION_STORE_MAX_ENTRIES: usize = 10_000;
-pub const SESSION_COOKIE_NAME: &str = "describe_me_session";
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ClientClaim(u64);
-
-fn compute_client_claim(ip: IpAddr, user_agent: Option<&str>) -> ClientClaim {
-    let mut hasher = DefaultHasher::new();
-    match ip {
-        IpAddr::V4(addr) => {
-            let octets = addr.octets();
-            hasher.write_u8(4);
-            hasher.write(&octets[..3]);
-        }
-        IpAddr::V6(addr) => {
-            let segments = addr.segments();
-            hasher.write_u8(6);
-            for segment in segments.iter().take(4) {
-                hasher.write_u16(*segment);
-            }
-        }
-    }
-
-    let ua = user_agent.unwrap_or("").trim();
-    let mut ua_bytes = Vec::with_capacity(SESSION_UA_MAX_LEN.min(ua.len()));
-    for byte in ua.as_bytes().iter().take(SESSION_UA_MAX_LEN) {
-        ua_bytes.push(byte.to_ascii_lowercase());
-    }
-    hasher.write_usize(ua_bytes.len());
-    hasher.write(&ua_bytes);
-
-    ClientClaim(hasher.finish())
-}
 
 #[derive(Debug, Clone)]
 pub(crate) struct SessionManager {
@@ -70,11 +34,11 @@ pub(crate) struct SessionManager {
 }
 
 impl SessionManager {
-    pub(super) fn new() -> Self {
+    pub(in crate::application::web::security) fn new() -> Self {
         Self::with_ttl(SESSION_TTL_DEFAULT)
     }
 
-    pub(super) fn with_ttl(session_ttl: Duration) -> Self {
+    pub(in crate::application::web::security) fn with_ttl(session_ttl: Duration) -> Self {
         Self::with_limits(session_ttl, SESSION_MAX_AGE_DEFAULT, false)
     }
 
@@ -100,7 +64,7 @@ impl SessionManager {
         }
     }
 
-    pub(super) async fn issue(
+    pub(in crate::application::web::security) async fn issue(
         &self,
         token: TokenKey,
         token_fingerprint: TokenFingerprint,
@@ -163,7 +127,7 @@ impl SessionManager {
         format!("{SESSION_COOKIE_PREFIX}{id}")
     }
 
-    pub(super) async fn lookup(
+    pub(in crate::application::web::security) async fn lookup(
         &self,
         cookie: &str,
         client_claim: Option<ClientClaim>,
@@ -206,7 +170,11 @@ impl SessionManager {
         }
     }
 
-    pub(super) async fn consume(&self, id: &str, now: Instant) -> Result<(), SessionError> {
+    pub(in crate::application::web::security) async fn consume(
+        &self,
+        id: &str,
+        now: Instant,
+    ) -> Result<(), SessionError> {
         let mut store = self.inner.lock().await;
         store.cleanup(now);
         match store.entries.get_mut(id) {
@@ -231,16 +199,20 @@ impl SessionManager {
         }
     }
 
-    pub(super) async fn revoke(&self, id: &str) {
+    pub(in crate::application::web::security) async fn revoke(&self, id: &str) {
         let mut store = self.inner.lock().await;
         store.entries.remove(id);
     }
 
-    pub(super) fn ttl(&self) -> Duration {
+    pub(in crate::application::web::security) fn ttl(&self) -> Duration {
         self.session_ttl
     }
 
-    pub(super) fn client_claim(&self, ip: IpAddr, user_agent: Option<&str>) -> Option<ClientClaim> {
+    pub(in crate::application::web::security) fn client_claim(
+        &self,
+        ip: std::net::IpAddr,
+        user_agent: Option<&str>,
+    ) -> Option<ClientClaim> {
         if !self.bind_to_client {
             return None;
         }
@@ -253,7 +225,7 @@ impl SessionManager {
     }
 
     #[cfg(test)]
-    pub(super) fn ttl_for_tests(&self) -> Duration {
+    pub(in crate::application::web::security) fn ttl_for_tests(&self) -> Duration {
         self.session_ttl
     }
 
@@ -302,35 +274,10 @@ impl<'a> WebSession<'a> {
     }
 
     pub async fn revoke_from_cookie_header(&self, raw_cookie_header: &str, _now: Instant) -> bool {
-        let mut encoded_cookie = None;
-        for pair in raw_cookie_header.split(';') {
-            let mut kv = pair.trim().splitn(2, '=');
-            let name = kv.next().map(str::trim);
-            let Some(raw_value) = kv.next() else {
-                continue;
-            };
-            if name != Some(SESSION_COOKIE_NAME) {
-                continue;
-            }
-            let trimmed = raw_value.trim();
-            if trimmed.is_empty() {
-                return false;
-            }
-            encoded_cookie = Some(trimmed);
-            break;
-        }
-
-        let Some(encoded) = encoded_cookie else {
+        let Some(id) = session_id_from_cookie_header(raw_cookie_header) else {
             return false;
         };
-        let decoded = match percent_decode_str(encoded).decode_utf8() {
-            Ok(value) => value,
-            Err(_) => return false,
-        };
-        let Some(id) = decoded.strip_prefix(SESSION_COOKIE_PREFIX) else {
-            return false;
-        };
-        self.manager.revoke(id).await;
+        self.manager.revoke(&id).await;
         true
     }
 
@@ -339,118 +286,29 @@ impl<'a> WebSession<'a> {
     }
 }
 
-fn same_site_attr(value: SessionCookieSameSite) -> &'static str {
-    match value {
-        SessionCookieSameSite::Lax => "Lax",
-        SessionCookieSameSite::Strict => "Strict",
-        SessionCookieSameSite::None => "None",
-    }
-}
-
-pub fn set_session_cookie(
-    headers: &mut HeaderMap,
-    value: &str,
-    max_age: Duration,
-    secure: bool,
-    same_site: SessionCookieSameSite,
-) {
-    if value.is_empty() {
-        return;
-    }
-
-    use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
-    let encoded = utf8_percent_encode(value, NON_ALPHANUMERIC).to_string();
-    let mut suffix = format!("; HttpOnly; SameSite={}", same_site_attr(same_site));
-    if secure {
-        suffix.push_str("; Secure");
-    }
-    let max_age_secs = max_age.as_secs().clamp(1, u64::from(u32::MAX));
-    let cookie = format!(
-        "{name}={value}; Path=/; Max-Age={max_age}{suffix}",
-        name = SESSION_COOKIE_NAME,
-        value = encoded,
-        max_age = max_age_secs,
-        suffix = suffix
-    );
-    if let Ok(value) = HeaderValue::from_str(&cookie) {
-        headers.append(header::SET_COOKIE, value);
-    }
-}
-
-pub fn clear_session_cookie(
-    headers: &mut HeaderMap,
-    secure: bool,
-    same_site: SessionCookieSameSite,
-) {
-    let mut suffix = format!("; HttpOnly; SameSite={}", same_site_attr(same_site));
-    if secure {
-        suffix.push_str("; Secure");
-    }
-    let cookie = format!(
-        "{name}=deleted; Path=/; Max-Age=0{suffix}",
-        name = SESSION_COOKIE_NAME,
-        suffix = suffix
-    );
-    if let Ok(value) = HeaderValue::from_str(&cookie) {
-        headers.append(header::SET_COOKIE, value);
-    }
-}
-
-#[derive(Debug)]
-struct SessionStore {
-    entries: HashMap<String, SessionEntry>,
-    last_cleanup: Instant,
-}
-
-impl SessionStore {
-    fn new() -> Self {
-        Self {
-            entries: HashMap::new(),
-            last_cleanup: Instant::now(),
-        }
-    }
-
-    fn cleanup(&mut self, now: Instant) {
-        if now.duration_since(self.last_cleanup) < CLEANUP_INTERVAL {
-            return;
-        }
-        self.entries.retain(|_, entry| entry.expires_at > now);
-        self.last_cleanup = now;
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-struct SessionEntry {
-    token: TokenKey,
-    token_fingerprint: TokenFingerprint,
-    client_claim: Option<ClientClaim>,
-    issued_at: Instant,
-    expires_at: Instant,
-}
-
 #[derive(Debug, Clone)]
-pub(super) struct SessionCandidate {
+pub(in crate::application::web::security) struct SessionCandidate {
     id: String,
     token: TokenKey,
     token_fingerprint: TokenFingerprint,
 }
 
 impl SessionCandidate {
-    pub(super) fn token_key(&self) -> TokenKey {
+    pub(in crate::application::web::security) fn token_key(&self) -> TokenKey {
         self.token
     }
 
-    pub(super) fn id(&self) -> &str {
+    pub(in crate::application::web::security) fn id(&self) -> &str {
         &self.id
     }
 
-    pub(super) fn token_fingerprint(&self) -> TokenFingerprint {
+    pub(in crate::application::web::security) fn token_fingerprint(&self) -> TokenFingerprint {
         self.token_fingerprint
     }
 }
 
 #[derive(Debug)]
-pub(super) enum SessionError {
+pub(in crate::application::web::security) enum SessionError {
     InvalidFormat,
     Unknown,
     Expired,

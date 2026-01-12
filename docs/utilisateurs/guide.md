@@ -21,6 +21,7 @@ Sommaire
 8. Matrice des features
 9. Tests & Qualité
 10. FAQ
+11. Documentation complémentaire
 
 1. Installation
 ---------------
@@ -63,7 +64,7 @@ Options courantes :
 ./target/debug/describe-me --disks
 ./target/debug/describe-me --net-listen
 ./target/debug/describe-me --net-traffic
-./target/debug/describe-me --config ./src/examples/config.toml
+./target/debug/describe-me --config ./config.local.toml
 ./target/debug/describe-me --json
 ./target/debug/describe-me --pretty
 ```
@@ -134,7 +135,7 @@ Exemples :
    ```
 3. Ouvrir `http://127.0.0.1:8080/`, saisir le jeton en clair.
 
-Pour produire du HTTPS natif, ajoute un bloc `[web.tls]` (ex. `src/examples/config_tls.toml`) :
+Pour produire du HTTPS natif, ajoute un bloc `[web.tls]` (voir `docs/config.reference.toml` ou `packaging/config/config.toml`) :
 
 ```
 [web.tls]
@@ -165,7 +166,7 @@ chmod 600 ./certs/server-key.pem
 6. Configuration TOML
 ---------------------
 
-Fichier minimal (`src/examples/config.toml`) :
+Exemple minimal (à adapter, basé sur `docs/config.reference.toml`) :
 
 ```
 [services]
@@ -192,9 +193,12 @@ redacted = true
 
 Autres variantes :
 
-- `src/examples/config_http.toml` — écoute HTTP (LAN).
-- `src/examples/config_tls.toml` — HTTPS complet (certificat/clé).
-- `docs/config.reference.toml` — toutes les options documentées à personnaliser.
+- `packaging/config/config.toml` — profil Debian/HTTPS (prod).
+- `docker/config.dev.toml` — config dev HTTP (compose).
+- `config.local.toml` — config dev local hors conteneur.
+- `docs/config.reference.toml` — gabarit complet commenté.
+
+Voir aussi `docs/config.md` (emplacements + precedence) et `docs/security.md`.
 
 > ⚠️ Besoin de tester en HTTP uniquement ? Ajoute `dev_insecure_session_cookie = true` dans `[web]` (ou lance `describe-me --web-dev …`). Ce réglage enlève l’attribut `Secure` de `describe_me_session` et doit rester réservé au développement.
 
@@ -284,6 +288,16 @@ Autres outils : `cargo audit`, `cargo deny check`, `cargo crev verify --recursiv
 - **`--net-listen` vide ?** Active la feature `net` et assure-toi d’avoir les droits.
 - **Healthcheck CI ?** Utilise `--check` et lis le code de sortie (0/1/2).
 - **HTTPS obligatoire ?** Oui pour le cookie `describe_me_session` (`Secure`). Active `[web.tls]` ou termine TLS via ton proxy (avec `allow_origins`/`trusted_proxies`). En dernier recours dev-only : `--web-dev` / `web.dev_insecure_session_cookie = true`.
+
+11. Documentation complémentaire
+--------------------------------
+
+- Installation (modes Debian/Docker/FreeBSD) : `docs/installation.md`
+- Configuration (emplacements + precedence) : `docs/config.md`
+- Sécurité opérateur (auth, proxies, rate-limit) : `docs/security.md`
+- Observabilité (logs, métriques, dépannage) : `docs/observability.md`
+- CLI détaillée : `docs/cli.md`
+- Plugins : `docs/plugins.md`
 
 Licence
 -------

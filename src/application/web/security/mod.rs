@@ -14,18 +14,25 @@
 //! This module is structured to keep these concerns isolated while staying extensible.
 
 mod auth;
+mod http;
+mod incidents;
 mod limits;
 mod session;
 mod sse;
+mod types;
 
 pub(crate) use limits::GlobalPermit;
 pub(crate) use session::{
     clear_session_cookie, set_session_cookie, WebSession, SESSION_COOKIE_NAME,
 };
+pub(crate) use types::IpMatcher;
+pub(super) use types::{TokenFingerprint, TokenKey};
 
 use super::{template, AppState, WebAccess};
 use crate::application::web::csp::CspNonce;
 use auth::{build_request, verify_token, AuthRequest, CredentialOverride, TokenVerifier};
+use http::{accepts_html, jitter, retry_after_seconds, uniform_auth_delay};
+use incidents::emit_security_incident;
 use limits::{enforce_rate_limits, ensure_not_blocked, SecurityPolicy, SecurityState};
 use session::SessionManager;
 use sse::acquire_permit;
@@ -42,16 +49,7 @@ use axum::{
     response::{Html, IntoResponse, Response},
 };
 pub(crate) use sse::SsePermit;
-use std::{
-    borrow::Cow,
-    collections::hash_map::{DefaultHasher, RandomState},
-    fmt,
-    hash::{BuildHasher, Hash, Hasher},
-    net::IpAddr,
-    sync::{Arc, OnceLock},
-    time::Duration,
-};
-use tokio::time::sleep;
+use std::{borrow::Cow, net::IpAddr, sync::Arc, time::Duration};
 use tracing::info;
 
 #[derive(Debug)]
@@ -303,15 +301,7 @@ impl WebSecurity {
     }
 
     fn log_incident(&self, category: &'static str, request: &AuthRequest, detail: Option<String>) {
-        LogEvent::SecurityIncident {
-            category: Cow::Borrowed(category),
-            route: Cow::Borrowed(request.route.as_str()),
-            request_path: Some(Cow::Borrowed(request.request_path.as_ref())),
-            ip: Some(Cow::Owned(request.remote_ip.to_string())),
-            token: Some(Cow::Owned(request.token_key.to_string())),
-            detail: detail.map(Cow::Owned),
-        }
-        .emit();
+        emit_security_incident(category, request, detail);
     }
 
     fn log_rejection(
@@ -739,163 +729,6 @@ impl SecurityRejection {
     }
 }
 
-fn accepts_html(parts: &Parts, route: WebRoute) -> bool {
-    let accept = parts
-        .headers
-        .get(header::ACCEPT)
-        .and_then(|value| value.to_str().ok());
-    let wants_html =
-        accept.map(|raw| raw.contains("text/html") || raw.contains("application/xhtml+xml"));
-    let is_api_request = matches!(route, WebRoute::History | WebRoute::Metrics)
-        || parts.uri.path().starts_with("/api/");
-
-    if is_api_request {
-        return wants_html.unwrap_or(false);
-    }
-
-    wants_html.unwrap_or(false) || accept.map(|raw| raw.contains("*/*")).unwrap_or(true)
-}
-
-fn jitter(delay: Duration) -> Duration {
-    let extra = Duration::from_millis(fastrand::u32(0..=750) as u64);
-    delay.saturating_add(extra)
-}
-
-fn retry_after_seconds(delay: Duration) -> u64 {
-    let secs = delay.as_secs();
-    let mut total = if secs == 0 && delay.subsec_nanos() > 0 {
-        1
-    } else if delay.subsec_nanos() > 0 {
-        secs.saturating_add(1)
-    } else {
-        secs
-    };
-    if total == 0 {
-        total = 1;
-    }
-    total
-}
-
-async fn uniform_auth_delay() {
-    let base = 120;
-    let jitter = fastrand::u64(0..=120);
-    sleep(Duration::from_millis(base + jitter)).await;
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) enum TokenKey {
-    Anonymous,
-    Fingerprint(u64),
-}
-
-pub(super) type TokenFingerprint = [u8; 16];
-
-impl TokenKey {
-    /// Empreinte keyed (secret runtime), stable uniquement pendant la vie du process.
-    /// Ne doit pas être persistée.
-    pub(super) fn from_value(token: &str) -> Self {
-        TokenKey::Fingerprint(token_hash_state().hash_one(token))
-    }
-}
-
-impl fmt::Display for TokenKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            TokenKey::Anonymous => f.write_str("anon"),
-            TokenKey::Fingerprint(fp) => write!(f, "fp:{fp:016x}"),
-        }
-    }
-}
-
-const TOKEN_KEY_PROBE: &str = "__token_key_probe__";
-
-fn token_hash_state() -> &'static RandomState {
-    static STATE: OnceLock<RandomState> = OnceLock::new();
-    STATE.get_or_init(|| {
-        let unkeyed = unkeyed_token_hash(TOKEN_KEY_PROBE);
-        loop {
-            let state = RandomState::new();
-            if state.hash_one(TOKEN_KEY_PROBE) != unkeyed {
-                return state;
-            }
-        }
-    })
-}
-
-fn unkeyed_token_hash(value: &str) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    value.hash(&mut hasher);
-    hasher.finish()
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum IpMatcher {
-    Exact(IpAddr),
-    Ipv4 { network: u32, mask: u32 },
-    Ipv6 { network: u128, mask: u128 },
-}
-
-impl IpMatcher {
-    pub(crate) fn parse(raw: &str) -> Result<Self, String> {
-        if raw.is_empty() {
-            return Err("entrée vide".into());
-        }
-
-        if let Some((addr_part, prefix_part)) = raw.split_once('/') {
-            let base_ip: IpAddr = addr_part
-                .parse()
-                .map_err(|_| format!("adresse IP invalide: '{addr_part}'"))?;
-            let prefix: u8 = prefix_part
-                .parse()
-                .map_err(|_| format!("préfixe CIDR invalide: '{prefix_part}'"))?;
-
-            match base_ip {
-                IpAddr::V4(base) => {
-                    if prefix > 32 {
-                        return Err(format!("préfixe IPv4 invalide: {prefix} (max 32)"));
-                    }
-                    let mask = if prefix == 0 {
-                        0
-                    } else {
-                        u32::MAX.checked_shl((32 - prefix) as u32).unwrap_or(0)
-                    };
-                    let network = u32::from(base) & mask;
-                    Ok(IpMatcher::Ipv4 { network, mask })
-                }
-                IpAddr::V6(base) => {
-                    if prefix > 128 {
-                        return Err(format!("préfixe IPv6 invalide: {prefix} (max 128)"));
-                    }
-                    let mask = if prefix == 0 {
-                        0
-                    } else {
-                        u128::MAX.checked_shl((128 - prefix) as u32).unwrap_or(0)
-                    };
-                    let network = u128::from(base) & mask;
-                    Ok(IpMatcher::Ipv6 { network, mask })
-                }
-            }
-        } else {
-            let ip: IpAddr = raw
-                .parse()
-                .map_err(|_| format!("adresse IP invalide: '{raw}'"))?;
-            Ok(IpMatcher::Exact(ip))
-        }
-    }
-
-    pub(crate) fn matches(&self, addr: IpAddr) -> bool {
-        match (self, addr) {
-            (IpMatcher::Exact(expected), current) => *expected == current,
-            (IpMatcher::Ipv4 { network, mask }, IpAddr::V4(current)) => {
-                (u32::from(current) & mask) == *network
-            }
-            (IpMatcher::Ipv6 { network, mask }, IpAddr::V6(current)) => {
-                (u128::from(current) & mask) == *network
-            }
-            _ => false,
-        }
-    }
-}
 #[cfg(test)]
 mod tests_auth;
 #[cfg(test)]
